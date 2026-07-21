@@ -10,6 +10,7 @@ PORTAL = Path(__file__).resolve().parents[1]
 CLAIMS_PATH = ROOT / "Knowledge" / "claims_curated.json"
 GRAPH_PATH = ROOT / "graphify-out" / "graph.json"
 OUTPUT_PATH = PORTAL / "data" / "knowledge-index.js"
+PUBLIC_OUTPUT_PATH = PORTAL / "data" / "public-knowledge-index.js"
 
 
 def compact_claim(claim):
@@ -31,6 +32,18 @@ def compact_document(node):
         "source": node.get("source_file", ""),
         "location": node.get("source_location", ""),
         "type": node.get("file_type", ""),
+    }
+
+
+def compact_public_claim(claim):
+    """Remove caminhos internos e publica apenas a regra rastreável."""
+    return {
+        "id": claim["id"],
+        "label": claim["label"],
+        "code": claim.get("document_code", ""),
+        "location": claim.get("source_location", ""),
+        "relation": claim.get("relation", ""),
+        "appliesTo": ", ".join(claim.get("applies_to", [])),
     }
 
 
@@ -60,6 +73,20 @@ def main():
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     content = "window.SAFE_KNOWLEDGE_INDEX = " + json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + ";\n"
     OUTPUT_PATH.write_text(content, encoding="utf-8")
+    public_claims = [compact_public_claim(item) for item in claims_data.get("claims", []) if item.get("status") == "confirmed"]
+    public_payload = {
+        "meta": {
+            "schemaVersion": 1,
+            "generatedAt": payload["meta"]["generatedAt"],
+            "confirmedClaims": len(public_claims),
+            "documents": 0,
+            "scope": "public_confirmed_claims",
+        },
+        "claims": public_claims,
+        "documents": [],
+    }
+    public_content = "window.SAFE_KNOWLEDGE_INDEX = " + json.dumps(public_payload, ensure_ascii=False, separators=(",", ":")) + ";\n"
+    PUBLIC_OUTPUT_PATH.write_text(public_content, encoding="utf-8")
     print(json.dumps(payload["meta"], ensure_ascii=False, indent=2))
 
 

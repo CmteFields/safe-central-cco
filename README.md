@@ -4,9 +4,9 @@ Interface web da central operacional de consulta do CCO da SAFE. Abra `index.htm
 
 ## Conteúdo público
 
-Este repositório contém a interface e o adaptador de integração. A base documental interna e o índice gerado não fazem parte do repositório público.
+Este repositório contém a interface, o adaptador de integração e um índice público limitado às regras confirmadas. A base documental interna e o índice documental completo não fazem parte do repositório público.
 
-Sem o índice interno, a interface usa um pequeno catálogo demonstrativo incluído em `app.js`.
+Sem o índice interno, a interface consulta `data/public-knowledge-index.js`, que não contém caminhos internos nem documentos completos.
 
 ## Integração interna
 

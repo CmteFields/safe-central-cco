@@ -140,12 +140,12 @@ function selectSuggestion(index) {
 function graphResultAnswer(query, results) {
   const confirmed = results.filter(item => item.kind === "Regra confirmada");
   const primary = confirmed[0] || results[0];
-  const rows = results.map(item => `<div class="answer-highlight"><strong>${item.label}</strong><br><small>${item.kind}${item.code ? ` · ${item.code}` : ""}${item.location ? ` · ${item.location}` : ""}</small></div>`).join("");
+  const related = results.slice(1).map(item => `<div class="answer-highlight"><strong>${escapeHtml(item.label)}</strong><br><small>${escapeHtml(item.kind)}${item.code ? ` · ${escapeHtml(item.code)}` : ""}${item.location ? ` · ${escapeHtml(item.location)}` : ""}</small></div>`).join("");
   return {
     question: query,
-    answer: `<p>Encontrei <strong>${results.length} resultado(s) relacionado(s)</strong> no índice atual do grafo. Os itens abaixo são apresentados com rastreabilidade; quando não formarem uma resposta conclusiva, valide a decisão na fonte.</p>${rows}`,
+    answer: `<p>De acordo com a regra confirmada na base de conhecimento:</p><div class="answer-highlight"><strong>${escapeHtml(primary.label)}</strong><br><small>${primary.code ? escapeHtml(primary.code) : "Regra SAFE"}${primary.location ? ` · ${escapeHtml(primary.location)}` : ""}</small></div>${related ? `<p><strong>Regras relacionadas:</strong></p>${related}` : ""}`,
     source: primary.code || primary.label,
-    detail: `${primary.source || "Grafo de conhecimento SAFE"}${primary.location ? ` · ${primary.location}` : ""}`,
+    detail: `${primary.source || "Regra confirmada no grafo SAFE"}${primary.location ? ` · ${primary.location}` : ""}`,
     relations: results.slice(0, 3).map(item => [item.kind.toUpperCase(), item.label, item.code || item.source || "Grafo SAFE"])
   };
 }
@@ -209,3 +209,5 @@ function toast(message) { const element = $("#toast"); element.textContent = mes
 renderHistory();
 $("#ruleCount").textContent = graphIndex.meta.confirmedClaims ?? knowledge.length;
 $("#indexStatus").textContent = graphIndex.meta.generatedAt ? "Índice sincronizado" : "Modo demonstrativo";
+const initialQuestion = new URLSearchParams(window.location.search).get("q");
+if (initialQuestion) { input.value = initialQuestion; searchBox.classList.add("has-value"); search(initialQuestion); }
