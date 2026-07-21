@@ -41,6 +41,10 @@ const homeView = $("#homeView");
 const answerView = $("#answerView");
 const moduleView = $("#moduleView");
 const input = $("#searchInput");
+const searchBox = $("#searchForm");
+const searchResults = $("#searchResults");
+let suggestionItems = [];
+let activeSuggestion = -1;
 let history = JSON.parse(localStorage.getItem("safe-cco-history") || "[]");
 
 function showView(view, name) {
@@ -55,7 +59,7 @@ function renderHistory() {
   const box = $("#recentList");
   if (!history.length) { box.innerHTML = `<div class="empty-recent">Suas consultas aparecerão aqui.</div>`; return; }
   box.innerHTML = history.slice(0, 3).map((item, index) => `<button class="recent-item" data-history="${index}" style="width:100%;border-left:0;border-right:0;border-bottom:0;background:none;text-align:left;cursor:pointer"><span class="recent-type">⌕</span><span class="recent-text"><strong>${item.question}</strong><small>${item.time} · Regra operacional</small></span><span>→</span></button>`).join("");
-  box.querySelectorAll("[data-history]").forEach(button => button.addEventListener("click", () => showAnswer(knowledge.find(k => k.question === history[button.dataset.history].question) || knowledge[0])));
+  box.querySelectorAll("[data-history]").forEach(button => button.addEventListener("click", () => search(history[button.dataset.history].question)));
 }
 
 function findAnswer(query) {
@@ -90,6 +94,49 @@ function findGraphResults(query) {
     .slice(0, 5);
 }
 
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"]/g, character => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[character]);
+}
+
+function renderSearchSuggestions() {
+  const query = input.value.trim();
+  searchBox.classList.toggle("has-value", Boolean(query));
+  if (query.length < 2) { closeSearchSuggestions(); return; }
+  suggestionItems = findGraphResults(query).slice(0, 6);
+  activeSuggestion = -1;
+  if (!suggestionItems.length) { closeSearchSuggestions(); return; }
+  searchResults.innerHTML = suggestionItems.map((item, index) => `<button class="search-result" type="button" role="option" data-result="${index}" aria-selected="false"><span class="search-result-icon">${item.kind === "Regra confirmada" ? "✓" : "▤"}</span><span class="search-result-text"><strong>${escapeHtml(item.label)}</strong><small>${escapeHtml(item.kind)}${item.code ? ` · ${escapeHtml(item.code)}` : ""}</small></span>${item.kind === "Regra confirmada" ? '<span class="search-result-score">CONFIRMADA</span>' : ""}</button>`).join("");
+  searchResults.classList.remove("hidden");
+  searchResults.querySelectorAll("[data-result]").forEach(button => button.addEventListener("mousedown", event => { event.preventDefault(); selectSuggestion(Number(button.dataset.result)); }));
+}
+
+function closeSearchSuggestions() {
+  searchResults.classList.add("hidden");
+  searchResults.innerHTML = "";
+  suggestionItems = [];
+  activeSuggestion = -1;
+}
+
+function highlightSuggestion(index) {
+  const buttons = [...searchResults.querySelectorAll("[data-result]")];
+  if (!buttons.length) return;
+  activeSuggestion = (index + buttons.length) % buttons.length;
+  buttons.forEach((button, position) => {
+    const active = position === activeSuggestion;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", active);
+  });
+  buttons[activeSuggestion].scrollIntoView({ block: "nearest" });
+}
+
+function selectSuggestion(index) {
+  const item = suggestionItems[index];
+  if (!item) return;
+  input.value = item.label;
+  closeSearchSuggestions();
+  search(item.label);
+}
+
 function graphResultAnswer(query, results) {
   const confirmed = results.filter(item => item.kind === "Regra confirmada");
   const primary = confirmed[0] || results[0];
@@ -117,6 +164,7 @@ function showAnswer(item, originalQuestion) {
 
 function search(query) {
   if (!query.trim()) { input.focus(); return; }
+  closeSearchSuggestions();
   const answer = findAnswer(query);
   if (answer) showAnswer(answer, query);
   else {
@@ -134,7 +182,20 @@ function openModule(key) {
   showView(moduleView, info[1]);
 }
 
-$("#searchForm").addEventListener("submit", event => { event.preventDefault(); search(input.value); });
+searchBox.addEventListener("submit", event => {
+  event.preventDefault();
+  if (activeSuggestion >= 0) selectSuggestion(activeSuggestion);
+  else search(input.value);
+});
+input.addEventListener("input", renderSearchSuggestions);
+input.addEventListener("keydown", event => {
+  if (searchResults.classList.contains("hidden")) return;
+  if (event.key === "ArrowDown") { event.preventDefault(); highlightSuggestion(activeSuggestion + 1); }
+  if (event.key === "ArrowUp") { event.preventDefault(); highlightSuggestion(activeSuggestion - 1); }
+  if (event.key === "Escape") { event.preventDefault(); closeSearchSuggestions(); }
+});
+input.addEventListener("blur", () => setTimeout(closeSearchSuggestions, 120));
+$("#clearSearch").addEventListener("click", () => { input.value = ""; searchBox.classList.remove("has-value"); closeSearchSuggestions(); input.focus(); });
 document.querySelectorAll("[data-question]").forEach(button => button.addEventListener("click", () => { input.value = button.dataset.question; search(input.value); }));
 document.querySelectorAll(".nav-item").forEach(button => button.addEventListener("click", () => { document.querySelectorAll(".nav-item").forEach(item => item.classList.remove("active")); button.classList.add("active"); openModule(button.dataset.view); }));
 document.querySelectorAll(".module-card").forEach(card => card.addEventListener("click", () => openModule(card.dataset.target)));

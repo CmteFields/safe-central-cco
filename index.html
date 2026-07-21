@@ -58,9 +58,11 @@
           <form class="search-box" id="searchForm">
             <span class="magnifier">⌕</span>
             <input id="searchInput" autocomplete="off" placeholder="Ex.: Quantos voos o aluno pode fazer sem a banca?" aria-label="Pergunta para a base de conhecimento">
+            <button class="clear-search" id="clearSearch" type="button" aria-label="Limpar pesquisa">×</button>
             <kbd>ENTER</kbd>
             <button type="submit">Consultar</button>
           </form>
+          <div class="search-results hidden" id="searchResults" role="listbox" aria-label="Sugestões da base de conhecimento"></div>
           <div class="suggestions" id="suggestions">
             <span>Perguntas frequentes:</span>
             <button data-question="Quantos voos o aluno pode fazer sem a banca da ANAC para PPA?">Banca ANAC para PPA</button>
