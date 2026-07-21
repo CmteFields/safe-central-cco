@@ -1,6 +1,16 @@
 # SAFE Central CCO
 
-Interface web da central operacional de consulta do CCO da SAFE. Abra `index.html` para executar a versão local em modo demonstrativo.
+Interface web da central operacional de consulta do CCO da SAFE.
+
+## Executar com IA
+
+Com `GEMINI_API_KEY` configurada, execute:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\start_portal.ps1
+```
+
+O navegador abrirá `http://127.0.0.1:8765/`. Mantenha a janela do servidor aberta durante o uso.
 
 ## Conteúdo público
 

@@ -26,6 +26,8 @@ const knowledge = [
 ];
 
 const graphIndex = window.SAFE_KNOWLEDGE_INDEX || { meta: {}, claims: [], documents: [] };
+const localApi = ["127.0.0.1", "localhost"].includes(window.location.hostname) ? `${window.location.origin}/api/ask` : "http://127.0.0.1:8765/api/ask";
+const API_URL = window.SAFE_CCO_API_URL || localApi;
 
 const moduleInfo = {
   regras: ["✓", "Regras e procedimentos", "Consulte o conhecimento já indexado em AVOPs, manuais, programas de instrução e regras aprovadas."],
@@ -150,6 +152,29 @@ function graphResultAnswer(query, results) {
   };
 }
 
+function apiResultAnswer(query, result) {
+  const confidenceLabels = { high: "Alta confiança", medium: "Confiança moderada", low: "Baixa confiança" };
+  const sources = result.sources || [];
+  return {
+    question: query,
+    answer: `<p>${escapeHtml(result.answer).replace(/\n/g, "<br>")}</p><div class="answer-highlight"><strong>${confidenceLabels[result.confidence] || "Confiança não informada"}</strong><br><small>Consulta ${escapeHtml(result.query_id || "")} · ${result.candidate_relations_count || 0} nova(s) relação(ões) candidata(s)</small></div>`,
+    source: sources[0]?.code || sources[0]?.label || "Grafo SAFE + Gemini",
+    detail: sources[0] ? `${sources[0].location || "Localização não informada"}` : "Nenhuma evidência suficiente localizada",
+    relations: sources.slice(0, 3).map(item => [item.kind === "confirmed_claim" ? "REGRA CONFIRMADA" : "DOCUMENTO", item.label, item.code || item.location || "Grafo SAFE"]),
+  };
+}
+
+async function askApi(query) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 50000);
+  try {
+    const response = await fetch(API_URL, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ question: query }), signal: controller.signal });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || `Erro HTTP ${response.status}`);
+    return data;
+  } finally { clearTimeout(timeout); }
+}
+
 function showAnswer(item, originalQuestion) {
   $("#answerQuestion").textContent = originalQuestion || item.question;
   $("#answerBody").innerHTML = item.answer;
@@ -162,9 +187,19 @@ function showAnswer(item, originalQuestion) {
   showView(answerView, "Resposta");
 }
 
-function search(query) {
+async function search(query) {
   if (!query.trim()) { input.focus(); return; }
   closeSearchSuggestions();
+  const submitButton = searchBox.querySelector('button[type="submit"]');
+  const originalLabel = submitButton.textContent;
+  submitButton.disabled = true; submitButton.textContent = "Consultando…";
+  try {
+    const apiResult = await askApi(query);
+    showAnswer(apiResultAnswer(query, apiResult), query);
+    return;
+  } catch (error) {
+    console.info("Backend de IA indisponível; usando busca local.", error.message);
+  } finally { submitButton.disabled = false; submitButton.textContent = originalLabel; }
   const answer = findAnswer(query);
   if (answer) showAnswer(answer, query);
   else {

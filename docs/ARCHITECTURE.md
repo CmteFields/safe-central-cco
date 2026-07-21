@@ -32,6 +32,8 @@ CentrodeConhecimento/
 4. `PortalCCO/scripts/build_search_index.py` publica somente o índice necessário à interface.
 5. O navegador consulta o índice local sem acessar diretamente arquivos de curadoria ou documentos sensíveis.
 
+Na operação com IA, o portal envia a pergunta ao backend local. O backend recupera evidências, solicita ao Gemini uma resposta estruturada, devolve somente fontes utilizadas e registra a travessia em `Knowledge/query_graph.json`.
+
 ## Limites das camadas
 
 - Documentos-fonte não contêm estado transitório da operação.
@@ -40,6 +42,7 @@ CentrodeConhecimento/
 - `PortalCCO/data` é sempre regenerável e não é fonte oficial.
 - Dados mutáveis de instrutores, manutenção e restrições exigirão repositório operacional próprio ou API; não devem ser simulados como documentos Markdown.
 - Respostas conclusivas devem priorizar regras com estado `confirmed`. Documentos relacionados podem auxiliar a busca, mas não devem ser apresentados como regra confirmada.
+- Perguntas e relações inferidas ficam no grafo de aprendizagem. Relações inferidas usam `pending_review` e nunca entram automaticamente no conjunto de regras oficiais.
 
 ## Evolução prevista
 
