@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Central operacional de conhecimento do CCO SAFE.">
+  <title>SAFE Hub — Central CCO</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar" id="sidebar">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true"><span>S</span></div>
+        <div><strong>SAFE</strong><small>Centro de Operações</small></div>
+      </div>
+
+      <nav class="main-nav" aria-label="Navegação principal">
+        <p class="nav-label">CENTRAL</p>
+        <button class="nav-item active" data-view="inicio"><span class="nav-icon">⌂</span>Visão geral</button>
+        <button class="nav-item" data-view="consulta"><span class="nav-icon">⌕</span>Consultar base</button>
+        <p class="nav-label">OPERAÇÃO</p>
+        <button class="nav-item" data-view="regras"><span class="nav-icon">✓</span>Regras e procedimentos<span class="nav-count">128</span></button>
+        <button class="nav-item" data-view="instrutores"><span class="nav-icon">♙</span>Instrutores<span class="status-dot soon"></span></button>
+        <button class="nav-item" data-view="aeronaves"><span class="nav-icon">✈</span>Aeronaves<span class="status-dot soon"></span></button>
+        <button class="nav-item" data-view="manutencao"><span class="nav-icon">◇</span>Manutenção<span class="status-dot soon"></span></button>
+        <button class="nav-item" data-view="restricoes"><span class="nav-icon">!</span>Restrições operacionais<span class="status-dot soon"></span></button>
+      </nav>
+
+      <div class="sidebar-footer">
+        <div class="sync-card"><span class="pulse"></span><div><strong>Base sincronizada</strong><small>Hoje, 15:03</small></div></div>
+        <button class="operator"><span class="avatar">OP</span><span><strong>Operador CCO</strong><small>Turno operacional</small></span><b>⋮</b></button>
+      </div>
+    </aside>
+
+    <main class="main-content">
+      <header class="topbar">
+        <button class="menu-button" id="menuButton" aria-label="Abrir menu">☰</button>
+        <div class="breadcrumb"><span>Central CCO</span><b>/</b><strong id="pageName">Visão geral</strong></div>
+        <div class="top-actions">
+          <div class="operational"><span></span>Operação normal</div>
+          <button class="icon-button" aria-label="Notificações">♢<i>3</i></button>
+          <button class="help-button">? <span>Ajuda</span></button>
+        </div>
+      </header>
+
+      <section class="page" id="homeView">
+        <div class="welcome-row">
+          <div><p class="eyebrow">TERÇA-FEIRA, 21 DE JULHO</p><h1>Bom trabalho, Operações.</h1><p>Encontre uma resposta confiável antes de tomar uma decisão.</p></div>
+          <div class="shift-badge"><span>●</span><div><small>STATUS DO TURNO</small><strong>Operacional</strong></div></div>
+        </div>
+
+        <section class="search-hero">
+          <div class="search-copy"><span class="spark">✦</span><div><h2>O que você precisa saber?</h2><p>Consulte regras, procedimentos e informações operacionais da SAFE.</p></div></div>
+          <form class="search-box" id="searchForm">
+            <span class="magnifier">⌕</span>
+            <input id="searchInput" autocomplete="off" placeholder="Ex.: Quantos voos o aluno pode fazer sem a banca?" aria-label="Pergunta para a base de conhecimento">
+            <kbd>ENTER</kbd>
+            <button type="submit">Consultar</button>
+          </form>
+          <div class="suggestions" id="suggestions">
+            <span>Perguntas frequentes:</span>
+            <button data-question="Quantos voos o aluno pode fazer sem a banca da ANAC para PPA?">Banca ANAC para PPA</button>
+            <button data-question="O aluno pode voar cinco slots seguidos?">Limite de slots</button>
+            <button data-question="Como funciona a experiência recente noturna?">Experiência recente</button>
+          </div>
+        </section>
+
+        <div class="section-heading"><div><h2>Acesso rápido</h2><p>Informações essenciais para a rotina do CCO.</p></div><button class="text-button" id="customizeButton">Personalizar atalhos <span>→</span></button></div>
+        <div class="module-grid">
+          <article class="module-card ready" data-target="regras"><div class="module-icon rules">✓</div><span class="tag live">DISPONÍVEL</span><h3>Regras e procedimentos</h3><p>Diretrizes operacionais, AVOPs, manuais e programas de instrução.</p><div class="module-meta"><span><b id="ruleCount">—</b> regras confirmadas</span><span id="indexStatus">Carregando índice</span></div><button>Acessar base <span>→</span></button></article>
+          <article class="module-card" data-target="instrutores"><div class="module-icon instructors">♙</div><span class="tag planned">EM PREPARAÇÃO</span><h3>Instrutores</h3><p>Habilitações, disponibilidade, restrições e qualificações da equipe.</p><div class="module-meta"><span>Integração planejada</span></div><button>Ver planejamento <span>→</span></button></article>
+          <article class="module-card" data-target="aeronaves"><div class="module-icon aircraft">✈</div><span class="tag planned">EM PREPARAÇÃO</span><h3>Aeronaves e manutenção</h3><p>Status da frota, limitações, vencimentos e indisponibilidades.</p><div class="module-meta"><span>Integração planejada</span></div><button>Ver planejamento <span>→</span></button></article>
+          <article class="module-card" data-target="restricoes"><div class="module-icon restrictions">!</div><span class="tag planned">EM PREPARAÇÃO</span><h3>Restrições operacionais</h3><p>Restrições temporárias por base, aeronave, instrutor ou aluno.</p><div class="module-meta"><span>Integração planejada</span></div><button>Ver planejamento <span>→</span></button></article>
+        </div>
+
+        <div class="lower-grid">
+          <section class="panel recent-panel"><div class="panel-head"><div><h2>Consultas recentes</h2><p>Seu histórico neste dispositivo</p></div><button class="dots">•••</button></div><div id="recentList"></div></section>
+          <section class="panel attention-panel"><div class="panel-head"><div><h2>Atenção operacional</h2><p>Itens que merecem acompanhamento</p></div><span class="attention-count">3 itens</span></div>
+            <div class="attention-item high"><span class="attention-icon">!</span><div><strong>Conteúdo em implantação</strong><p>Confirme informações críticas na fonte enquanto os módulos são integrados.</p></div><b>Alta</b></div>
+            <div class="attention-item medium"><span class="attention-icon">↻</span><div><strong>Documentos pendentes</strong><p>Novos documentos oficiais ainda serão adicionados à central.</p></div><b>Média</b></div>
+            <div class="attention-item low"><span class="attention-icon">i</span><div><strong>Última atualização do grafo</strong><p>Base de conhecimento validada em 21/07/2026.</p></div><b>Info</b></div>
+          </section>
+        </div>
+      </section>
+
+      <section class="page hidden" id="answerView">
+        <button class="back-button" id="backButton">← Voltar à visão geral</button>
+        <div class="answer-layout">
+          <article class="answer-card">
+            <p class="eyebrow">RESPOSTA DA BASE DE CONHECIMENTO</p>
+            <h1 id="answerQuestion"></h1>
+            <div class="confidence"><span>✓</span><div><strong>Resposta confirmada</strong><small>Baseada em documento vigente</small></div></div>
+            <div class="answer-body" id="answerBody"></div>
+            <div class="source-box"><span>▤</span><div><small>FONTE PRINCIPAL</small><strong id="sourceTitle"></strong><p id="sourceDetail"></p></div><button id="sourceButton">Ver fonte</button></div>
+            <div class="answer-footer"><span>Esta resposta foi útil?</span><button>♡ Sim</button><button>△ Não</button><small>Consulte sempre a documentação oficial em decisões críticas.</small></div>
+          </article>
+          <aside class="context-panel"><p class="eyebrow">CONTEXTO RELACIONADO</p><h3>Conexões no conhecimento</h3><div class="relation-list" id="relationList"></div><div class="context-note"><span>i</span><p>As relações ajudam a encontrar regras complementares e reduzem respostas isoladas.</p></div></aside>
+        </div>
+      </section>
+
+      <section class="page hidden" id="moduleView">
+        <button class="back-button" id="moduleBack">← Voltar à visão geral</button>
+        <div class="empty-state"><div class="empty-icon" id="moduleIcon">◇</div><p class="eyebrow">MÓDULO DA CENTRAL</p><h1 id="moduleTitle">Em preparação</h1><p id="moduleDescription"></p><div class="roadmap"><div class="done"><span>✓</span><p><strong>Estrutura definida</strong><small>Modelo de dados e interface</small></p></div><div><span>2</span><p><strong>Importação dos dados</strong><small>Próxima etapa</small></p></div><div><span>3</span><p><strong>Validação operacional</strong><small>Revisão com o CCO</small></p></div></div><button class="primary-button" id="returnHome">Voltar ao início</button></div>
+      </section>
+    </main>
+  </div>
+  <div class="toast" id="toast" role="status"></div>
+  <script src="data/knowledge-index.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

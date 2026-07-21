@@ -1,0 +1,12 @@
+# Índice gerado a partir da base interna SAFE
+data/knowledge-index.js
+
+# Arquivos locais e temporários
+.DS_Store
+Thumbs.db
+*.log
+__pycache__/
+*.pyc
+.env
+.env.*
+!.env.example
