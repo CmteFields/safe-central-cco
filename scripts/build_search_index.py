@@ -11,6 +11,7 @@ CLAIMS_PATH = ROOT / "Knowledge" / "claims_curated.json"
 GRAPH_PATH = ROOT / "graphify-out" / "graph.json"
 OUTPUT_PATH = PORTAL / "data" / "knowledge-index.js"
 PUBLIC_OUTPUT_PATH = PORTAL / "data" / "public-knowledge-index.js"
+CONFIRMED_STATUSES = {"confirmed", "confirmed_temporary_override"}
 
 
 def compact_claim(claim):
@@ -50,7 +51,7 @@ def compact_public_claim(claim):
 def main():
     claims_data = json.loads(CLAIMS_PATH.read_text(encoding="utf-8"))
     graph_data = json.loads(GRAPH_PATH.read_text(encoding="utf-8"))
-    claims = [compact_claim(item) for item in claims_data.get("claims", []) if item.get("status") == "confirmed"]
+    claims = [compact_claim(item) for item in claims_data.get("claims", []) if item.get("status") in CONFIRMED_STATUSES]
     claim_ids = {item["id"] for item in claims}
     documents = [
         compact_document(node)
@@ -73,7 +74,7 @@ def main():
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     content = "window.SAFE_KNOWLEDGE_INDEX = " + json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + ";\n"
     OUTPUT_PATH.write_text(content, encoding="utf-8")
-    public_claims = [compact_public_claim(item) for item in claims_data.get("claims", []) if item.get("status") == "confirmed"]
+    public_claims = [compact_public_claim(item) for item in claims_data.get("claims", []) if item.get("status") in CONFIRMED_STATUSES]
     public_payload = {
         "meta": {
             "schemaVersion": 1,

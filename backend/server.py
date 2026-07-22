@@ -50,6 +50,9 @@ def tokens(value: str) -> list[str]:
         expansions.extend(["saude", "problema", "exce", "justific", "comprov"])
     if any(term in normalized for term in ("cancelar", "cancelado", "cancelamento")):
         expansions.extend(["cancel", "no", "show"])
+    extraordinary_road_events = ("acidente", "interdicao", "alagamento", "bloqueio total", "pane no veiculo", "pneu furado")
+    if any(term in normalized for term in extraordinary_road_events):
+        expansions.extend(["evento", "viari", "extraordin", "evidenc", "exce", "no", "show"])
     if "banca" in normalized and any(term in normalized for term in ("ppa", "piloto privado")):
         expansions.extend(["requisit", "inicio", "curso", "privado"])
     return list(dict.fromkeys(items + expansions))
@@ -130,7 +133,7 @@ def retrieve(question: str, limit: int = 8) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
     claim_ids = set()
     for claim in claims_data.get("claims", []):
-        if claim.get("status") != "confirmed":
+        if claim.get("status") not in {"confirmed", "confirmed_temporary_override"}:
             continue
         claim_ids.add(claim["id"])
         score = score_text(query_tokens, claim.get("label", ""), f"{claim.get('document_code', '')} {claim.get('source_path', '')} {' '.join(claim.get('applies_to', []))}")
