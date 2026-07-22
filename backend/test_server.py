@@ -36,6 +36,26 @@ class RetrievalTests(unittest.TestCase):
         evidence_ids = {item["id"] for item in evidence}
         self.assertIn("claim_rg003_terceira_excecao_90_dias", evidence_ids)
 
+    def test_pc_slots_question_recovers_daily_hours_limit(self):
+        evidence = server.retrieve("Aluno PC pode fazer mais de três slots solo no mesmo dia?")
+        evidence_ids = {item["id"] for item in evidence}
+        self.assertIn("claim_pcifrap001k_limite_diario_instrucao", evidence_ids)
+
+    def test_mockup_question_recovers_ground_prerequisite(self):
+        evidence = server.retrieve("Quais são os pré-requisitos para o aluno fazer o MOCKUP?")
+        evidence_ids = {item["id"] for item in evidence}
+        self.assertIn("claim_mgop_ground_e_prova_antes_mockup", evidence_ids)
+
+    def test_lodging_question_recovers_commercial_and_cavok_rule(self):
+        evidence = server.retrieve("Como o aluno solicita e agenda o alojamento da SAFE?")
+        evidence_ids = {item["id"] for item in evidence}
+        self.assertIn("claim_mgop_alojamento_comercial_cavok", evidence_ids)
+
+    def test_pcifr_hood_check_recovers_conditional_rule(self):
+        evidence = server.retrieve("Aluno PCIFR pode realizar o cheque ANAC sob capota?")
+        evidence_ids = {item["id"] for item in evidence}
+        self.assertIn("claim_mgop_pcifr_cheque_sob_capota_condicionado", evidence_ids)
+
 
 class LearningGraphTests(unittest.TestCase):
     def test_records_question_evidence_and_pending_candidate(self):
