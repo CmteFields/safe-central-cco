@@ -45,9 +45,20 @@ const moduleView = $("#moduleView");
 const input = $("#searchInput");
 const searchBox = $("#searchForm");
 const searchResults = $("#searchResults");
+const searchProgress = $("#searchProgress");
+const progressSteps = [...document.querySelectorAll("[data-progress-step]")];
+const progressStages = [
+  ["Pergunta recebida", "Sua consulta foi recebida e será pesquisada na base SAFE.", 16],
+  ["Consultando a base de conhecimento", "Localizando regras, documentos e relações relevantes.", 43],
+  ["Analisando as evidências", "Conferindo fontes e conexões antes de elaborar a resposta.", 72],
+  ["Preparando a resposta", "Organizando a orientação e as fontes para apresentação.", 92],
+];
 let suggestionItems = [];
 let activeSuggestion = -1;
 let history = JSON.parse(localStorage.getItem("safe-cco-history") || "[]");
+let searchInProgress = false;
+let progressTimers = [];
+let progressClock = null;
 
 function showView(view, name) {
   [homeView, answerView, moduleView].forEach(item => item.classList.add("hidden"));
@@ -117,6 +128,69 @@ function closeSearchSuggestions() {
   searchResults.innerHTML = "";
   suggestionItems = [];
   activeSuggestion = -1;
+}
+
+function clearProgressTimers() {
+  progressTimers.forEach(timer => clearTimeout(timer));
+  progressTimers = [];
+  if (progressClock) clearInterval(progressClock);
+  progressClock = null;
+}
+
+function setProgressStage(index) {
+  const [title, detail, percentage] = progressStages[index];
+  $("#progressTitle").textContent = title;
+  $("#progressDetail").textContent = detail;
+  $("#progressBar").style.width = `${percentage}%`;
+  progressSteps.forEach((step, position) => {
+    step.classList.toggle("done", position < index);
+    step.classList.toggle("active", position === index);
+  });
+}
+
+function startSearchProgress() {
+  clearProgressTimers();
+  searchProgress.dataset.state = "running";
+  searchProgress.classList.remove("hidden");
+  searchBox.setAttribute("aria-busy", "true");
+  $("#progressElapsed").textContent = "0 s";
+  setProgressStage(0);
+  const startedAt = Date.now();
+  progressClock = setInterval(() => {
+    $("#progressElapsed").textContent = `${Math.floor((Date.now() - startedAt) / 1000)} s`;
+  }, 1000);
+  progressTimers.push(setTimeout(() => setProgressStage(1), 250));
+  progressTimers.push(setTimeout(() => setProgressStage(2), 1200));
+  progressTimers.push(setTimeout(() => setProgressStage(3), 3500));
+}
+
+function showLocalFallbackProgress() {
+  clearProgressTimers();
+  searchProgress.dataset.state = "fallback";
+  $("#progressTitle").textContent = "Consultando o índice local";
+  $("#progressDetail").textContent = "O serviço de análise não respondeu. Buscando regras confirmadas disponíveis neste dispositivo.";
+  $("#progressBar").style.width = "82%";
+  progressSteps.forEach((step, position) => {
+    step.classList.toggle("done", position < 2);
+    step.classList.toggle("active", position === 2);
+  });
+}
+
+async function finishSearchProgress(usedLocalFallback = false) {
+  clearProgressTimers();
+  searchProgress.dataset.state = "done";
+  $("#progressTitle").textContent = "Resposta pronta";
+  $("#progressDetail").textContent = usedLocalFallback ? "Consulta concluída com o índice local disponível." : "Consulta concluída com análise da base de conhecimento.";
+  $("#progressBar").style.width = "100%";
+  progressSteps.forEach(step => { step.classList.add("done"); step.classList.remove("active"); });
+  await new Promise(resolve => setTimeout(resolve, 450));
+}
+
+function stopSearchProgress() {
+  clearProgressTimers();
+  searchProgress.classList.add("hidden");
+  searchProgress.removeAttribute("data-state");
+  searchBox.setAttribute("aria-busy", "false");
 }
 
 function highlightSuggestion(index) {
@@ -189,23 +263,38 @@ function showAnswer(item, originalQuestion) {
 
 async function search(query) {
   if (!query.trim()) { input.focus(); return; }
+  if (searchInProgress) return;
+  searchInProgress = true;
   closeSearchSuggestions();
   const submitButton = searchBox.querySelector('button[type="submit"]');
   const originalLabel = submitButton.textContent;
   submitButton.disabled = true; submitButton.textContent = "Consultando…";
+  input.readOnly = true;
+  startSearchProgress();
   try {
     const apiResult = await askApi(query);
+    await finishSearchProgress(false);
     showAnswer(apiResultAnswer(query, apiResult), query);
-    return;
   } catch (error) {
     console.info("Backend de IA indisponível; usando busca local.", error.message);
-  } finally { submitButton.disabled = false; submitButton.textContent = originalLabel; }
-  const answer = findAnswer(query);
-  if (answer) showAnswer(answer, query);
-  else {
-    const results = findGraphResults(query);
-    if (results.length) showAnswer(graphResultAnswer(query, results), query);
-    else showAnswer({ question: query, answer: `<p>Não encontrei uma regra confirmada para esta pergunta no índice atual.</p><div class="answer-highlight"><strong>Não tome uma decisão apenas com esta resposta.</strong> Consulte a documentação oficial ou encaminhe a dúvida para revisão.</div>`, source: "Nenhuma fonte confirmada localizada", detail: "Consulta pendente de ampliação da base", relations: [["STATUS", "Conhecimento ainda não indexado", "Requer análise documental"], ["PRÓXIMA AÇÃO", "Consultar documentação oficial", "Validação humana necessária"]] }, query);
+    showLocalFallbackProgress();
+    await new Promise(resolve => setTimeout(resolve, 500));
+    const answer = findAnswer(query);
+    let localResult;
+    if (answer) localResult = answer;
+    else {
+      const results = findGraphResults(query);
+      if (results.length) localResult = graphResultAnswer(query, results);
+      else localResult = { question: query, answer: `<p>Não encontrei uma regra confirmada para esta pergunta no índice atual.</p><div class="answer-highlight"><strong>Não tome uma decisão apenas com esta resposta.</strong> Consulte a documentação oficial ou encaminhe a dúvida para revisão.</div>`, source: "Nenhuma fonte confirmada localizada", detail: "Consulta pendente de ampliação da base", relations: [["STATUS", "Conhecimento ainda não indexado", "Requer análise documental"], ["PRÓXIMA AÇÃO", "Consultar documentação oficial", "Validação humana necessária"]] };
+    }
+    await finishSearchProgress(true);
+    showAnswer(localResult, query);
+  } finally {
+    submitButton.disabled = false;
+    submitButton.textContent = originalLabel;
+    input.readOnly = false;
+    searchInProgress = false;
+    stopSearchProgress();
   }
 }
 

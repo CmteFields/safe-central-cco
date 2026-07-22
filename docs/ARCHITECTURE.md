@@ -34,6 +34,12 @@ CentrodeConhecimento/
 
 Na operação com IA, o portal envia a pergunta ao backend local. O backend recupera evidências, solicita ao Gemini uma resposta estruturada, devolve somente fontes utilizadas e registra a travessia em `Knowledge/query_graph.json`.
 
+## Feedback de progresso da consulta
+
+Ao iniciar uma busca, `app.js` exibe um painel acessível com as etapas de recebimento, consulta à base, análise de evidências e preparação da resposta. Como `/api/ask` ainda responde em uma única requisição HTTP, essas etapas representam feedback visual baseado no tempo decorrido, e não eventos transmitidos pelo backend.
+
+Se a requisição falhar, a interface muda para o estado real `fallback`, informa que está consultando o índice local e somente depois apresenta a resposta disponível no dispositivo. O formulário permanece com `aria-busy` durante o processo e impede consultas simultâneas.
+
 ## Limites das camadas
 
 - Documentos-fonte não contêm estado transitório da operação.

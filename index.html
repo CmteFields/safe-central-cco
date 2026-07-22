@@ -62,6 +62,20 @@
             <kbd>ENTER</kbd>
             <button type="submit">Consultar</button>
           </form>
+          <div class="search-progress hidden" id="searchProgress" role="status" aria-live="polite" aria-atomic="true">
+            <div class="search-progress-head">
+              <span class="search-progress-spinner" aria-hidden="true"></span>
+              <div class="search-progress-copy"><strong id="progressTitle">Preparando consulta</strong><small id="progressDetail">Organizando sua pergunta para pesquisar com segurança.</small></div>
+              <span class="search-progress-time" id="progressElapsed">0 s</span>
+            </div>
+            <div class="search-progress-track" aria-hidden="true"><span id="progressBar"></span></div>
+            <ol class="search-progress-steps" aria-label="Etapas da consulta">
+              <li data-progress-step="0"><span>1</span><small>Pergunta recebida</small></li>
+              <li data-progress-step="1"><span>2</span><small>Consultando a base</small></li>
+              <li data-progress-step="2"><span>3</span><small>Analisando evidências</small></li>
+              <li data-progress-step="3"><span>4</span><small>Preparando resposta</small></li>
+            </ol>
+          </div>
           <div class="search-results hidden" id="searchResults" role="listbox" aria-label="Sugestões da base de conhecimento"></div>
           <div class="suggestions" id="suggestions">
             <span>Perguntas frequentes:</span>
