@@ -25,7 +25,7 @@ KNOWLEDGE_ROOT = Path(os.environ.get("SAFE_KNOWLEDGE_ROOT", DEFAULT_KNOWLEDGE_RO
 CLAIMS_PATH = KNOWLEDGE_ROOT / "Knowledge" / "claims_curated.json"
 GRAPH_PATH = KNOWLEDGE_ROOT / "graphify-out" / "graph.json"
 LEARNING_GRAPH_PATH = KNOWLEDGE_ROOT / "Knowledge" / "query_graph.json"
-MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.1-flash-lite")
+MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite")
 HOST = os.environ.get("SAFE_CCO_HOST", "127.0.0.1")
 PORT = int(os.environ.get("SAFE_CCO_PORT", "8765"))
 MAX_QUESTION_LENGTH = 1200
@@ -43,7 +43,16 @@ def normalize(value: str) -> str:
 
 
 def tokens(value: str) -> list[str]:
-    return [item for item in re.split(r"[^a-z0-9-]+", normalize(value)) if len(item) > 1 and item not in STOPWORDS]
+    normalized = normalize(value)
+    items = [item for item in re.split(r"[^a-z0-9-]+", normalized) if len(item) > 1 and item not in STOPWORDS]
+    expansions = []
+    if any(term in normalized for term in ("passou mal", "passar mal", "doente", "doenca", "problema de saude")):
+        expansions.extend(["saude", "problema", "exce", "justific", "comprov"])
+    if any(term in normalized for term in ("cancelar", "cancelado", "cancelamento")):
+        expansions.extend(["cancel", "no", "show"])
+    if "banca" in normalized and any(term in normalized for term in ("ppa", "piloto privado")):
+        expansions.extend(["requisit", "inicio", "curso", "privado"])
+    return list(dict.fromkeys(items + expansions))
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -76,11 +85,9 @@ def source_search_text(source_path: str) -> str:
 
 def content_score(query_tokens: list[str], source_path: str) -> int:
     content = source_search_text(source_path)
-    counts = [content.count(token) for token in query_tokens]
-    matches = sum(1 for count in counts if count)
-    rarity_score = sum(5 if 0 < count <= 3 else 3 if count <= 10 else 1 for count in counts if count)
+    matches = sum(1 for token in query_tokens if token in content)
     coverage_bonus = 8 if query_tokens and matches >= max(2, len(query_tokens) // 2) else 0
-    return rarity_score + coverage_bonus
+    return matches * 4 + coverage_bonus
 
 
 def source_excerpt(source_path: str, location: str, query_tokens: list[str] | None = None, limit: int = 3000) -> str:
@@ -126,25 +133,29 @@ def retrieve(question: str, limit: int = 8) -> list[dict[str, Any]]:
         if claim.get("status") != "confirmed":
             continue
         claim_ids.add(claim["id"])
-        score = score_text(query_tokens, claim.get("label", ""), f"{claim.get('document_code', '')} {' '.join(claim.get('applies_to', []))}") + content_score(query_tokens, claim.get("source_path", ""))
+        score = score_text(query_tokens, claim.get("label", ""), f"{claim.get('document_code', '')} {claim.get('source_path', '')} {' '.join(claim.get('applies_to', []))}")
         if score:
             results.append({
                 "id": claim["id"], "kind": "confirmed_claim", "label": claim["label"],
                 "code": claim.get("document_code", ""), "source": claim.get("source_path", ""),
                 "location": claim.get("source_location", ""), "score": score,
-                "excerpt": source_excerpt(claim.get("source_path", ""), claim.get("source_location", ""), query_tokens),
+                "excerpt": "",
             })
     for node in graph_data.get("nodes", []):
         if node.get("id") in claim_ids or not node.get("source_file"):
             continue
-        score = score_text(query_tokens, node.get("label", ""), f"{node.get('source_file', '')} {node.get('source_location', '')}") + content_score(query_tokens, node.get("source_file", ""))
+        score = score_text(query_tokens, node.get("label", ""), f"{node.get('source_file', '')} {node.get('source_location', '')}")
         if score:
             results.append({
                 "id": node["id"], "kind": "graph_node", "label": node.get("label", node["id"]),
                 "code": document_code(node.get("label", "")), "source": node.get("source_file", ""),
                 "location": node.get("source_location", ""), "score": score,
-                "excerpt": source_excerpt(node.get("source_file", ""), node.get("source_location", ""), query_tokens),
+                "excerpt": "",
             })
+    results.sort(key=lambda item: (-item["score"], item["kind"] != "confirmed_claim", item["label"].casefold()))
+    results = results[:120]
+    for item in results:
+        item["score"] += content_score(query_tokens, item.get("source", ""))
     results.sort(key=lambda item: (-item["score"], item["kind"] != "confirmed_claim", item["label"].casefold()))
     selected, seen_sources = [], set()
     kind_limits = {"confirmed_claim": 4, "graph_node": 4}
@@ -157,6 +168,8 @@ def retrieve(question: str, limit: int = 8) -> list[dict[str, Any]]:
         if len(selected) >= limit:
             break
     selected.sort(key=lambda item: (-item["score"], item["kind"] != "confirmed_claim"))
+    for item in selected:
+        item["excerpt"] = source_excerpt(item.get("source", ""), item.get("location", ""), query_tokens)
     return selected
 
 

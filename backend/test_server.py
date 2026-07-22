@@ -15,6 +15,16 @@ class RetrievalTests(unittest.TestCase):
     def test_extracts_document_code(self):
         self.assertEqual(server.document_code("Boletim B-OPS-065 - Requisitos"), "B-OPS-065")
 
+    def test_passing_out_expands_to_health_exception_terms(self):
+        expanded = server.tokens("O aluno passou mal e precisa cancelar o slot")
+        self.assertIn("saude", expanded)
+        self.assertIn("comprov", expanded)
+        self.assertIn("cancel", expanded)
+
+    def test_health_cancellation_recovers_no_show_exception(self):
+        evidence = server.retrieve("O aluno passou mal e precisa cancelar o slot. Qual o procedimento?")
+        self.assertIn("Exceção ao NO SHOW", evidence[0]["label"])
+
 
 class LearningGraphTests(unittest.TestCase):
     def test_records_question_evidence_and_pending_candidate(self):
