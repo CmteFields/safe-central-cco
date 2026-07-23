@@ -36,10 +36,21 @@ class RetrievalTests(unittest.TestCase):
         evidence_ids = {item["id"] for item in evidence}
         self.assertIn("claim_rg003_terceira_excecao_90_dias", evidence_ids)
 
-    def test_pc_slots_question_recovers_daily_hours_limit(self):
+    def test_pc_slots_question_recovers_pc_daily_hours_limit(self):
         evidence = server.retrieve("Aluno PC pode fazer mais de três slots solo no mesmo dia?")
         evidence_ids = {item["id"] for item in evidence}
-        self.assertIn("claim_pcifrap001k_limite_diario_instrucao", evidence_ids)
+        self.assertIn("claim_pcap001k_limite_diario_instrucao", evidence_ids)
+        self.assertNotIn("claim_pcifrap001k_limite_diario_instrucao", evidence_ids)
+
+    def test_pp_daily_hours_question_recovers_pp_limit_and_excludes_pcifr(self):
+        evidence = server.retrieve("pp pode fazer mais do que 3 horas por dia de voo?")
+        evidence_ids = [item["id"] for item in evidence]
+        self.assertIn("claim_mip_pp_limite_instrucao_local", evidence_ids)
+        self.assertIn("claim_ppap001k_limite_diario_instrucao", evidence_ids)
+        self.assertNotIn("claim_pcifrap001k_limite_diario_instrucao", evidence_ids)
+
+    def test_short_course_token_does_not_match_inside_another_course(self):
+        self.assertEqual(server.score_text(["pp"], "Curso PCIFR"), 0)
 
     def test_mockup_question_recovers_ground_prerequisite(self):
         evidence = server.retrieve("Quais são os pré-requisitos para o aluno fazer o MOCKUP?")
@@ -55,6 +66,31 @@ class RetrievalTests(unittest.TestCase):
         evidence = server.retrieve("Aluno PCIFR pode realizar o cheque ANAC sob capota?")
         evidence_ids = {item["id"] for item in evidence}
         self.assertIn("claim_mgop_pcifr_cheque_sob_capota_condicionado", evidence_ids)
+
+    def test_inva_daily_hours_recovers_inva_limit_and_excludes_pp(self):
+        evidence = server.retrieve("Aluno INVA pode fazer mais de 3 horas de instrução por dia?")
+        evidence_ids = {item["id"] for item in evidence}
+        self.assertIn("claim_invap001h_limite_diario_instrucao", evidence_ids)
+        self.assertNotIn("claim_ppap001k_limite_diario_instrucao", evidence_ids)
+
+    def test_ifr_aircraft_limit_excludes_pc_course_rules(self):
+        evidence = server.retrieve("No curso IFR, posso usar aeronave não certificada IFR em toda a fase 3B?")
+        evidence_ids = {item["id"] for item in evidence}
+        self.assertIn("claim_ifrap001d_aeronave_nao_ifr_maximo_75", evidence_ids)
+        self.assertNotIn("claim_pcap001k_fase3b_tempo_decolagem_pouso", evidence_ids)
+
+    def test_dgr_recovers_both_actions_from_same_document(self):
+        evidence = server.retrieve("Ao identificar carga perigosa DGR na SAFE, qual é o procedimento?")
+        evidence_ids = {item["id"] for item in evidence}
+        self.assertIn("claim_mgso_dgr_exige_relprev_imediato", evidence_ids)
+        self.assertIn("claim_mgso_dgr_dso_contem_risco", evidence_ids)
+
+    def test_recognizes_all_supported_course_tokens(self):
+        self.assertEqual(server.requested_course("curso PP"), "pp")
+        self.assertEqual(server.requested_course("curso PC"), "pc")
+        self.assertEqual(server.requested_course("curso PCIFR"), "pcifr")
+        self.assertEqual(server.requested_course("curso IFR"), "ifr")
+        self.assertEqual(server.requested_course("curso INVA"), "inva")
 
 
 class LearningGraphTests(unittest.TestCase):
