@@ -42,6 +42,62 @@ def normalize(value: str) -> str:
     return "".join(char for char in decomposed if unicodedata.category(char) != "Mn").casefold()
 
 
+def contains_normalized_token(normalized: str, token: str) -> bool:
+    if len(token) <= 3:
+        return bool(re.search(rf"(?<![a-z0-9]){re.escape(token)}(?![a-z0-9])", normalized))
+    return token in normalized
+
+
+def contains_token(value: str, token: str) -> bool:
+    return contains_normalized_token(normalize(value), token)
+
+
+def requested_course(value: str) -> str:
+    normalized = normalize(value)
+    if re.search(r"\bpcifr\b", normalized) or "piloto comercial e voo por instrumentos" in normalized:
+        return "pcifr"
+    if re.search(r"\binva\b", normalized) or "curso de instrutor de voo" in normalized:
+        return "inva"
+    if re.search(r"\bifr\b", normalized) or "curso de voo por instrumentos" in normalized:
+        return "ifr"
+    if re.search(r"\b(?:pc|pca)\b", normalized) or "piloto comercial" in normalized:
+        return "pc"
+    if re.search(r"\b(?:pp|ppa)\b", normalized) or "piloto privado" in normalized:
+        return "pp"
+    return ""
+
+
+def content_course(label: str, metadata: str = "") -> str:
+    metadata_norm = normalize(metadata)
+    label_norm = normalize(label)
+    if re.search(r"\bpcifrap[0-9a-z]*\b", metadata_norm):
+        return "pcifr"
+    if re.search(r"\binvap[0-9a-z]*\b", metadata_norm):
+        return "inva"
+    if re.search(r"\bifrap[0-9a-z]*\b", metadata_norm):
+        return "ifr"
+    if re.search(r"\bppap[0-9a-z]*\b", metadata_norm):
+        return "pp"
+    if re.search(r"\bpcap[0-9a-z]*\b", metadata_norm):
+        return "pc"
+    if re.search(r"\bpcifr\b", label_norm):
+        return "pcifr"
+    if re.search(r"\binva\b", label_norm):
+        return "inva"
+    if re.search(r"\b(?:pc|pca)\b", label_norm) or "piloto comercial" in label_norm:
+        return "pc"
+    if re.search(r"\b(?:pp|ppa)\b", label_norm) or "piloto privado" in label_norm:
+        return "pp"
+    if re.search(r"\bifr\b", label_norm) or "curso de voo por instrumentos" in label_norm:
+        return "ifr"
+    return ""
+
+
+def course_compatible(course: str, label: str, metadata: str = "") -> bool:
+    identified = content_course(label, metadata)
+    return not course or not identified or course == identified
+
+
 def tokens(value: str) -> list[str]:
     normalized = normalize(value)
     items = [item for item in re.split(r"[^a-z0-9-]+", normalized) if len(item) > 1 and item not in STOPWORDS]
@@ -54,7 +110,10 @@ def tokens(value: str) -> list[str]:
     if any(term in normalized for term in extraordinary_road_events):
         expansions.extend(["evento", "viari", "extraordin", "evidenc", "exce", "no", "show"])
     if "banca" in normalized and any(term in normalized for term in ("ppa", "piloto privado")):
-        expansions.extend(["requisit", "inicio", "curso", "privado"])
+        expansions.extend(["requisit", "inicio", "curso", "privado", "065"])
+    course = requested_course(normalized)
+    if course and any(term in normalized for term in ("slot", "slots", "hora", "horas", "dia", "diaria", "diarias")):
+        expansions.extend([course, "instrucao", "diari", "limite"])
     return list(dict.fromkeys(items + expansions))
 
 
@@ -64,7 +123,11 @@ def load_json(path: Path) -> dict[str, Any]:
 
 def score_text(query_tokens: list[str], label: str, metadata: str = "") -> int:
     label_norm, metadata_norm = normalize(label), normalize(metadata)
-    return sum((5 if token in label_norm else 0) + (1 if token in metadata_norm else 0) for token in query_tokens)
+    return sum(
+        (5 if contains_normalized_token(label_norm, token) else 0)
+        + (1 if contains_normalized_token(metadata_norm, token) else 0)
+        for token in query_tokens
+    )
 
 
 def document_code(label: str) -> str:
@@ -88,7 +151,7 @@ def source_search_text(source_path: str) -> str:
 
 def content_score(query_tokens: list[str], source_path: str) -> int:
     content = source_search_text(source_path)
-    matches = sum(1 for token in query_tokens if token in content)
+    matches = sum(1 for token in query_tokens if contains_normalized_token(content, token))
     coverage_bonus = 8 if query_tokens and matches >= max(2, len(query_tokens) // 2) else 0
     return matches * 4 + coverage_bonus
 
@@ -128,6 +191,11 @@ def source_excerpt(source_path: str, location: str, query_tokens: list[str] | No
 
 def retrieve(question: str, limit: int = 8) -> list[dict[str, Any]]:
     query_tokens = tokens(question)
+    course = requested_course(question)
+    question_norm = normalize(question)
+    daily_limit_intent = bool(course) and any(
+        term in question_norm for term in ("slot", "slots", "hora", "horas", "dia", "diaria", "diarias")
+    )
     claims_data = load_json(CLAIMS_PATH)
     graph_data = load_json(GRAPH_PATH)
     results: list[dict[str, Any]] = []
@@ -136,7 +204,14 @@ def retrieve(question: str, limit: int = 8) -> list[dict[str, Any]]:
         if claim.get("status") not in {"confirmed", "confirmed_temporary_override"}:
             continue
         claim_ids.add(claim["id"])
-        score = score_text(query_tokens, claim.get("label", ""), f"{claim.get('document_code', '')} {claim.get('source_path', '')} {' '.join(claim.get('applies_to', []))}")
+        metadata = f"{claim.get('document_code', '')} {claim.get('source_path', '')} {' '.join(claim.get('applies_to', []))}"
+        if not course_compatible(course, claim.get("label", ""), metadata):
+            continue
+        score = score_text(query_tokens, claim.get("label", ""), metadata)
+        if daily_limit_intent and (
+            "limite_diario_instrucao" in claim["id"] or "limite_instrucao_local" in claim["id"]
+        ):
+            score += 20
         if score:
             results.append({
                 "id": claim["id"], "kind": "confirmed_claim", "label": claim["label"],
@@ -147,7 +222,10 @@ def retrieve(question: str, limit: int = 8) -> list[dict[str, Any]]:
     for node in graph_data.get("nodes", []):
         if node.get("id") in claim_ids or not node.get("source_file"):
             continue
-        score = score_text(query_tokens, node.get("label", ""), f"{node.get('source_file', '')} {node.get('source_location', '')}")
+        metadata = f"{node.get('source_file', '')} {node.get('source_location', '')}"
+        if not course_compatible(course, node.get("label", ""), metadata):
+            continue
+        score = score_text(query_tokens, node.get("label", ""), metadata)
         if score:
             results.append({
                 "id": node["id"], "kind": "graph_node", "label": node.get("label", node["id"]),
@@ -160,14 +238,17 @@ def retrieve(question: str, limit: int = 8) -> list[dict[str, Any]]:
     for item in results:
         item["score"] += content_score(query_tokens, item.get("source", ""))
     results.sort(key=lambda item: (-item["score"], item["kind"] != "confirmed_claim", item["label"].casefold()))
-    selected, seen_sources = [], set()
+    selected, source_counts = [], {}
     kind_limits = {"confirmed_claim": 4, "graph_node": 4}
     kind_counts = {"confirmed_claim": 0, "graph_node": 0}
     for item in results:
         source_key = item.get("source") or item["id"]
-        if source_key in seen_sources or kind_counts[item["kind"]] >= kind_limits[item["kind"]]:
+        per_source_limit = 2 if item["kind"] == "confirmed_claim" else 1
+        if source_counts.get(source_key, 0) >= per_source_limit or kind_counts[item["kind"]] >= kind_limits[item["kind"]]:
             continue
-        selected.append(item); seen_sources.add(source_key); kind_counts[item["kind"]] += 1
+        selected.append(item)
+        source_counts[source_key] = source_counts.get(source_key, 0) + 1
+        kind_counts[item["kind"]] += 1
         if len(selected) >= limit:
             break
     selected.sort(key=lambda item: (-item["score"], item["kind"] != "confirmed_claim"))
@@ -194,6 +275,7 @@ Responda somente com base nas evidências fornecidas. Não invente regras, prazo
 Responda diretamente o que foi perguntado. Você pode fazer inferência aritmética ou sequencial simples quando sustentada pelas evidências, deixando claro que se trata de uma conclusão lógica.
 Se as evidências forem insuficientes ou conflitantes, diga isso claramente e defina confidence como low.
 Prefira regras confirmadas e documentos vigentes. Seja direto e use português do Brasil.
+Uma exceção ao intervalo entre atividades não é uma exceção ao limite máximo diário, a menos que a evidência diga isso expressamente.
 Indique em used_evidence apenas números das evidências realmente usadas.
 candidate_relations são possíveis relações conceituais percebidas na pergunta; elas serão revisadas e nunca são regras oficiais.
 
