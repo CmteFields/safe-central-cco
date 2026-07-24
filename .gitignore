@@ -11,3 +11,15 @@ __pycache__/
 .env.*
 !.env.example
 backend/*.local.json
+data/instructors.db
+data/instructors.db-*
+data/aircraft.db
+data/aircraft.db-*
+data/bases.db
+data/bases.db-*
+data/handovers.db
+data/handovers.db-*
+data/search_history.db
+data/search_history.db-*
+data/auth.db
+data/auth.db-*

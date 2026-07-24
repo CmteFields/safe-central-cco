@@ -5,7 +5,7 @@ if (-not $env:GEMINI_API_KEY) {
 }
 
 if (-not $env:GEMINI_API_KEY) {
-    Write-Error 'GEMINI_API_KEY não está configurada nas variáveis de ambiente do usuário.'
+    Write-Warning 'GEMINI_API_KEY não configurada. Instrutores funcionará normalmente; consultas com IA usarão o índice local.'
 }
 
 $portalRoot = Split-Path -Parent $MyInvocation.MyCommand.Path

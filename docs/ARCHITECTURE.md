@@ -47,6 +47,11 @@ Se a requisição falhar, a interface muda para o estado real `fallback`, inform
 - `graphify-out` é sempre regenerável e não deve ser editado manualmente.
 - `PortalCCO/data` é sempre regenerável e não é fonte oficial.
 - Dados mutáveis de instrutores, manutenção e restrições exigirão repositório operacional próprio ou API; não devem ser simulados como documentos Markdown.
+- O módulo de instrutores usa `data/instructors.db` (SQLite) como repositório operacional local e a API `/api/instructors` para consulta e alterações. O arquivo é criado automaticamente com a carga inicial quando ainda não existe e não integra o índice documental.
+- Instrutores e aeronaves selecionam suas bases a partir do cadastro central `data/bases.db`, exposto por `/api/bases`; códigos de base livres não são aceitos.
+- Passagens entre T1, T2 e T3 são registradas em `data/handovers.db`, com prioridade, situação, autoria e trilha temporal, por meio da API `/api/handovers`.
+- Pesquisas concluídas são armazenadas como snapshots imutáveis em `data/search_history.db`. A API `/api/searches` lista e reabre respostas anteriores sem executar novamente o mecanismo de consulta.
+- A autenticação usa `data/auth.db`, senhas PBKDF2-SHA256, sessões de 12 horas em cookie `HttpOnly`/`SameSite=Strict` e proteção CSRF. Autorizações são aplicadas no backend para Administrador, Supervisor, Operador e Consulta.
 - Respostas conclusivas devem priorizar regras com estado `confirmed`. Documentos relacionados podem auxiliar a busca, mas não devem ser apresentados como regra confirmada.
 - Perguntas e relações inferidas ficam no grafo de aprendizagem. Relações inferidas usam `pending_review` e nunca entram automaticamente no conjunto de regras oficiais.
 
