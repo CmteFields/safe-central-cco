@@ -52,6 +52,7 @@ Se a requisição falhar, a interface muda para o estado real `fallback`, inform
 - Passagens entre T1, T2 e T3 são registradas em `data/handovers.db`, com prioridade, situação, autoria e trilha temporal, por meio da API `/api/handovers`.
 - Pesquisas concluídas são armazenadas como snapshots imutáveis em `data/search_history.db`. A API `/api/searches` lista e reabre respostas anteriores sem executar novamente o mecanismo de consulta.
 - A autenticação usa `data/auth.db`, senhas PBKDF2-SHA256, sessões de 12 horas em cookie `HttpOnly`/`SameSite=Strict` e proteção CSRF. Autorizações são aplicadas no backend para Administrador, Supervisor, Operador e Consulta.
+- Em produção, `SAFE_CCO_DATA_DIR` direciona todos os bancos SQLite ao volume persistente. O Blueprint do Render usa `/var/data`, HTTPS, cookie `Secure` e uma única instância, preservando a consistência do SQLite.
 - Respostas conclusivas devem priorizar regras com estado `confirmed`. Documentos relacionados podem auxiliar a busca, mas não devem ser apresentados como regra confirmada.
 - Perguntas e relações inferidas ficam no grafo de aprendizagem. Relações inferidas usam `pending_review` e nunca entram automaticamente no conjunto de regras oficiais.
 

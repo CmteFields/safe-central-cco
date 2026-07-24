@@ -111,6 +111,13 @@ class LearningGraphTests(unittest.TestCase):
 
 
 class AuthenticationTests(unittest.TestCase):
+    def test_secure_session_cookie_in_production(self):
+        with patch.object(server, "SECURE_COOKIES", True):
+            cookie = server.Handler.session_cookie("token", 60)
+        self.assertIn("HttpOnly", cookie)
+        self.assertIn("SameSite=Strict", cookie)
+        self.assertIn("Secure", cookie)
+
     def test_setup_login_and_session_cookie(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(
             server, "AUTH_DB_PATH", Path(directory) / "auth.db"

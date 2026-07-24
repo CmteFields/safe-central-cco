@@ -28,16 +28,22 @@ DEFAULT_KNOWLEDGE_ROOT = PORTAL_ROOT.parent
 KNOWLEDGE_ROOT = Path(os.environ.get("SAFE_KNOWLEDGE_ROOT", DEFAULT_KNOWLEDGE_ROOT)).resolve()
 CLAIMS_PATH = KNOWLEDGE_ROOT / "Knowledge" / "claims_curated.json"
 GRAPH_PATH = KNOWLEDGE_ROOT / "graphify-out" / "graph.json"
-LEARNING_GRAPH_PATH = KNOWLEDGE_ROOT / "Knowledge" / "query_graph.json"
+DATA_DIR = Path(os.environ.get("SAFE_CCO_DATA_DIR", PORTAL_ROOT / "data")).resolve()
+LEARNING_GRAPH_PATH = Path(
+    os.environ.get("SAFE_LEARNING_GRAPH_PATH", KNOWLEDGE_ROOT / "Knowledge" / "query_graph.json")
+).resolve()
 MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite")
-HOST = os.environ.get("SAFE_CCO_HOST", "127.0.0.1")
-PORT = int(os.environ.get("SAFE_CCO_PORT", "8765"))
-INSTRUCTORS_DB_PATH = Path(os.environ.get("SAFE_INSTRUCTORS_DB_PATH", PORTAL_ROOT / "data" / "instructors.db")).resolve()
-AIRCRAFT_DB_PATH = Path(os.environ.get("SAFE_AIRCRAFT_DB_PATH", PORTAL_ROOT / "data" / "aircraft.db")).resolve()
-BASES_DB_PATH = Path(os.environ.get("SAFE_BASES_DB_PATH", PORTAL_ROOT / "data" / "bases.db")).resolve()
-HANDOVERS_DB_PATH = Path(os.environ.get("SAFE_HANDOVERS_DB_PATH", PORTAL_ROOT / "data" / "handovers.db")).resolve()
-SEARCH_HISTORY_DB_PATH = Path(os.environ.get("SAFE_SEARCH_HISTORY_DB_PATH", PORTAL_ROOT / "data" / "search_history.db")).resolve()
-AUTH_DB_PATH = Path(os.environ.get("SAFE_AUTH_DB_PATH", PORTAL_ROOT / "data" / "auth.db")).resolve()
+HOST = os.environ.get("SAFE_CCO_HOST", "0.0.0.0" if os.environ.get("RENDER") else "127.0.0.1")
+PORT = int(os.environ.get("SAFE_CCO_PORT") or os.environ.get("PORT") or "8765")
+SECURE_COOKIES = os.environ.get("SAFE_CCO_SECURE_COOKIES", "").lower() in {"1", "true", "yes"} or bool(
+    os.environ.get("RENDER")
+)
+INSTRUCTORS_DB_PATH = Path(os.environ.get("SAFE_INSTRUCTORS_DB_PATH", DATA_DIR / "instructors.db")).resolve()
+AIRCRAFT_DB_PATH = Path(os.environ.get("SAFE_AIRCRAFT_DB_PATH", DATA_DIR / "aircraft.db")).resolve()
+BASES_DB_PATH = Path(os.environ.get("SAFE_BASES_DB_PATH", DATA_DIR / "bases.db")).resolve()
+HANDOVERS_DB_PATH = Path(os.environ.get("SAFE_HANDOVERS_DB_PATH", DATA_DIR / "handovers.db")).resolve()
+SEARCH_HISTORY_DB_PATH = Path(os.environ.get("SAFE_SEARCH_HISTORY_DB_PATH", DATA_DIR / "search_history.db")).resolve()
+AUTH_DB_PATH = Path(os.environ.get("SAFE_AUTH_DB_PATH", DATA_DIR / "auth.db")).resolve()
 MAX_QUESTION_LENGTH = 1200
 WRITE_LOCK = threading.Lock()
 INSTRUCTORS_LOCK = threading.Lock()
@@ -1130,6 +1136,11 @@ def answer_question(question: str) -> dict[str, Any]:
 
 
 class Handler(BaseHTTPRequestHandler):
+    @staticmethod
+    def session_cookie(value: str, max_age: int) -> str:
+        secure = "; Secure" if SECURE_COOKIES else ""
+        return f"cco_session={value}; HttpOnly; SameSite=Strict; Path=/; Max-Age={max_age}{secure}"
+
     def send_json(self, status: int, payload: Any, extra_headers: dict[str, str] | None = None) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
@@ -1241,7 +1252,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(201, {"user": user}); return
             if self.path == "/api/auth/login":
                 user, token, csrf = authenticate(str(data.get("username", "")), str(data.get("password", "")))
-                cookie = f"cco_session={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age={SESSION_HOURS * 3600}"
+                cookie = self.session_cookie(token, SESSION_HOURS * 3600)
                 self.send_json(200, {"user": user, "csrf_token": csrf}, {"Set-Cookie": cookie}); return
             context = self.require_auth({"admin", "supervisor", "operator", "viewer"}, require_csrf=True)
             if not context:
@@ -1252,7 +1263,7 @@ class Handler(BaseHTTPRequestHandler):
                 if token_hash:
                     with AUTH_LOCK, auth_connection() as connection:
                         connection.execute("DELETE FROM sessions WHERE token_hash=?", (token_hash,))
-                self.send_json(200, {"ok": True}, {"Set-Cookie": "cco_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"}); return
+                self.send_json(200, {"ok": True}, {"Set-Cookie": self.session_cookie("", 0)}); return
             if self.path == "/api/auth/change-password":
                 change_own_password(user["id"], str(data.get("current_password", "")), str(data.get("new_password", "")))
                 self.send_json(200, {"ok": True}); return
