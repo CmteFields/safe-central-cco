@@ -38,6 +38,10 @@ PORT = int(os.environ.get("SAFE_CCO_PORT") or os.environ.get("PORT") or "8765")
 SECURE_COOKIES = os.environ.get("SAFE_CCO_SECURE_COOKIES", "").lower() in {"1", "true", "yes"} or bool(
     os.environ.get("RENDER")
 )
+SETUP_TOKEN = os.environ.get("SAFE_CCO_SETUP_TOKEN", "").strip()
+REQUIRE_SETUP_TOKEN = os.environ.get("SAFE_CCO_REQUIRE_SETUP_TOKEN", "").lower() in {
+    "1", "true", "yes"
+} or bool(os.environ.get("RENDER"))
 INSTRUCTORS_DB_PATH = Path(os.environ.get("SAFE_INSTRUCTORS_DB_PATH", DATA_DIR / "instructors.db")).resolve()
 AIRCRAFT_DB_PATH = Path(os.environ.get("SAFE_AIRCRAFT_DB_PATH", DATA_DIR / "aircraft.db")).resolve()
 BASES_DB_PATH = Path(os.environ.get("SAFE_BASES_DB_PATH", DATA_DIR / "bases.db")).resolve()
@@ -182,6 +186,16 @@ def auth_setup_required() -> bool:
     initialize_auth_db()
     with auth_connection() as connection:
         return connection.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0
+
+
+def authorize_initial_setup(data: dict[str, Any]) -> None:
+    if not REQUIRE_SETUP_TOKEN:
+        return
+    if not SETUP_TOKEN:
+        raise RuntimeError("Configuração segura incompleta: defina SAFE_CCO_SETUP_TOKEN no servidor.")
+    supplied = str(data.get("setup_token", ""))
+    if not secrets.compare_digest(supplied, SETUP_TOKEN):
+        raise PermissionError("Código de implantação inválido.")
 
 
 def create_user(data: dict[str, Any], force_admin: bool = False) -> dict[str, Any]:
@@ -1181,7 +1195,12 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(200, {"ok": True})
             return
         if self.path == "/api/auth/status":
-            self.send_json(200, {"setup_required": auth_setup_required(), "roles": ROLE_LABELS})
+            setup_required = auth_setup_required()
+            self.send_json(200, {
+                "setup_required": setup_required,
+                "setup_token_required": setup_required and REQUIRE_SETUP_TOKEN,
+                "setup_configured": not REQUIRE_SETUP_TOKEN or bool(SETUP_TOKEN),
+            })
             return
         if self.path == "/api/auth/me":
             context = self.require_auth()
@@ -1248,6 +1267,7 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == "/api/auth/setup":
                 if not auth_setup_required():
                     self.send_json(409, {"error": "O administrador inicial já foi configurado."}); return
+                authorize_initial_setup(data)
                 user = create_user(data, force_admin=True)
                 self.send_json(201, {"user": user}); return
             if self.path == "/api/auth/login":

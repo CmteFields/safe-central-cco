@@ -16,6 +16,10 @@ services:
         value: /var/data/query_graph.json
       - key: SAFE_CCO_SECURE_COOKIES
         value: "true"
+      - key: SAFE_CCO_REQUIRE_SETUP_TOKEN
+        value: "true"
+      - key: SAFE_CCO_SETUP_TOKEN
+        sync: false
     disk:
       name: portalcco-data
       mountPath: /var/data

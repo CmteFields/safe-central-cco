@@ -111,6 +111,19 @@ class LearningGraphTests(unittest.TestCase):
 
 
 class AuthenticationTests(unittest.TestCase):
+    def test_initial_setup_requires_deployment_secret_in_production(self):
+        with patch.object(server, "REQUIRE_SETUP_TOKEN", True), patch.object(
+            server, "SETUP_TOKEN", "codigo-secreto"
+        ):
+            with self.assertRaises(PermissionError):
+                server.authorize_initial_setup({"setup_token": "incorreto"})
+            server.authorize_initial_setup({"setup_token": "codigo-secreto"})
+
+    def test_initial_setup_fails_closed_without_configured_secret(self):
+        with patch.object(server, "REQUIRE_SETUP_TOKEN", True), patch.object(server, "SETUP_TOKEN", ""):
+            with self.assertRaises(RuntimeError):
+                server.authorize_initial_setup({"setup_token": ""})
+
     def test_secure_session_cookie_in_production(self):
         with patch.object(server, "SECURE_COOKIES", True):
             cookie = server.Handler.session_cookie("token", 60)

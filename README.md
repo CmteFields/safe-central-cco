@@ -25,6 +25,9 @@ O arquivo `render.yaml` prepara um Web Service Python no Render com:
 No Render, crie um **Blueprint**, conecte este repositório e confirme o plano
 `starter`. O disco persistente não está disponível no plano gratuito. A chave
 `GEMINI_API_KEY` é opcional e deve ser cadastrada no painel, nunca no Git.
+Durante a criação, informe um valor forte e exclusivo para
+`SAFE_CCO_SETUP_TOKEN`; esse código será exigido somente no cadastro do primeiro
+administrador e ficará armazenado como segredo no Render.
 
 Todos os bancos operacionais são criados automaticamente em `/var/data`. No
 primeiro acesso, o portal solicitará o cadastro do administrador inicial.

@@ -841,15 +841,21 @@ async function updateSystemStatus() {
   }
 }
 
-function showAuthGate(setupRequired) {
+function showAuthGate(setupRequired, setupTokenRequired = false) {
   $("#authGate").classList.remove("hidden");
   $("#authForm").dataset.mode = setupRequired ? "setup" : "login";
   $("#setupNameField").classList.toggle("hidden", !setupRequired);
+  $("#setupTokenField").classList.toggle("hidden", !setupRequired || !setupTokenRequired);
   $("#authEyebrow").textContent = setupRequired ? "CONFIGURAÇÃO INICIAL" : "ACESSO RESTRITO";
   $("#authTitle").textContent = setupRequired ? "Criar Administrador" : "Entrar no PortalCCO";
-  $("#authDescription").textContent = setupRequired ? "Configure a primeira conta responsável pelo controle de acesso." : "Use suas credenciais para acessar a operação.";
+  $("#authDescription").textContent = setupRequired
+    ? (setupTokenRequired
+      ? "Informe o código secreto definido na implantação e crie a primeira conta administrativa."
+      : "Configure a primeira conta responsável pelo controle de acesso.")
+    : "Use suas credenciais para acessar a operação.";
   $("#authSubmit").textContent = setupRequired ? "Criar e entrar" : "Entrar";
   $("#authDisplayName").required = setupRequired;
+  $("#authSetupToken").required = setupRequired && setupTokenRequired;
   $("#authError").classList.add("hidden");
 }
 
@@ -886,7 +892,14 @@ async function initializeAuth() {
   try {
     const statusResponse = await nativeFetch(`${window.location.origin}/api/auth/status`, { cache: "no-store" });
     const status = await statusResponse.json();
-    if (status.setup_required) { showAuthGate(true); return; }
+    if (status.setup_required) {
+      showAuthGate(true, status.setup_token_required);
+      if (!status.setup_configured) {
+        $("#authError").textContent = "O servidor ainda não possui o código secreto de implantação.";
+        $("#authError").classList.remove("hidden");
+      }
+      return;
+    }
     const meResponse = await nativeFetch(`${window.location.origin}/api/auth/me`, { credentials: "same-origin", cache: "no-store" });
     if (!meResponse.ok) { showAuthGate(false); return; }
     const me = await meResponse.json();
@@ -1124,7 +1137,12 @@ $("#authForm").addEventListener("submit", async event => {
     if (event.currentTarget.dataset.mode === "setup") {
       const response = await nativeFetch(`${window.location.origin}/api/auth/setup`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ display_name: $("#authDisplayName").value, username, password }),
+        body: JSON.stringify({
+          display_name: $("#authDisplayName").value,
+          username,
+          password,
+          setup_token: $("#authSetupToken").value,
+        }),
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Não foi possível criar o administrador.");
