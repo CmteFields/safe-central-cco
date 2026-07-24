@@ -110,5 +110,110 @@ class LearningGraphTests(unittest.TestCase):
             self.assertEqual(graph["candidate_relations"][0]["status"], "pending_review")
 
 
+class AuthenticationTests(unittest.TestCase):
+    def test_initial_setup_requires_deployment_secret_in_production(self):
+        with patch.object(server, "REQUIRE_SETUP_TOKEN", True), patch.object(
+            server, "SETUP_TOKEN", "codigo-secreto"
+        ):
+            with self.assertRaises(PermissionError):
+                server.authorize_initial_setup({"setup_token": "incorreto"})
+            server.authorize_initial_setup({"setup_token": "codigo-secreto"})
+
+    def test_initial_setup_fails_closed_without_configured_secret(self):
+        with patch.object(server, "REQUIRE_SETUP_TOKEN", True), patch.object(server, "SETUP_TOKEN", ""):
+            with self.assertRaises(RuntimeError):
+                server.authorize_initial_setup({"setup_token": ""})
+
+    def test_secure_session_cookie_in_production(self):
+        with patch.object(server, "SECURE_COOKIES", True):
+            cookie = server.Handler.session_cookie("token", 60)
+        self.assertIn("HttpOnly", cookie)
+        self.assertIn("SameSite=Strict", cookie)
+        self.assertIn("Secure", cookie)
+
+    def test_setup_login_and_session_cookie(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            server, "AUTH_DB_PATH", Path(directory) / "auth.db"
+        ):
+            self.assertTrue(server.auth_setup_required())
+            admin = server.create_user({
+                "username": "admin.cco", "display_name": "Administrador CCO", "password": "senha",
+            }, force_admin=True)
+            user, token, csrf = server.authenticate("admin.cco", "senha")
+            session, stored_csrf, token_hash = server.session_user(f"cco_session={token}")
+            self.assertEqual(user["id"], admin["id"])
+            self.assertEqual(session["id"], admin["id"])
+            self.assertEqual(csrf, stored_csrf)
+            self.assertTrue(token_hash)
+
+    def test_temporary_password_requires_change(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            server, "AUTH_DB_PATH", Path(directory) / "auth.db"
+        ):
+            server.create_user({
+                "username": "admin", "display_name": "Admin", "password": "admin",
+            }, force_admin=True)
+            operator = server.create_user({
+                "username": "operador", "display_name": "Operador", "password": "temporaria",
+                "role": "operator",
+            })
+            self.assertTrue(operator["must_change_password"])
+            server.change_own_password(operator["id"], "temporaria", "nova")
+            updated = next(item for item in server.list_users() if item["id"] == operator["id"])
+            self.assertFalse(updated["must_change_password"])
+
+    def test_admin_edit_requires_target_password_and_one_time_grant(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            server, "AUTH_DB_PATH", Path(directory) / "auth.db"
+        ):
+            first = server.create_user({
+                "username": "admin1", "display_name": "Admin 1", "password": "senha1",
+            }, force_admin=True)
+            second = server.create_user({
+                "username": "admin2", "display_name": "Admin 2", "password": "senha2", "role": "admin",
+            })
+            with self.assertRaises(PermissionError):
+                server.authorize_admin_edit(second["id"], first["id"], "incorreta")
+            grant = server.authorize_admin_edit(second["id"], first["id"], "senha1")
+            changed = server.update_user(first["id"], {
+                "display_name": "Administrador 1", "role": "admin", "active": True,
+                "admin_edit_token": grant,
+            }, second["id"])
+            self.assertEqual(changed["display_name"], "Administrador 1")
+            with self.assertRaises(PermissionError):
+                server.update_user(first["id"], {
+                    "display_name": "Outro nome", "role": "admin", "active": True,
+                    "admin_edit_token": grant,
+                }, second["id"])
+
+    def test_last_active_admin_cannot_be_removed(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            server, "AUTH_DB_PATH", Path(directory) / "auth.db"
+        ):
+            admin = server.create_user({
+                "username": "admin", "display_name": "Admin", "password": "senha",
+            }, force_admin=True)
+            grant = server.authorize_admin_edit(admin["id"], admin["id"], "senha")
+            with self.assertRaises(ValueError):
+                server.update_user(admin["id"], {
+                    "display_name": "Admin", "role": "viewer", "active": True,
+                    "admin_edit_token": grant,
+                }, admin["id"])
+
+
+class OperationalStorageTests(unittest.TestCase):
+    def test_search_history_reopens_saved_presentation(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            server, "SEARCH_HISTORY_DB_PATH", Path(directory) / "history.db"
+        ):
+            record_id = server.save_search_history(
+                "Pergunta", "local", "low",
+                presentation={"question": "Pergunta", "answer": "Resposta salva"},
+            )
+            detail = server.get_search_history(record_id)
+            self.assertEqual(detail["presentation"]["answer"], "Resposta salva")
+            self.assertEqual(server.list_search_history()[0]["id"], record_id)
+
+
 if __name__ == "__main__":
     unittest.main()

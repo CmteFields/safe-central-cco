@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: safe-central-cco
+    runtime: python
+    plan: starter
+    buildCommand: python -m py_compile backend/server.py
+    startCommand: python backend/server.py
+    healthCheckPath: /api/health
+    autoDeployTrigger: commit
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.13.5
+      - key: SAFE_CCO_DATA_DIR
+        value: /var/data
+      - key: SAFE_LEARNING_GRAPH_PATH
+        value: /var/data/query_graph.json
+      - key: SAFE_CCO_SECURE_COOKIES
+        value: "true"
+      - key: SAFE_CCO_REQUIRE_SETUP_TOKEN
+        value: "true"
+      - key: SAFE_CCO_SETUP_TOKEN
+        sync: false
+    disk:
+      name: portalcco-data
+      mountPath: /var/data
+      sizeGB: 1

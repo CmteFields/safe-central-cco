@@ -5,45 +5,66 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="description" content="Central operacional de conhecimento do CCO SAFE.">
   <title>SAFE Hub — Central CCO</title>
+  <link rel="icon" type="image/png" href="assets/images/logo.png">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="styles.css?v=20260724-7">
+  <link rel="stylesheet" href="instrutores.css?v=20260724-12">
+  <link rel="stylesheet" href="topbar.css?v=20260724-13">
+  <link rel="stylesheet" href="auth.css?v=20260724-16">
 </head>
 <body>
+  <div class="auth-gate" id="authGate">
+    <div class="auth-card">
+      <img src="assets/images/logo.png" alt="SAFE">
+      <p class="eyebrow" id="authEyebrow">ACESSO RESTRITO</p>
+      <h1 id="authTitle">Entrar no PortalCCO</h1>
+      <p id="authDescription">Use suas credenciais para acessar a operação.</p>
+      <form id="authForm">
+        <label class="auth-setup-field hidden" id="setupNameField">Nome completo<input id="authDisplayName" maxlength="100" autocomplete="name"></label>
+        <label class="auth-setup-field hidden" id="setupTokenField">Código de implantação<input id="authSetupToken" type="password" maxlength="200" autocomplete="one-time-code"></label>
+        <label>Usuário<input id="authUsername" maxlength="40" autocomplete="username" required></label>
+        <label>Senha<input id="authPassword" type="password" autocomplete="current-password" required></label>
+        <div class="auth-error hidden" id="authError"></div>
+        <button type="submit" id="authSubmit">Entrar</button>
+      </form>
+    </div>
+  </div>
   <div class="app-shell">
     <aside class="sidebar" id="sidebar">
       <div class="brand">
-        <div class="brand-mark" aria-hidden="true"><span>S</span></div>
+        <img class="brand-logo" src="assets/images/logo.png" alt="SAFE">
         <div><strong>SAFE</strong><small>Centro de Operações</small></div>
       </div>
 
       <nav class="main-nav" aria-label="Navegação principal">
-        <p class="nav-label">CENTRAL</p>
-        <button class="nav-item active" data-view="inicio"><span class="nav-icon">⌂</span>Visão geral</button>
-        <button class="nav-item" data-view="consulta"><span class="nav-icon">⌕</span>Consultar base</button>
         <p class="nav-label">OPERAÇÃO</p>
-        <button class="nav-item" data-view="regras"><span class="nav-icon">✓</span>Regras e procedimentos<span class="nav-count">128</span></button>
-        <button class="nav-item" data-view="instrutores"><span class="nav-icon">♙</span>Instrutores<span class="status-dot soon"></span></button>
-        <button class="nav-item" data-view="aeronaves"><span class="nav-icon">✈</span>Aeronaves<span class="status-dot soon"></span></button>
-        <button class="nav-item" data-view="manutencao"><span class="nav-icon">◇</span>Manutenção<span class="status-dot soon"></span></button>
-        <button class="nav-item" data-view="restricoes"><span class="nav-icon">!</span>Restrições operacionais<span class="status-dot soon"></span></button>
+        <button class="nav-item active" data-view="regras"><span class="nav-icon">✓</span>Regras e procedimentos<span class="nav-count">128</span></button>
+        <button class="nav-item" data-view="passagem"><span class="nav-icon">⇄</span>Passagem de turno<span class="handover-nav-count" id="handoverNavCount">0</span></button>
+        <button class="nav-item" data-view="instrutores"><span class="nav-icon">♙</span>Instrutores</button>
+        <button class="nav-item" data-view="aeronaves"><span class="nav-icon">✈</span>Aeronaves</button>
+        <button class="nav-item hidden" data-view="usuarios" id="usersNavItem"><span class="nav-icon">♙</span>Usuários e permissões</button>
       </nav>
 
       <div class="sidebar-footer">
-        <div class="sync-card"><span class="pulse"></span><div><strong>Base sincronizada</strong><small>Hoje, 15:03</small></div></div>
-        <button class="operator"><span class="avatar">OP</span><span><strong>Operador CCO</strong><small>Turno operacional</small></span><b>⋮</b></button>
+        <button class="shift-status-card" id="shiftStatusCard" type="button" aria-label="Abrir passagem de turno">
+          <span class="shift-status-icon" id="shiftStatusIcon">T1</span>
+          <span class="shift-status-copy"><strong id="shiftStatusTitle">Verificando turno…</strong><small id="shiftStatusDetail">Calculando o estágio operacional</small><em id="shiftStatusTime">--:--</em></span>
+          <span class="shift-status-arrow">→</span>
+        </button>
+        <button class="operator" id="accountButton"><span class="avatar" id="operatorAvatar">OP</span><span><strong id="operatorName">Operador CCO</strong><small id="operatorRole">Turno operacional</small></span><b>⋮</b></button>
       </div>
     </aside>
 
     <main class="main-content">
       <header class="topbar">
         <button class="menu-button" id="menuButton" aria-label="Abrir menu">☰</button>
-        <div class="breadcrumb"><span>Central CCO</span><b>/</b><strong id="pageName">Visão geral</strong></div>
+        <div class="breadcrumb"><span>Central CCO</span><b>/</b><strong id="pageName">Regras e procedimentos</strong></div>
         <div class="top-actions">
-          <div class="operational"><span></span>Operação normal</div>
-          <button class="icon-button" aria-label="Notificações">♢<i>3</i></button>
-          <button class="help-button">? <span>Ajuda</span></button>
+          <div class="system-status" id="systemStatus" role="status"><span></span><div><small>SISTEMA</small><strong id="systemStatusText">Verificando…</strong></div></div>
+          <button class="notification-button" id="notificationButton" aria-label="Abrir pendências da passagem de turno"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></svg><i id="notificationCount" class="hidden">0</i></button>
+          <button class="help-button" id="helpButton"><b>?</b><span>Ajuda</span></button>
         </div>
       </header>
 
@@ -79,37 +100,37 @@
           <div class="search-results hidden" id="searchResults" role="listbox" aria-label="Sugestões da base de conhecimento"></div>
           <div class="suggestions" id="suggestions">
             <span>Perguntas frequentes:</span>
-            <button data-question="Quantos voos o aluno pode fazer sem a banca da ANAC para PPA?">Banca ANAC para PPA</button>
-            <button data-question="O aluno pode voar cinco slots seguidos?">Limite de slots</button>
-            <button data-question="Como funciona a experiência recente noturna?">Experiência recente</button>
+            <button data-faq="0">Banca ANAC para PPA</button>
+            <button data-faq="1">Limite de slots</button>
+            <button data-faq="2">Experiência recente</button>
           </div>
         </section>
 
-        <div class="section-heading"><div><h2>Acesso rápido</h2><p>Informações essenciais para a rotina do CCO.</p></div><button class="text-button" id="customizeButton">Personalizar atalhos <span>→</span></button></div>
-        <div class="module-grid">
-          <article class="module-card ready" data-target="regras"><div class="module-icon rules">✓</div><span class="tag live">DISPONÍVEL</span><h3>Regras e procedimentos</h3><p>Diretrizes operacionais, AVOPs, manuais e programas de instrução.</p><div class="module-meta"><span><b id="ruleCount">—</b> regras confirmadas</span><span id="indexStatus">Carregando índice</span></div><button>Acessar base <span>→</span></button></article>
-          <article class="module-card" data-target="instrutores"><div class="module-icon instructors">♙</div><span class="tag planned">EM PREPARAÇÃO</span><h3>Instrutores</h3><p>Habilitações, disponibilidade, restrições e qualificações da equipe.</p><div class="module-meta"><span>Integração planejada</span></div><button>Ver planejamento <span>→</span></button></article>
-          <article class="module-card" data-target="aeronaves"><div class="module-icon aircraft">✈</div><span class="tag planned">EM PREPARAÇÃO</span><h3>Aeronaves e manutenção</h3><p>Status da frota, limitações, vencimentos e indisponibilidades.</p><div class="module-meta"><span>Integração planejada</span></div><button>Ver planejamento <span>→</span></button></article>
-          <article class="module-card" data-target="restricoes"><div class="module-icon restrictions">!</div><span class="tag planned">EM PREPARAÇÃO</span><h3>Restrições operacionais</h3><p>Restrições temporárias por base, aeronave, instrutor ou aluno.</p><div class="module-meta"><span>Integração planejada</span></div><button>Ver planejamento <span>→</span></button></article>
-        </div>
-
-        <div class="lower-grid">
-          <section class="panel recent-panel"><div class="panel-head"><div><h2>Consultas recentes</h2><p>Seu histórico neste dispositivo</p></div><button class="dots">•••</button></div><div id="recentList"></div></section>
-          <section class="panel attention-panel"><div class="panel-head"><div><h2>Atenção operacional</h2><p>Itens que merecem acompanhamento</p></div><span class="attention-count">3 itens</span></div>
-            <div class="attention-item high"><span class="attention-icon">!</span><div><strong>Conteúdo em implantação</strong><p>Confirme informações críticas na fonte enquanto os módulos são integrados.</p></div><b>Alta</b></div>
-            <div class="attention-item medium"><span class="attention-icon">↻</span><div><strong>Documentos pendentes</strong><p>Novos documentos oficiais ainda serão adicionados à central.</p></div><b>Média</b></div>
-            <div class="attention-item low"><span class="attention-icon">i</span><div><strong>Última atualização do grafo</strong><p>Base de conhecimento validada em 21/07/2026.</p></div><b>Info</b></div>
+        <div class="rules-dashboard">
+          <section class="panel dashboard-recent">
+            <div class="panel-head"><div><h2>Últimas pesquisas</h2><p>Histórico recente neste dispositivo</p></div><span class="dashboard-icon">⌕</span></div>
+            <div id="recentList"></div>
+          </section>
+          <section class="panel dashboard-restrictions">
+            <div class="panel-head"><div><h2>Aeronaves com restrição</h2><p>Aeronaves fora de operação ou em manutenção</p></div><button class="text-button" id="openAircraftDashboard">Ver frota →</button></div>
+            <div id="restrictedAircraftList"><div class="dashboard-loading">Carregando aeronaves…</div></div>
+          </section>
+          <section class="panel dashboard-instructors">
+            <div class="panel-head"><div><h2>Instrutores</h2><p>Visão inicial da equipe por base e grupo</p></div><button class="text-button" id="openInstructorsDashboard">Ver equipe →</button></div>
+            <div id="instructorSnapshot"><div class="dashboard-loading">Carregando instrutores…</div></div>
+            <div class="dashboard-development"><span>i</span>Este painel será detalhado na próxima etapa do módulo Instrutores.</div>
           </section>
         </div>
       </section>
 
       <section class="page hidden" id="answerView">
-        <button class="back-button" id="backButton">← Voltar à visão geral</button>
+        <button class="back-button" id="backButton">← Voltar para Regras e procedimentos</button>
         <div class="answer-layout">
           <article class="answer-card">
             <p class="eyebrow">RESPOSTA DA BASE DE CONHECIMENTO</p>
             <h1 id="answerQuestion"></h1>
             <div class="confidence"><span>✓</span><div><strong>Resposta confirmada</strong><small>Baseada em documento vigente</small></div></div>
+            <div class="archived-answer-notice hidden" id="archivedAnswerNotice"><span>↺</span><div><strong id="archivedAnswerTitle">Pesquisa armazenada</strong><small id="archivedAnswerDate"></small></div><button id="repeatArchivedSearch">Pesquisar novamente</button></div>
             <div class="answer-body" id="answerBody"></div>
             <div class="source-box"><span>▤</span><div><small>FONTE PRINCIPAL</small><strong id="sourceTitle"></strong><p id="sourceDetail"></p></div><button id="sourceButton">Ver fonte</button></div>
             <div class="answer-footer"><span>Esta resposta foi útil?</span><button>♡ Sim</button><button>△ Não</button><small>Consulte sempre a documentação oficial em decisões críticas.</small></div>
@@ -118,15 +139,172 @@
         </div>
       </section>
 
+      <section class="page hidden" id="instructorsView">
+        <div class="instructors-head">
+          <div>
+            <p class="eyebrow">OPERAÇÃO · EQUIPE</p>
+            <h1>Instrutores</h1>
+            <p>Consulte bases, grupos e liberações vigentes da equipe.</p>
+          </div>
+          <button class="primary-button" id="addInstructor">+ Novo instrutor</button>
+        </div>
+        <div class="instructor-toolbar">
+          <label class="table-search"><span>⌕</span><input id="instructorSearch" type="search" placeholder="Buscar instrutor ou liberação…"></label>
+          <select id="baseFilter" aria-label="Filtrar por base"><option value="">Todas as bases</option></select>
+          <select id="groupFilter" aria-label="Filtrar por grupo"><option value="">Todos os grupos</option></select>
+          <span class="instructor-total" id="instructorTotal">Carregando…</span>
+        </div>
+        <div class="instructor-table-wrap">
+          <table class="instructor-table">
+            <thead><tr><th>Instrutor</th><th>Base</th><th>Grupo</th><th>Liberações</th><th>Última atualização</th><th><span class="sr-only">Ações</span></th></tr></thead>
+            <tbody id="instructorRows"><tr><td colspan="6" class="table-message">Carregando banco de instrutores…</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="page hidden" id="aircraftView">
+        <div class="instructors-head">
+          <div><p class="eyebrow">OPERAÇÃO · FROTA</p><h1>Aeronaves</h1><p>Consulte a situação operacional, autorizações e restrições da frota.</p></div>
+          <button class="primary-button" id="addAircraft">+ Nova aeronave</button>
+        </div>
+        <div class="instructor-toolbar">
+          <label class="table-search"><span>⌕</span><input id="aircraftSearch" type="search" placeholder="Buscar modelo, matrícula ou restrição…"></label>
+          <select id="aircraftBaseFilter" aria-label="Filtrar aeronaves por base"><option value="">Todas as bases</option></select>
+          <select id="aircraftStatusFilter" aria-label="Filtrar por status"><option value="">Todos os status</option></select>
+          <span class="instructor-total" id="aircraftTotal">Carregando…</span>
+        </div>
+        <div class="instructor-table-wrap">
+          <table class="instructor-table aircraft-table">
+            <thead><tr><th>Aeronave</th><th>Matrícula</th><th class="priority-column">Base</th><th class="priority-column">Situação operacional</th><th>Tipo de operação</th><th>Restrições</th><th>Última atualização</th><th><span class="sr-only">Ações</span></th></tr></thead>
+            <tbody id="aircraftRows"><tr><td colspan="8" class="table-message">Carregando banco de aeronaves…</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="page hidden" id="handoverView">
+        <div class="instructors-head">
+          <div><p class="eyebrow">OPERAÇÃO · CONTINUIDADE</p><h1>Passagem de turno</h1><p>Registre pendências e acompanhe o que precisa ser executado pelo próximo turno.</p></div>
+          <button class="primary-button" id="addHandover">+ Nova passagem</button>
+        </div>
+        <div class="shift-strip" aria-label="Horários dos turnos">
+          <div><span>T1</span><strong>08:00–14:00</strong></div>
+          <div><span>T2</span><strong>12:00–18:00</strong></div>
+          <div><span>T3</span><strong>18:00–20:00</strong></div>
+        </div>
+        <div class="handover-summary">
+          <div><small>PENDENTES</small><strong id="handoverPendingCount">0</strong></div>
+          <div><small>EM ANDAMENTO</small><strong id="handoverProgressCount">0</strong></div>
+          <div><small>CONCLUÍDAS</small><strong id="handoverDoneCount">0</strong></div>
+          <label>Destino<select id="handoverShiftFilter"><option value="">Todos os turnos</option><option value="T1">T1</option><option value="T2">T2</option><option value="T3">T3</option></select></label>
+        </div>
+        <div class="handover-board" id="handoverBoard"><div class="table-message">Carregando passagens de turno…</div></div>
+      </section>
+
+      <section class="page hidden" id="usersView">
+        <div class="instructors-head">
+          <div><p class="eyebrow">ADMINISTRAÇÃO · ACESSO</p><h1>Usuários e permissões</h1><p>Gerencie quem pode consultar e alterar dados operacionais.</p></div>
+          <button class="primary-button" id="addUser">+ Novo usuário</button>
+        </div>
+        <div class="instructor-table-wrap">
+          <table class="instructor-table users-table">
+            <thead><tr><th>Nome</th><th>Usuário</th><th>Perfil</th><th>Situação</th><th><span class="sr-only">Ações</span></th></tr></thead>
+            <tbody id="userRows"><tr><td colspan="5" class="table-message">Carregando usuários…</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+
       <section class="page hidden" id="moduleView">
-        <button class="back-button" id="moduleBack">← Voltar à visão geral</button>
+        <button class="back-button" id="moduleBack">← Voltar para Regras e procedimentos</button>
         <div class="empty-state"><div class="empty-icon" id="moduleIcon">◇</div><p class="eyebrow">MÓDULO DA CENTRAL</p><h1 id="moduleTitle">Em preparação</h1><p id="moduleDescription"></p><div class="roadmap"><div class="done"><span>✓</span><p><strong>Estrutura definida</strong><small>Modelo de dados e interface</small></p></div><div><span>2</span><p><strong>Importação dos dados</strong><small>Próxima etapa</small></p></div><div><span>3</span><p><strong>Validação operacional</strong><small>Revisão com o CCO</small></p></div></div><button class="primary-button" id="returnHome">Voltar ao início</button></div>
       </section>
     </main>
   </div>
+  <dialog class="instructor-dialog" id="instructorDialog">
+    <form method="dialog" id="instructorForm">
+      <div class="dialog-head"><div><p class="eyebrow">BANCO DE INSTRUTORES</p><h2 id="instructorDialogTitle">Novo instrutor</h2></div><button class="dialog-close" value="cancel" aria-label="Fechar">×</button></div>
+      <input type="hidden" id="instructorId">
+      <div class="form-grid">
+        <label class="wide">Instrutor<input id="instructorName" maxlength="120" required autocomplete="off"></label>
+        <label>Base<select id="instructorBase" required><option value="">Selecione a base</option></select></label>
+        <label>Grupo<input id="instructorGroup" maxlength="50" required list="groupOptions" autocomplete="off"></label>
+      </div>
+      <datalist id="groupOptions"><option value="INVA"><option value="INVA Solo"></datalist>
+      <fieldset class="release-fieldset"><legend>Liberações</legend><div class="release-options" id="releaseOptions"></div></fieldset>
+      <div class="dialog-actions"><button type="button" class="danger-button hidden" id="deleteInstructor">Excluir</button><span></span><button value="cancel" class="secondary-button">Cancelar</button><button type="submit" class="primary-button" id="saveInstructor">Salvar alterações</button></div>
+    </form>
+  </dialog>
+  <dialog class="instructor-dialog aircraft-dialog" id="aircraftDialog">
+    <form method="dialog" id="aircraftForm">
+      <div class="dialog-head"><div><p class="eyebrow">BANCO DE AERONAVES</p><h2 id="aircraftDialogTitle">Nova aeronave</h2></div><button class="dialog-close" value="cancel" aria-label="Fechar">×</button></div>
+      <input type="hidden" id="aircraftId">
+      <div class="form-grid">
+        <label>Aeronave / modelo<input id="aircraftModel" maxlength="120" required></label>
+        <label>Matrícula<input id="aircraftRegistration" maxlength="20" required placeholder="PS-XXX"></label>
+        <label>Base<select id="aircraftBase" required><option value="Não informada">Não informada</option></select></label>
+        <label>Situação operacional<select id="aircraftStatus" required><option value="Operacional">Operacional</option><option value="Fora de Operação">Fora de Operação</option><option value="Em Manutenção">Em Manutenção</option></select></label>
+        <label class="wide">Tipo de operação<input id="aircraftOperation" maxlength="200" required></label>
+        <label class="wide">Restrições ativas<textarea id="aircraftActiveRestrictions" maxlength="500" rows="2"></textarea></label>
+        <label class="wide">Restrições temporárias<textarea id="aircraftTemporaryRestrictions" maxlength="500" rows="2"></textarea></label>
+        <label>Data da restrição temporária<input id="aircraftRestrictionDate" type="date"></label>
+      </div>
+      <div class="dialog-actions"><button type="button" class="danger-button hidden" id="deleteAircraft">Excluir</button><span></span><button value="cancel" class="secondary-button">Cancelar</button><button type="submit" class="primary-button" id="saveAircraft">Salvar alterações</button></div>
+    </form>
+  </dialog>
+  <dialog class="instructor-dialog handover-dialog" id="handoverDialog">
+    <form method="dialog" id="handoverForm">
+      <div class="dialog-head"><div><p class="eyebrow">CONTINUIDADE OPERACIONAL</p><h2 id="handoverDialogTitle">Nova passagem de turno</h2></div><button class="dialog-close" value="cancel" aria-label="Fechar">×</button></div>
+      <input type="hidden" id="handoverId">
+      <div class="form-grid">
+        <label>Turno de origem<select id="handoverOrigin" required><option value="T1">T1 · 08:00–14:00</option><option value="T2">T2 · 12:00–18:00</option><option value="T3">T3 · 18:00–20:00</option></select></label>
+        <label>Turno de destino<select id="handoverTarget" required><option value="T2">T2 · 12:00–18:00</option><option value="T3">T3 · 18:00–20:00</option><option value="T1">T1 · próximo dia</option></select></label>
+        <label>Prioridade<select id="handoverPriority" required><option>Normal</option><option>Alta</option><option>Crítica</option><option>Baixa</option></select></label>
+        <label>Situação<select id="handoverStatus" required><option>Pendente</option><option>Em andamento</option><option>Concluída</option></select></label>
+        <label class="wide">Operador que está passando<input id="handoverAuthor" maxlength="100" required placeholder="Nome do operador"></label>
+        <label class="wide">Mensagem / ação necessária<textarea id="handoverMessage" maxlength="2000" rows="5" required placeholder="Descreva objetivamente o que o próximo turno precisa verificar ou executar."></textarea></label>
+      </div>
+      <div class="dialog-actions"><button type="button" class="danger-button hidden" id="deleteHandover">Excluir</button><span></span><button value="cancel" class="secondary-button">Cancelar</button><button type="submit" class="primary-button" id="saveHandover">Salvar passagem</button></div>
+    </form>
+  </dialog>
+  <dialog class="help-dialog" id="helpDialog">
+    <div class="dialog-head"><div><p class="eyebrow">SUPORTE AO OPERADOR</p><h2>Como podemos ajudar?</h2></div><button class="dialog-close" id="closeHelp" aria-label="Fechar">×</button></div>
+    <div class="help-grid">
+      <button data-help-target="regras"><span>⌕</span><div><strong>Pesquisar regras</strong><small>Consulte procedimentos e respostas armazenadas.</small></div></button>
+      <button data-help-target="passagem"><span>⇄</span><div><strong>Passagem de turno</strong><small>Registre, assuma ou conclua pendências.</small></div></button>
+      <button data-help-target="aeronaves"><span>✈</span><div><strong>Consultar aeronaves</strong><small>Verifique situação e restrições da frota.</small></div></button>
+      <button data-help-target="instrutores"><span>♙</span><div><strong>Consultar instrutores</strong><small>Confira bases, grupos e liberações.</small></div></button>
+    </div>
+    <div class="help-note"><span>i</span><p>Em decisões críticas, confirme a informação na fonte oficial indicada pelo portal.</p></div>
+  </dialog>
+  <dialog class="instructor-dialog" id="userDialog">
+    <form method="dialog" id="userForm">
+      <div class="dialog-head"><div><p class="eyebrow">CONTROLE DE ACESSO</p><h2 id="userDialogTitle">Novo usuário</h2></div><button class="dialog-close" value="cancel" aria-label="Fechar">×</button></div>
+      <input type="hidden" id="userId">
+      <input type="hidden" id="userEditToken">
+      <div class="form-grid">
+        <label class="wide">Nome completo<input id="userDisplayName" maxlength="100" required></label>
+        <label id="usernameField">Usuário<input id="userUsername" maxlength="40" required></label>
+        <label>Perfil<select id="userRole" required><option value="admin">Administrador</option><option value="supervisor">Supervisor</option><option value="operator">Operador</option><option value="viewer">Consulta</option></select></label>
+        <label class="wide" id="newUserPasswordField">Senha temporária<input id="userPassword" type="password" autocomplete="new-password"></label>
+        <label class="user-active-field hidden" id="userActiveField"><input id="userActive" type="checkbox" checked> Usuário ativo</label>
+      </div>
+      <div class="dialog-error hidden" id="userFormError" role="alert"></div>
+      <div class="dialog-actions"><button type="button" class="secondary-button hidden" id="resetUserPassword">Redefinir senha</button><span></span><button value="cancel" class="secondary-button">Cancelar</button><button type="submit" class="primary-button" id="saveUser">Salvar usuário</button></div>
+    </form>
+  </dialog>
+  <dialog class="instructor-dialog account-dialog" id="accountDialog">
+    <div class="dialog-head"><div><p class="eyebrow">MINHA CONTA</p><h2 id="accountDialogName">Conta do operador</h2></div><button class="dialog-close" id="closeAccount" aria-label="Fechar">×</button></div>
+    <p class="account-role" id="accountDialogRole"></p>
+    <form id="changePasswordForm">
+      <div class="form-grid">
+        <label class="wide">Senha atual<input id="currentPassword" type="password" autocomplete="current-password" required></label>
+        <label class="wide">Nova senha<input id="newPassword" type="password" autocomplete="new-password" required></label>
+      </div>
+      <div class="dialog-actions"><button type="button" class="danger-button" id="logoutButton">Sair do portal</button><span></span><button type="submit" class="primary-button">Alterar senha</button></div>
+    </form>
+  </dialog>
   <div class="toast" id="toast" role="status"></div>
   <script src="data/public-knowledge-index.js"></script>
   <script src="data/knowledge-index.js"></script>
-  <script src="app.js"></script>
+  <script src="app.js?v=20260724-19"></script>
 </body>
 </html>
