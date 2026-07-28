@@ -14,6 +14,49 @@ O navegador abrirá `http://127.0.0.1:8765/`. Mantenha a janela do servidor aber
 
 ## Publicar a aplicação completa
 
+### PythonAnywhere (sem cartão)
+
+O portal também pode ser publicado em uma conta gratuita do PythonAnywhere. A
+entrada WSGI está em `backend/wsgi.py` e a configuração pronta para a conta
+`CCOFields` está em `pythonanywhere_wsgi.py.example`.
+
+1. Em um console Bash do PythonAnywhere, clone o repositório e crie a pasta
+   persistente:
+
+   ```bash
+   git clone https://github.com/CmteFields/safe-central-cco.git
+   mkdir -p /home/CCOFields/portalcco-data
+   ```
+
+2. Pela aba **Files**, crie o arquivo privado
+   `/home/CCOFields/.portalcco-secrets.json`:
+
+   ```json
+   {
+     "SAFE_CCO_SETUP_TOKEN": "substitua-por-um-codigo-forte-e-exclusivo",
+     "GEMINI_API_KEY": ""
+   }
+   ```
+
+   O primeiro valor será solicitado apenas no cadastro do administrador
+   inicial. A chave Gemini é opcional. Esse arquivo fica fora do repositório e
+   não deve ser enviado ao GitHub.
+
+3. Na aba **Web**, escolha **Add a new web app**, selecione **Manual
+   configuration** e a versão de Python disponível mais recente.
+
+4. Abra o arquivo de configuração WSGI indicado na aba **Web** e substitua seu
+   conteúdo pelo conteúdo de `pythonanywhere_wsgi.py.example`.
+
+5. Pressione **Reload**. O portal ficará disponível em
+   `https://ccofields.pythonanywhere.com`.
+
+Os bancos de usuários, instrutores, aeronaves, bases, passagens e pesquisas
+ficam em `/home/CCOFields/portalcco-data`, fora do GitHub e preservados entre
+recargas da aplicação.
+
+### Render
+
 O arquivo `render.yaml` prepara um Web Service Python no Render com:
 
 - publicação automática a partir da branch conectada no GitHub;

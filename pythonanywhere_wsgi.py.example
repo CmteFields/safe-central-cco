@@ -1,0 +1,25 @@
+"""Configuração WSGI do Portal CCO para a conta PythonAnywhere CCOFields."""
+
+import json
+import os
+import sys
+from pathlib import Path
+
+
+PROJECT_ROOT = Path("/home/CCOFields/safe-central-cco")
+SECRETS_PATH = Path("/home/CCOFields/.portalcco-secrets.json")
+DATA_ROOT = Path("/home/CCOFields/portalcco-data")
+
+sys.path.insert(0, str(PROJECT_ROOT))
+
+secrets = json.loads(SECRETS_PATH.read_text(encoding="utf-8"))
+os.environ["SAFE_CCO_DATA_DIR"] = str(DATA_ROOT)
+os.environ["SAFE_LEARNING_GRAPH_PATH"] = str(DATA_ROOT / "query_graph.json")
+os.environ["SAFE_CCO_SECURE_COOKIES"] = "true"
+os.environ["SAFE_CCO_REQUIRE_SETUP_TOKEN"] = "true"
+os.environ["SAFE_CCO_SETUP_TOKEN"] = secrets["SAFE_CCO_SETUP_TOKEN"]
+
+if secrets.get("GEMINI_API_KEY"):
+    os.environ["GEMINI_API_KEY"] = secrets["GEMINI_API_KEY"]
+
+from backend.wsgi import application  # noqa: E402,F401
