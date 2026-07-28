@@ -51,7 +51,7 @@ entrada WSGI está em `backend/wsgi.py` e a configuração pronta para a conta
 5. Pressione **Reload**. O portal ficará disponível em
    `https://ccofields.pythonanywhere.com`.
 
-Os bancos de usuários, instrutores, aeronaves, bases, passagens e pesquisas
+Os bancos de usuários, instrutores, aeronaves, bases, passagens, reports e pesquisas
 ficam em `/home/CCOFields/portalcco-data`, fora do GitHub e preservados entre
 recargas da aplicação.
 

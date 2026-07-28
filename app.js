@@ -58,6 +58,7 @@ const moduleView = $("#moduleView");
 const instructorsView = $("#instructorsView");
 const aircraftView = $("#aircraftView");
 const handoverView = $("#handoverView");
+const reportsView = $("#reportsView");
 const usersView = $("#usersView");
 const input = $("#searchInput");
 const searchBox = $("#searchForm");
@@ -85,6 +86,8 @@ let operationalBases = [];
 let basesPromise = null;
 let handovers = [];
 let handoversLoaded = false;
+let reports = [];
+let reportsLoaded = false;
 let users = [];
 let usersLoaded = false;
 const instructorReleases = ["Liberado MC01", "Liberado C150", "Liberado P-Mentor VFR/IFR SIC", "Liberado IFR Avião", "Liberado IFR AATD", "Liberado IFR PCATD (Laboratório)", "Liberado COLT", "Instrutor Eventual"];
@@ -111,7 +114,7 @@ function renderBaseSelect(select, includeUnassigned, selected = "") {
 }
 
 function showView(view, name) {
-  [homeView, answerView, moduleView, instructorsView, aircraftView, handoverView, usersView].forEach(item => item.classList.add("hidden"));
+  [homeView, answerView, moduleView, instructorsView, aircraftView, handoverView, reportsView, usersView].forEach(item => item.classList.add("hidden"));
   view.classList.remove("hidden");
   $("#pageName").textContent = name;
   window.scrollTo({ top: 0, behavior: "smooth" });
@@ -812,6 +815,161 @@ async function removeHandover() {
   finally { button.disabled = false; }
 }
 
+async function reportRequest(path = "", options = {}) {
+  const response = await apiFetch(`${window.location.origin}/api/reports${path}`, {
+    ...options,
+    headers: options.body ? { "Content-Type": "application/json", ...(options.headers || {}) } : options.headers,
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || `Erro HTTP ${response.status}`);
+  return data;
+}
+
+function reportStatusClass(status) {
+  if (status === "Em análise") return "analysis";
+  if (status === "Resolvido") return "resolved";
+  if (status === "Descartado") return "discarded";
+  return "open";
+}
+
+function reportCard(item) {
+  const canManage = hasRole("admin", "supervisor");
+  return `<article class="report-card priority-${normalizeText(item.priority)}">
+    <div class="report-card-head">
+      <span class="report-kind ${item.report_type === "question" ? "question" : ""}">${escapeHtml(item.type_label)}</span>
+      <span class="report-status ${reportStatusClass(item.status)}">${escapeHtml(item.status)}</span>
+      <span class="report-priority">${escapeHtml(item.priority)}</span>
+      <span class="report-time">${formatInstructorDate(item.updated_at)}</span>
+    </div>
+    <h3>${escapeHtml(item.title)}</h3>
+    <p class="report-description">${escapeHtml(item.description)}</p>
+    ${item.reference ? `<div class="report-reference"><strong>REFERÊNCIA RELACIONADA</strong>${escapeHtml(item.reference)}</div>` : ""}
+    ${item.resolution ? `<div class="report-resolution"><strong>TRATATIVA</strong>${escapeHtml(item.resolution)}</div>` : ""}
+    <div class="report-card-footer">
+      <span>Reportado por <strong>${escapeHtml(item.reporter_name)}</strong> · ${formatInstructorDate(item.created_at)}</span>
+      ${canManage ? `<button data-report-review="${item.id}">Analisar</button>` : ""}
+    </div>
+  </article>`;
+}
+
+function renderReports() {
+  const type = $("#reportTypeFilter").value;
+  const status = $("#reportStatusFilter").value;
+  const visible = reports.filter(item => (!type || item.report_type === type) && (!status || item.status === status));
+  const count = value => reports.filter(item => item.status === value).length;
+  $("#reportOpenCount").textContent = count("Aberto");
+  $("#reportAnalysisCount").textContent = count("Em análise");
+  $("#reportClosedCount").textContent = count("Resolvido") + count("Descartado");
+  const openCount = count("Aberto") + count("Em análise");
+  $("#reportNavCount").textContent = openCount > 99 ? "99+" : openCount;
+  $("#reportList").innerHTML = visible.length
+    ? visible.map(reportCard).join("")
+    : `<div class="table-message">Nenhum report encontrado com estes filtros.</div>`;
+  document.querySelectorAll("[data-report-review]").forEach(button => button.addEventListener("click", () => {
+    openReportReview(reports.find(item => item.id === Number(button.dataset.reportReview)));
+  }));
+}
+
+async function loadReports() {
+  try {
+    const data = await reportRequest();
+    reports = data.items;
+    reportsLoaded = true;
+    renderReports();
+  } catch (error) {
+    $("#reportList").innerHTML = `<div class="table-message">Não foi possível carregar os reports.</div>`;
+    toast(error.message);
+  }
+}
+
+function openReportDialog(prefill = {}) {
+  if (!hasRole("admin", "supervisor", "operator")) {
+    toast("Seu perfil não pode registrar reports.");
+    return;
+  }
+  $("#reportForm").reset();
+  $("#reportFormError").classList.add("hidden");
+  $("#reportType").value = prefill.report_type || "discrepancy";
+  $("#reportPriority").value = prefill.priority || "Normal";
+  $("#reportTitle").value = prefill.title || "";
+  $("#reportDescription").value = prefill.description || "";
+  $("#reportReference").value = prefill.reference || "";
+  $("#reportDialog").showModal();
+  setTimeout(() => $("#reportTitle").focus(), 50);
+}
+
+async function saveReport(event) {
+  event.preventDefault();
+  const button = $("#saveReport");
+  const errorBox = $("#reportFormError");
+  errorBox.classList.add("hidden");
+  button.disabled = true;
+  try {
+    const saved = await reportRequest("", {
+      method: "POST",
+      body: JSON.stringify({
+        report_type: $("#reportType").value,
+        priority: $("#reportPriority").value,
+        title: $("#reportTitle").value,
+        description: $("#reportDescription").value,
+        reference: $("#reportReference").value,
+      }),
+    });
+    reports.unshift(saved);
+    reportsLoaded = true;
+    renderReports();
+    $("#reportDialog").close();
+    toast("Report registrado e encaminhado para análise.");
+  } catch (error) {
+    errorBox.textContent = error.message;
+    errorBox.classList.remove("hidden");
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function openReportReview(item) {
+  if (!item || !hasRole("admin", "supervisor")) return;
+  $("#reportReviewForm").reset();
+  $("#reportReviewError").classList.add("hidden");
+  $("#reportReviewId").value = item.id;
+  $("#reportReviewTitle").textContent = item.title;
+  $("#reportReviewStatus").value = item.status;
+  $("#reportReviewPriority").value = item.priority;
+  $("#reportResolution").value = item.resolution || "";
+  $("#reportReviewContext").innerHTML = `<strong>${escapeHtml(item.type_label)} · reportado por ${escapeHtml(item.reporter_name)}</strong><small>${escapeHtml(item.description)}</small>${item.reference ? `<small>Referência: ${escapeHtml(item.reference)}</small>` : ""}`;
+  $("#reportReviewDialog").showModal();
+}
+
+async function saveReportReview(event) {
+  event.preventDefault();
+  const id = Number($("#reportReviewId").value);
+  const button = $("#saveReportReview");
+  const errorBox = $("#reportReviewError");
+  errorBox.classList.add("hidden");
+  button.disabled = true;
+  try {
+    const saved = await reportRequest(`/${id}`, {
+      method: "PUT",
+      body: JSON.stringify({
+        status: $("#reportReviewStatus").value,
+        priority: $("#reportReviewPriority").value,
+        resolution: $("#reportResolution").value,
+      }),
+    });
+    const index = reports.findIndex(item => item.id === id);
+    if (index >= 0) reports[index] = saved;
+    renderReports();
+    $("#reportReviewDialog").close();
+    toast("Tratativa do report atualizada.");
+  } catch (error) {
+    errorBox.textContent = error.message;
+    errorBox.classList.remove("hidden");
+  } finally {
+    button.disabled = false;
+  }
+}
+
 function currentShiftStage(date = new Date()) {
   const minutes = date.getHours() * 60 + date.getMinutes();
   if (minutes < 480) return { icon: "—", phase: "closed", title: "Fora do horário", detail: "Próximo turno: T1 às 08:00" };
@@ -879,6 +1037,8 @@ function applyCurrentUser(user, csrf) {
   $("#addInstructor").classList.toggle("hidden", !hasRole("admin", "supervisor"));
   $("#addAircraft").classList.toggle("hidden", !hasRole("admin", "supervisor"));
   $("#addHandover").classList.toggle("hidden", user.role === "viewer");
+  $("#addReport").classList.toggle("hidden", user.role === "viewer");
+  $("#reportAnswerIssue").classList.toggle("hidden", user.role === "viewer");
   $("#accountDialogName").textContent = user.display_name;
   $("#accountDialogRole").textContent = `${user.role_label} · ${user.username}`;
   if (user.must_change_password) {
@@ -922,7 +1082,7 @@ async function initializeAuth() {
 
 function bootstrapPortal() {
   if (portalBootstrapped) {
-    renderInstructors(); renderAircraft(); renderHandovers();
+    renderInstructors(); renderAircraft(); renderHandovers(); renderReports();
     return;
   }
   portalBootstrapped = true;
@@ -930,6 +1090,7 @@ function bootstrapPortal() {
   loadHandovers();
   loadInstructors();
   loadAircraft();
+  loadReports();
   updateShiftStatus();
   updateSystemStatus();
   setInterval(updateShiftStatus, 30_000);
@@ -942,7 +1103,7 @@ function applyInitialRoute() {
   const initialQuestion = params.get("q");
   const initialView = params.get("view");
   if (initialQuestion) { input.value = initialQuestion; searchBox.classList.add("has-value"); search(initialQuestion); }
-  if (["instrutores", "aeronaves", "passagem", "usuarios"].includes(initialView)) {
+  if (["instrutores", "aeronaves", "passagem", "reports", "usuarios"].includes(initialView)) {
     document.querySelectorAll(".nav-item").forEach(item => item.classList.toggle("active", item.dataset.view === initialView));
     openModule(initialView);
   }
@@ -1047,6 +1208,11 @@ function openModule(key) {
     if (!handoversLoaded) loadHandovers();
     return;
   }
+  if (key === "reports") {
+    showView(reportsView, "Reports");
+    if (!reportsLoaded) loadReports();
+    return;
+  }
   if (key === "usuarios") {
     if (!hasRole("admin")) { toast("Apenas administradores podem gerenciar usuários."); return; }
     showView(usersView, "Usuários e permissões");
@@ -1103,6 +1269,22 @@ $("#addHandover").addEventListener("click", () => openHandoverDialog());
 $("#handoverShiftFilter").addEventListener("change", renderHandovers);
 $("#handoverForm").addEventListener("submit", saveHandover);
 $("#deleteHandover").addEventListener("click", removeHandover);
+$("#addReport").addEventListener("click", () => openReportDialog());
+$("#reportTypeFilter").addEventListener("change", renderReports);
+$("#reportStatusFilter").addEventListener("change", renderReports);
+$("#reportForm").addEventListener("submit", saveReport);
+$("#reportReviewForm").addEventListener("submit", saveReportReview);
+$("#reportAnswerIssue").addEventListener("click", () => {
+  const question = $("#answerQuestion").textContent.trim();
+  const source = $("#sourceTitle").textContent.trim();
+  const sourceDetail = $("#sourceDetail").textContent.trim();
+  openReportDialog({
+    report_type: "discrepancy",
+    priority: "Alta",
+    title: `Revisar resposta: ${question}`.slice(0, 160),
+    reference: [`Pergunta: ${question}`, `Fonte exibida: ${source}`, sourceDetail].filter(Boolean).join("\n"),
+  });
+});
 $("#shiftStatusCard").addEventListener("click", () => {
   document.querySelectorAll(".nav-item").forEach(item => item.classList.toggle("active", item.dataset.view === "passagem"));
   openModule("passagem");
