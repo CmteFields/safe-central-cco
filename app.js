@@ -26,8 +26,7 @@ const knowledge = [
 ];
 
 const graphIndex = window.SAFE_KNOWLEDGE_INDEX || { meta: {}, claims: [], documents: [] };
-const localApi = ["127.0.0.1", "localhost"].includes(window.location.hostname) ? `${window.location.origin}/api/ask` : "http://127.0.0.1:8765/api/ask";
-const API_URL = window.SAFE_CCO_API_URL || localApi;
+const API_URL = window.SAFE_CCO_API_URL || `${window.location.origin}/api/ask`;
 const nativeFetch = window.fetch.bind(window);
 let currentUser = null;
 let csrfToken = "";

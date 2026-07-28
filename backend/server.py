@@ -29,6 +29,7 @@ KNOWLEDGE_ROOT = Path(os.environ.get("SAFE_KNOWLEDGE_ROOT", DEFAULT_KNOWLEDGE_RO
 CLAIMS_PATH = KNOWLEDGE_ROOT / "Knowledge" / "claims_curated.json"
 GRAPH_PATH = KNOWLEDGE_ROOT / "graphify-out" / "graph.json"
 DATA_DIR = Path(os.environ.get("SAFE_CCO_DATA_DIR", PORTAL_ROOT / "data")).resolve()
+PUBLIC_KNOWLEDGE_INDEX_PATH = PORTAL_ROOT / "data" / "public-knowledge-index.js"
 LEARNING_GRAPH_PATH = Path(
     os.environ.get("SAFE_LEARNING_GRAPH_PATH", KNOWLEDGE_ROOT / "Knowledge" / "query_graph.json")
 ).resolve()
@@ -915,6 +916,47 @@ def load_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+@lru_cache(maxsize=4)
+def load_public_knowledge_index(path_value: str) -> dict[str, Any]:
+    content = Path(path_value).read_text(encoding="utf-8")
+    _, separator, payload = content.partition("=")
+    if not separator:
+        raise ValueError("Índice público de conhecimento inválido.")
+    return json.loads(payload.strip().removesuffix(";"))
+
+
+def retrieve_public_claims(question: str, limit: int = 8) -> list[dict[str, Any]]:
+    query_tokens = tokens(question)
+    course = requested_course(question)
+    question_norm = normalize(question)
+    daily_limit_intent = bool(course) and any(
+        term in question_norm for term in ("slot", "slots", "hora", "horas", "dia", "diaria", "diarias")
+    )
+    results = []
+    public_index = load_public_knowledge_index(str(PUBLIC_KNOWLEDGE_INDEX_PATH))
+    for claim in public_index.get("claims", []):
+        metadata = f"{claim.get('code', '')} {claim.get('appliesTo', '')} {claim.get('relation', '')}"
+        if not course_compatible(course, claim.get("label", ""), metadata):
+            continue
+        score = score_text(query_tokens, claim.get("label", ""), metadata)
+        if daily_limit_intent and "limite_diario_instrucao" in claim.get("id", ""):
+            score += 20
+        if not score:
+            continue
+        results.append({
+            "id": claim["id"],
+            "kind": "confirmed_claim",
+            "label": claim.get("label", ""),
+            "code": claim.get("code", ""),
+            "source": "Índice público de regras confirmadas",
+            "location": claim.get("location", ""),
+            "score": score,
+            "excerpt": claim.get("label", ""),
+        })
+    results.sort(key=lambda item: (-item["score"], item["label"].casefold()))
+    return results[:limit]
+
+
 def score_text(query_tokens: list[str], label: str, metadata: str = "") -> int:
     label_norm, metadata_norm = normalize(label), normalize(metadata)
     return sum(
@@ -984,6 +1026,8 @@ def source_excerpt(source_path: str, location: str, query_tokens: list[str] | No
 
 
 def retrieve(question: str, limit: int = 8) -> list[dict[str, Any]]:
+    if not CLAIMS_PATH.is_file() or not GRAPH_PATH.is_file():
+        return retrieve_public_claims(question, limit)
     query_tokens = tokens(question)
     course = requested_course(question)
     question_norm = normalize(question)
@@ -1092,7 +1136,7 @@ PERGUNTA: {question}
     }
     body = {
         "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.1, "maxOutputTokens": 1000, "responseMimeType": "application/json", "responseSchema": schema},
+        "generationConfig": {"maxOutputTokens": 1000, "responseMimeType": "application/json", "responseSchema": schema},
     }
     request = urllib.request.Request(
         f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:generateContent",
