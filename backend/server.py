@@ -929,6 +929,7 @@ def retrieve_public_claims(question: str, limit: int = 8) -> list[dict[str, Any]
     query_tokens = tokens(question)
     course = requested_course(question)
     question_norm = normalize(question)
+    medical_intent = "cma" in query_tokens or "certificado medico" in question_norm
     daily_limit_intent = bool(course) and any(
         term in question_norm for term in ("slot", "slots", "hora", "horas", "dia", "diaria", "diarias")
     )
@@ -936,9 +937,14 @@ def retrieve_public_claims(question: str, limit: int = 8) -> list[dict[str, Any]
     public_index = load_public_knowledge_index(str(PUBLIC_KNOWLEDGE_INDEX_PATH))
     for claim in public_index.get("claims", []):
         metadata = f"{claim.get('code', '')} {claim.get('appliesTo', '')} {claim.get('relation', '')}"
+        medical_text = normalize(f"{claim.get('label', '')} {metadata}")
+        if medical_intent and "cma" not in medical_text and "certificado medico" not in medical_text:
+            continue
         if not course_compatible(course, claim.get("label", ""), metadata):
             continue
         score = score_text(query_tokens, claim.get("label", ""), metadata)
+        if medical_intent and "matricula" in medical_text:
+            score += 20
         if daily_limit_intent and "limite_diario_instrucao" in claim.get("id", ""):
             score += 20
         if not score:
@@ -1031,6 +1037,7 @@ def retrieve(question: str, limit: int = 8) -> list[dict[str, Any]]:
     query_tokens = tokens(question)
     course = requested_course(question)
     question_norm = normalize(question)
+    medical_intent = "cma" in query_tokens or "certificado medico" in question_norm
     daily_limit_intent = bool(course) and any(
         term in question_norm for term in ("slot", "slots", "hora", "horas", "dia", "diaria", "diarias")
     )
@@ -1043,9 +1050,14 @@ def retrieve(question: str, limit: int = 8) -> list[dict[str, Any]]:
             continue
         claim_ids.add(claim["id"])
         metadata = f"{claim.get('document_code', '')} {claim.get('source_path', '')} {' '.join(claim.get('applies_to', []))}"
+        medical_text = normalize(f"{claim.get('label', '')} {metadata}")
+        if medical_intent and "cma" not in medical_text and "certificado medico" not in medical_text:
+            continue
         if not course_compatible(course, claim.get("label", ""), metadata):
             continue
         score = score_text(query_tokens, claim.get("label", ""), metadata)
+        if medical_intent and "matricula" in medical_text:
+            score += 20
         if daily_limit_intent and (
             "limite_diario_instrucao" in claim["id"] or "limite_instrucao_local" in claim["id"]
         ):
@@ -1061,6 +1073,9 @@ def retrieve(question: str, limit: int = 8) -> list[dict[str, Any]]:
         if node.get("id") in claim_ids or not node.get("source_file"):
             continue
         metadata = f"{node.get('source_file', '')} {node.get('source_location', '')}"
+        medical_text = normalize(f"{node.get('label', '')} {metadata}")
+        if medical_intent and "cma" not in medical_text and "certificado medico" not in medical_text:
+            continue
         if not course_compatible(course, node.get("label", ""), metadata):
             continue
         score = score_text(query_tokens, node.get("label", ""), metadata)
