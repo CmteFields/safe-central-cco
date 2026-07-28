@@ -1,10 +1,12 @@
 import json
 import tempfile
 import unittest
+from io import BytesIO
 from pathlib import Path
 from unittest.mock import patch
 
 from backend import server
+from backend import wsgi
 
 
 class RetrievalTests(unittest.TestCase):
@@ -199,6 +201,75 @@ class AuthenticationTests(unittest.TestCase):
                     "display_name": "Admin", "role": "viewer", "active": True,
                     "admin_edit_token": grant,
                 }, admin["id"])
+
+
+class WSGITests(unittest.TestCase):
+    @staticmethod
+    def request(
+        path: str,
+        method: str = "GET",
+        payload: dict | None = None,
+    ) -> tuple[str, dict[str, str], bytes]:
+        body = json.dumps(payload or {}).encode("utf-8") if payload is not None else b""
+        captured: dict[str, object] = {}
+
+        def start_response(status: str, headers: list[tuple[str, str]]) -> None:
+            captured["status"] = status
+            captured["headers"] = headers
+
+        environ = {
+            "REQUEST_METHOD": method,
+            "PATH_INFO": path,
+            "QUERY_STRING": "",
+            "SERVER_NAME": "portalcco.example",
+            "SERVER_PORT": "443",
+            "SERVER_PROTOCOL": "HTTP/1.1",
+            "REMOTE_ADDR": "127.0.0.1",
+            "wsgi.url_scheme": "https",
+            "wsgi.input": BytesIO(body),
+            "CONTENT_LENGTH": str(len(body)),
+        }
+        if body:
+            environ["CONTENT_TYPE"] = "application/json"
+        response_body = b"".join(wsgi.application(environ, start_response))
+        headers = {name: value for name, value in captured["headers"]}
+        return str(captured["status"]), headers, response_body
+
+    def test_health_endpoint_through_wsgi(self):
+        status, headers, body = self.request("/api/health")
+        self.assertEqual(status, "200 OK")
+        self.assertEqual(headers["Content-Type"], "application/json; charset=utf-8")
+        self.assertEqual(json.loads(body), {"ok": True})
+
+    def test_static_portal_through_wsgi(self):
+        status, headers, body = self.request("/")
+        self.assertEqual(status, "200 OK")
+        self.assertIn("text/html", headers["Content-Type"])
+        self.assertIn(b"SAFE Hub", body)
+
+    def test_secure_initial_setup_through_wsgi(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            server, "AUTH_DB_PATH", Path(directory) / "auth.db"
+        ), patch.object(server, "REQUIRE_SETUP_TOKEN", True), patch.object(
+            server, "SETUP_TOKEN", "codigo-de-implantacao"
+        ):
+            status, _, body = self.request("/api/auth/setup", "POST", {
+                "username": "admin.cco",
+                "display_name": "Administrador CCO",
+                "password": "senha",
+                "setup_token": "incorreto",
+            })
+            self.assertEqual(status, "401 Unauthorized")
+            self.assertIn("inválido", json.loads(body)["error"])
+
+            status, _, body = self.request("/api/auth/setup", "POST", {
+                "username": "admin.cco",
+                "display_name": "Administrador CCO",
+                "password": "senha",
+                "setup_token": "codigo-de-implantacao",
+            })
+            self.assertEqual(status, "201 Created")
+            self.assertEqual(json.loads(body)["user"]["role"], "admin")
 
 
 class OperationalStorageTests(unittest.TestCase):
