@@ -308,6 +308,8 @@ class WSGITests(unittest.TestCase):
         self.assertIn(b'data-view="reports"', body)
         self.assertIn(b'id="reportsView"', body)
         self.assertIn(b'id="reportAnswerIssue"', body)
+        self.assertIn(b'data-view="gestao-regras"', body)
+        self.assertIn(b'id="ruleManagementView"', body)
 
     def test_secure_initial_setup_through_wsgi(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(
@@ -352,7 +354,7 @@ class ReportStorageTests(unittest.TestCase):
     def test_operator_creates_report_with_authenticated_identity_and_audit(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(
             server, "REPORTS_DB_PATH", Path(directory) / "reports.db"
-        ):
+        ), patch.object(server, "RULES_DB_PATH", Path(directory) / "rules.db"):
             operator = {
                 "id": 17,
                 "username": "operador.cco",
@@ -383,7 +385,7 @@ class ReportStorageTests(unittest.TestCase):
     def test_closed_report_requires_resolution_and_records_management(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(
             server, "REPORTS_DB_PATH", Path(directory) / "reports.db"
-        ):
+        ), patch.object(server, "RULES_DB_PATH", Path(directory) / "rules.db"):
             operator = {
                 "id": 5,
                 "username": "operador",
@@ -425,6 +427,160 @@ class ReportStorageTests(unittest.TestCase):
                 ).fetchall()
             self.assertEqual([row["action"] for row in events], ["Criado", "Atualizado"])
             self.assertEqual(events[-1]["actor_username"], "supervisor")
+
+            candidates = server.list_rule_candidates()
+            self.assertEqual(len(candidates), 1)
+            self.assertEqual(candidates[0]["source_kind"], "operator_report")
+
+
+class RuleCandidateStorageTests(unittest.TestCase):
+    operator = {
+        "id": 5,
+        "username": "operador",
+        "display_name": "Operador",
+        "role": "operator",
+    }
+    supervisor = {
+        "id": 8,
+        "username": "supervisor",
+        "display_name": "Supervisor",
+        "role": "supervisor",
+    }
+
+    def test_repeated_question_is_deduplicated_and_prioritized(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            server, "RULES_DB_PATH", Path(directory) / "rules.db"
+        ):
+            first = server.upsert_rule_candidate(
+                "Qual é a regra ainda não documentada?", "", "low", "unanswered", [], [], self.operator
+            )
+            repeated = server.upsert_rule_candidate(
+                "  QUAL É A REGRA AINDA NÃO DOCUMENTADA?  ", "Proposta", "medium",
+                "external_grounded", [{"label": "ANAC", "url": "https://www.gov.br/anac"}], [],
+                self.operator,
+            )
+            self.assertEqual(first["id"], repeated["id"])
+            self.assertEqual(repeated["occurrence_count"], 2)
+            self.assertEqual(len(server.list_rule_candidates()), 1)
+
+    def test_approved_candidate_becomes_retrievable_rule(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            server, "RULES_DB_PATH", Path(directory) / "rules.db"
+        ):
+            candidate = server.upsert_rule_candidate(
+                "Qual é o limite especial do teste?", "Limite proposto", "medium",
+                "external_grounded", [], [], self.operator,
+            )
+            approved = server.review_rule_candidate(candidate["id"], {
+                "status": "approved",
+                "review_note": "Validado pela Coordenação.",
+                "approved_rule_text": "O limite especial do teste é de duas operações.",
+                "rule_code": "RG-TESTE-001",
+                "authority": "Coordenação Operacional",
+                "source_reference": "Documento oficial, seção 3",
+                "scope": "Operações de teste",
+            }, self.supervisor)
+            self.assertEqual(approved["status"], "approved")
+            evidence = server.retrieve_dynamic_rules("Qual é o limite especial do teste?")
+            self.assertEqual(evidence[0]["code"], "RG-TESTE-001")
+            self.assertIn("duas operações", evidence[0]["label"])
+
+    def test_approval_requires_rule_authority_source_and_note(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            server, "RULES_DB_PATH", Path(directory) / "rules.db"
+        ):
+            candidate = server.upsert_rule_candidate(
+                "Pergunta", "Resposta", "low", "unanswered", [], [], self.operator
+            )
+            with self.assertRaises(ValueError):
+                server.review_rule_candidate(candidate["id"], {
+                    "status": "approved",
+                    "review_note": "",
+                    "approved_rule_text": "Regra",
+                }, self.supervisor)
+
+    def test_low_local_answer_uses_grounding_and_queues_provisional_rule(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            server, "RULES_DB_PATH", Path(directory) / "rules.db"
+        ), patch.object(
+            server, "SEARCH_HISTORY_DB_PATH", Path(directory) / "history.db"
+        ), patch.object(
+            server, "LEARNING_GRAPH_PATH", Path(directory) / "learning.json"
+        ), patch.object(server, "retrieve", return_value=[{
+            "id": "claim_local", "kind": "confirmed_claim", "label": "Regra insuficiente",
+            "code": "MGOP", "source": "MGOP", "location": "Seção 1", "score": 1, "excerpt": "",
+        }]), patch.object(server, "WEB_GROUNDING_ENABLED", True):
+            def fake_gemini(question, evidence, grounded=False):
+                if not grounded:
+                    return {
+                        "answer": "A base não é conclusiva.", "confidence": "low",
+                        "used_evidence": [], "candidate_relations": [],
+                    }
+                return {
+                    "answer": "A fonte oficial indica a regra proposta.",
+                    "confidence": "high",
+                    "used_evidence": [],
+                    "candidate_relations": [],
+                    "_web_sources": [{
+                        "id": "web_1", "kind": "external_source", "label": "ANAC",
+                        "code": "Fonte externa", "source": "https://www.gov.br/anac",
+                        "location": "https://www.gov.br/anac", "url": "https://www.gov.br/anac",
+                        "excerpt": "",
+                    }],
+                }
+
+            with patch.object(server, "call_gemini", side_effect=fake_gemini):
+                result = server.answer_question("Pergunta sem regra local", self.operator)
+
+            self.assertTrue(result["provisional"])
+            self.assertEqual(result["response_mode"], "external_grounded")
+            self.assertEqual(result["sources"][0]["label"], "ANAC")
+            candidate = server.list_rule_candidates()[0]
+            self.assertEqual(candidate["source_kind"], "external_grounded")
+            self.assertEqual(candidate["occurrence_count"], 1)
+
+    def test_grounded_gemini_request_enables_google_search_and_reads_citations(self):
+        captured = {}
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self):
+                return json.dumps({
+                    "candidates": [{
+                        "content": {"parts": [{"text": json.dumps({
+                            "answer": "Resposta oficial provisória.",
+                            "confidence": "medium",
+                            "used_evidence": [],
+                            "candidate_relations": [],
+                        })}]},
+                        "groundingMetadata": {
+                            "webSearchQueries": ["consulta oficial"],
+                            "groundingChunks": [{"web": {
+                                "title": "ANAC",
+                                "uri": "https://www.gov.br/anac",
+                            }}],
+                        },
+                    }],
+                }).encode("utf-8")
+
+        def fake_urlopen(request, timeout):
+            captured["body"] = json.loads(request.data.decode("utf-8"))
+            captured["timeout"] = timeout
+            return FakeResponse()
+
+        with patch.object(server, "gemini_key", return_value="test-key"), patch(
+            "backend.server.urllib.request.urlopen", side_effect=fake_urlopen
+        ):
+            result = server.call_gemini("Pergunta regulatória", [], grounded=True)
+
+        self.assertEqual(captured["body"]["tools"], [{"google_search": {}}])
+        self.assertEqual(result["_web_sources"][0]["label"], "ANAC")
+        self.assertEqual(result["_search_queries"], ["consulta oficial"])
 
 
 if __name__ == "__main__":

@@ -34,3 +34,5 @@ data/search_history.db
 data/search_history.db-*
 data/auth.db
 data/auth.db-*
+data/rules.db
+data/rules.db-*
