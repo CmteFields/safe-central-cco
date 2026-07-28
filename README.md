@@ -1,4 +1,4 @@
-# SAFE Central CCO
+# CCO - Central de conhecimento
 
 Interface web da central operacional de consulta do CCO da SAFE.
 
