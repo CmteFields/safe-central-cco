@@ -20,6 +20,17 @@ class RetrievalTests(unittest.TestCase):
         self.assertIn("claim_ppap001k_limite_diario_instrucao", evidence_ids)
         self.assertTrue(all(item["source"] == "Índice público de regras confirmadas" for item in evidence))
 
+    def test_cma_intent_excludes_unrelated_solo_rules(self):
+        missing_root = Path("diretorio-privado-ausente")
+        with patch.object(server, "CLAIMS_PATH", missing_root / "claims.json"), patch.object(
+            server, "GRAPH_PATH", missing_root / "graph.json"
+        ):
+            evidence = server.retrieve("Um aluno pode voar independente do voo solo sem CMA?")
+        self.assertTrue(evidence)
+        self.assertIn("matrícula", evidence[0]["label"].casefold())
+        self.assertTrue(all("cma" in f"{item['label']} {item['id']}".casefold() for item in evidence))
+        self.assertNotIn("claim_bops054_sem_solo_30_dias_novo_endosso", {item["id"] for item in evidence})
+
     def test_banca_ppa_recovers_bops_065(self):
         evidence = server.retrieve("Quantos voos o aluno PPA pode fazer sem a banca da ANAC?")
         self.assertTrue(any("065" in f"{item['label']} {item['code']}" for item in evidence))
@@ -262,6 +273,7 @@ class WSGITests(unittest.TestCase):
         self.assertEqual(status, "200 OK")
         self.assertIn(b"`${window.location.origin}/api/ask`", body)
         self.assertNotIn(b"http://127.0.0.1:8765/api/ask", body)
+        self.assertIn("Modo de contingência".encode(), body)
 
     def test_secure_initial_setup_through_wsgi(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(

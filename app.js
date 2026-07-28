@@ -178,9 +178,19 @@ function scoreRecord(record, tokens) {
 function findGraphResults(query) {
   const tokens = tokenize(query);
   if (!tokens.length) return [];
+  const medicalIntent = tokens.includes("cma") || normalizeText(query).includes("certificado medico");
   return [...graphIndex.claims.map(item => ({ ...item, kind: "Regra confirmada" })), ...graphIndex.documents.map(item => ({ ...item, kind: "Documento relacionado" }))]
-    .map(item => ({ ...item, score: scoreRecord(item, tokens) }))
-    .filter(item => item.score >= Math.max(4, tokens.length * 2))
+    .filter(item => {
+      if (!medicalIntent) return true;
+      const medicalText = normalizeText(`${item.label || ""} ${item.code || ""} ${item.source || ""} ${item.appliesTo || ""}`);
+      return medicalText.includes("cma") || medicalText.includes("certificado medico");
+    })
+    .map(item => {
+      const medicalText = normalizeText(`${item.label || ""} ${item.appliesTo || ""}`);
+      const intentBoost = medicalIntent && medicalText.includes("matricula") ? 8 : 0;
+      return { ...item, score: scoreRecord(item, tokens) + intentBoost };
+    })
+    .filter(item => item.score >= (medicalIntent ? 4 : Math.max(4, tokens.length * 2)))
     .sort((a, b) => b.score - a.score || a.label.localeCompare(b.label, "pt-BR"))
     .slice(0, 5);
 }
@@ -297,9 +307,9 @@ function graphResultAnswer(query, results) {
   const related = results.slice(1).map(item => `<div class="answer-highlight"><strong>${escapeHtml(item.label)}</strong><br><small>${escapeHtml(item.kind)}${item.code ? ` · ${escapeHtml(item.code)}` : ""}${item.location ? ` · ${escapeHtml(item.location)}` : ""}</small></div>`).join("");
   return {
     question: query,
-    answer: `<p>De acordo com a regra confirmada na base de conhecimento:</p><div class="answer-highlight"><strong>${escapeHtml(primary.label)}</strong><br><small>${primary.code ? escapeHtml(primary.code) : "Regra SAFE"}${primary.location ? ` · ${escapeHtml(primary.location)}` : ""}</small></div>${related ? `<p><strong>Regras relacionadas:</strong></p>${related}` : ""}`,
+    answer: `<div class="answer-highlight"><strong>Modo de contingência: a Gemini não respondeu nesta consulta.</strong><br><small>Este é um resultado lexical do índice local. Confirme a conclusão na fonte oficial antes de decidir.</small></div><p>Regra confirmada localizada:</p><div class="answer-highlight"><strong>${escapeHtml(primary.label)}</strong><br><small>${primary.code ? escapeHtml(primary.code) : "Regra SAFE"}${primary.location ? ` · ${escapeHtml(primary.location)}` : ""}</small></div>${related ? `<p><strong>Regras relacionadas:</strong></p>${related}` : ""}`,
     source: primary.code || primary.label,
-    detail: `${primary.source || "Regra confirmada no grafo SAFE"}${primary.location ? ` · ${primary.location}` : ""}`,
+    detail: `Resultado local sem interpretação de contexto · ${primary.source || "Regra confirmada no grafo SAFE"}${primary.location ? ` · ${primary.location}` : ""}`,
     relations: results.slice(0, 3).map(item => [item.kind.toUpperCase(), item.label, item.code || item.source || "Grafo SAFE"])
   };
 }
