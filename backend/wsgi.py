@@ -8,6 +8,8 @@ from urllib.parse import quote
 
 from backend import server
 
+server.initialize_portal_storage()
+
 
 class _ResponseBuffer(BytesIO):
     """Mantém a resposta disponível após o fechamento feito pelo handler HTTP."""

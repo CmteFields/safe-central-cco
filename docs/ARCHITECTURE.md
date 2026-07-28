@@ -32,7 +32,7 @@ CentrodeConhecimento/
 4. `PortalCCO/scripts/build_search_index.py` publica somente o índice necessário à interface.
 5. O navegador consulta o índice local sem acessar diretamente arquivos de curadoria ou documentos sensíveis.
 
-Na operação com IA, o portal envia a pergunta ao backend local. O backend recupera evidências, solicita ao Gemini uma resposta estruturada, devolve somente fontes utilizadas e registra a travessia em `Knowledge/query_graph.json`.
+Na operação com IA, o portal envia a pergunta ao backend. O backend recupera evidências, solicita ao Gemini uma resposta estruturada, devolve somente fontes utilizadas e registra a travessia nas tabelas de aprendizagem do banco operacional `portalcco.db`.
 
 ## Feedback de progresso da consulta
 
@@ -46,13 +46,13 @@ Se a requisição falhar, a interface muda para o estado real `fallback`, inform
 - `Knowledge` não contém código ou preferências da interface.
 - `graphify-out` é sempre regenerável e não deve ser editado manualmente.
 - `PortalCCO/data` é sempre regenerável e não é fonte oficial.
-- Dados mutáveis de instrutores, manutenção e restrições exigirão repositório operacional próprio ou API; não devem ser simulados como documentos Markdown.
-- O módulo de instrutores usa `data/instructors.db` (SQLite) como repositório operacional local e a API `/api/instructors` para consulta e alterações. O arquivo é criado automaticamente com a carga inicial quando ainda não existe e não integra o índice documental.
-- Instrutores e aeronaves selecionam suas bases a partir do cadastro central `data/bases.db`, exposto por `/api/bases`; códigos de base livres não são aceitos.
-- Passagens entre T1, T2 e T3 são registradas em `data/handovers.db`, com prioridade, situação, autoria e trilha temporal, por meio da API `/api/handovers`.
-- Pesquisas concluídas são armazenadas como snapshots imutáveis em `data/search_history.db`. A API `/api/searches` lista e reabre respostas anteriores sem executar novamente o mecanismo de consulta.
-- A autenticação usa `data/auth.db`, senhas PBKDF2-SHA256, sessões de 12 horas em cookie `HttpOnly`/`SameSite=Strict` e proteção CSRF. Autorizações são aplicadas no backend para Administrador, Supervisor, Operador e Consulta.
-- Em produção, `SAFE_CCO_DATA_DIR` direciona todos os bancos SQLite ao volume persistente. O Blueprint do Render usa `/var/data`, HTTPS, cookie `Secure` e uma única instância, preservando a consistência do SQLite.
+- Dados mutáveis não são simulados como documentos Markdown. Usuários, bases, instrutores, aeronaves, passagens, reports, pesquisas, regras em aprovação, auditoria e aprendizagem ficam em tabelas do banco único `portalcco.db`.
+- Instrutores e aeronaves selecionam suas bases a partir da tabela `bases`, exposta por `/api/bases`; códigos de base livres não são aceitos.
+- Passagens entre T1, T2 e T3 são registradas em `handovers`, com prioridade, situação, autoria e trilha temporal, por meio da API `/api/handovers`.
+- Pesquisas concluídas são armazenadas como snapshots imutáveis em `search_history`. A API `/api/searches` lista e reabre respostas anteriores sem executar novamente o mecanismo de consulta.
+- A autenticação usa as tabelas `users`, `sessions` e `admin_edit_grants`, senhas PBKDF2-SHA256, sessões de 12 horas em cookie `HttpOnly`/`SameSite=Strict` e proteção CSRF. Autorizações são aplicadas no backend para Administrador, Supervisor, Operador e Consulta.
+- Em produção, `SAFE_PORTAL_DB_PATH` aponta o banco SQLite para o volume persistente. O Blueprint do Render usa `/var/data/portalcco.db`, HTTPS, cookie `Secure` e uma única instância, preservando a consistência do SQLite.
+- Os bancos SQLite antigos são importados automaticamente para o banco único. A tabela `storage_migrations` torna o processo idempotente, e os arquivos legados permanecem intactos como backup.
 - Respostas conclusivas devem priorizar regras com estado `confirmed`. Documentos relacionados podem auxiliar a busca, mas não devem ser apresentados como regra confirmada.
 - Perguntas e relações inferidas ficam no grafo de aprendizagem. Relações inferidas usam `pending_review` e nunca entram automaticamente no conjunto de regras oficiais.
 

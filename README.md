@@ -57,9 +57,12 @@ entrada WSGI está em `backend/wsgi.py` e a configuração pronta para a conta
 5. Pressione **Reload**. O portal ficará disponível em
    `https://ccofields.pythonanywhere.com`.
 
-Os bancos de usuários, instrutores, aeronaves, bases, passagens, reports, pesquisas e regras em aprovação
-ficam em `/home/CCOFields/portalcco-data`, fora do GitHub e preservados entre
-recargas da aplicação.
+Todos os dados operacionais ficam no banco único
+`/home/CCOFields/portalcco-data/portalcco.db`, fora do GitHub e preservado
+entre recargas da aplicação. Na primeira execução desta versão, os bancos
+antigos (`auth.db`, `instructors.db`, `aircraft.db` e demais) são importados
+automaticamente. Os arquivos antigos não são excluídos e permanecem como
+backup da migração.
 
 ### Render
 
@@ -78,8 +81,8 @@ Durante a criação, informe um valor forte e exclusivo para
 `SAFE_CCO_SETUP_TOKEN`; esse código será exigido somente no cadastro do primeiro
 administrador e ficará armazenado como segredo no Render.
 
-Todos os bancos operacionais são criados automaticamente em `/var/data`. No
-primeiro acesso, o portal solicitará o cadastro do administrador inicial.
+O banco operacional único `/var/data/portalcco.db` é criado automaticamente.
+No primeiro acesso, o portal solicitará o cadastro do administrador inicial.
 
 O GitHub Pages pode continuar existindo como demonstração estática, mas o
 endereço oficial dos operadores deve ser o Web Service, pois ele executa login,

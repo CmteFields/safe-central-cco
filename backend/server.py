@@ -30,6 +30,7 @@ CLAIMS_PATH = KNOWLEDGE_ROOT / "Knowledge" / "claims_curated.json"
 GRAPH_PATH = KNOWLEDGE_ROOT / "graphify-out" / "graph.json"
 DATA_DIR = Path(os.environ.get("SAFE_CCO_DATA_DIR", PORTAL_ROOT / "data")).resolve()
 PUBLIC_KNOWLEDGE_INDEX_PATH = PORTAL_ROOT / "data" / "public-knowledge-index.js"
+# Arquivo legado: passa a ser importado para o banco central na primeira execução.
 LEARNING_GRAPH_PATH = Path(
     os.environ.get("SAFE_LEARNING_GRAPH_PATH", KNOWLEDGE_ROOT / "Knowledge" / "query_graph.json")
 ).resolve()
@@ -43,14 +44,26 @@ SETUP_TOKEN = os.environ.get("SAFE_CCO_SETUP_TOKEN", "").strip()
 REQUIRE_SETUP_TOKEN = os.environ.get("SAFE_CCO_REQUIRE_SETUP_TOKEN", "").lower() in {
     "1", "true", "yes"
 } or bool(os.environ.get("RENDER"))
-INSTRUCTORS_DB_PATH = Path(os.environ.get("SAFE_INSTRUCTORS_DB_PATH", DATA_DIR / "instructors.db")).resolve()
-AIRCRAFT_DB_PATH = Path(os.environ.get("SAFE_AIRCRAFT_DB_PATH", DATA_DIR / "aircraft.db")).resolve()
-BASES_DB_PATH = Path(os.environ.get("SAFE_BASES_DB_PATH", DATA_DIR / "bases.db")).resolve()
-HANDOVERS_DB_PATH = Path(os.environ.get("SAFE_HANDOVERS_DB_PATH", DATA_DIR / "handovers.db")).resolve()
-REPORTS_DB_PATH = Path(os.environ.get("SAFE_REPORTS_DB_PATH", DATA_DIR / "reports.db")).resolve()
-SEARCH_HISTORY_DB_PATH = Path(os.environ.get("SAFE_SEARCH_HISTORY_DB_PATH", DATA_DIR / "search_history.db")).resolve()
-AUTH_DB_PATH = Path(os.environ.get("SAFE_AUTH_DB_PATH", DATA_DIR / "auth.db")).resolve()
-RULES_DB_PATH = Path(os.environ.get("SAFE_RULES_DB_PATH", DATA_DIR / "rules.db")).resolve()
+PORTAL_DB_PATH = Path(os.environ.get("SAFE_PORTAL_DB_PATH", DATA_DIR / "portalcco.db")).resolve()
+INSTRUCTORS_DB_PATH = Path(os.environ.get("SAFE_INSTRUCTORS_DB_PATH", PORTAL_DB_PATH)).resolve()
+AIRCRAFT_DB_PATH = Path(os.environ.get("SAFE_AIRCRAFT_DB_PATH", PORTAL_DB_PATH)).resolve()
+BASES_DB_PATH = Path(os.environ.get("SAFE_BASES_DB_PATH", PORTAL_DB_PATH)).resolve()
+HANDOVERS_DB_PATH = Path(os.environ.get("SAFE_HANDOVERS_DB_PATH", PORTAL_DB_PATH)).resolve()
+REPORTS_DB_PATH = Path(os.environ.get("SAFE_REPORTS_DB_PATH", PORTAL_DB_PATH)).resolve()
+SEARCH_HISTORY_DB_PATH = Path(os.environ.get("SAFE_SEARCH_HISTORY_DB_PATH", PORTAL_DB_PATH)).resolve()
+AUTH_DB_PATH = Path(os.environ.get("SAFE_AUTH_DB_PATH", PORTAL_DB_PATH)).resolve()
+RULES_DB_PATH = Path(os.environ.get("SAFE_RULES_DB_PATH", PORTAL_DB_PATH)).resolve()
+LEARNING_DB_PATH = Path(os.environ.get("SAFE_LEARNING_DB_PATH", PORTAL_DB_PATH)).resolve()
+LEGACY_DB_PATHS = {
+    "auth": DATA_DIR / "auth.db",
+    "search_history": DATA_DIR / "search_history.db",
+    "rules": DATA_DIR / "rules.db",
+    "bases": DATA_DIR / "bases.db",
+    "handovers": DATA_DIR / "handovers.db",
+    "reports": DATA_DIR / "reports.db",
+    "instructors": DATA_DIR / "instructors.db",
+    "aircraft": DATA_DIR / "aircraft.db",
+}
 WEB_GROUNDING_ENABLED = os.environ.get("SAFE_CCO_WEB_GROUNDING", "1").lower() in {"1", "true", "yes"}
 MAX_QUESTION_LENGTH = 1200
 WRITE_LOCK = threading.Lock()
@@ -129,11 +142,82 @@ SESSION_HOURS = 12
 PASSWORD_ITERATIONS = 310_000
 
 
+def open_database(path: Path) -> sqlite3.Connection:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(path, timeout=10)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA busy_timeout=10000")
+    connection.execute("PRAGMA foreign_keys=ON")
+    if path == PORTAL_DB_PATH:
+        connection.execute("PRAGMA journal_mode=WAL")
+    return connection
+
+
+def migration_enabled_for(target_path: Path) -> bool:
+    return target_path == PORTAL_DB_PATH
+
+
+def initialize_migration_log(connection: sqlite3.Connection) -> None:
+    connection.execute("""CREATE TABLE IF NOT EXISTS storage_migrations (
+        source TEXT NOT NULL,
+        item TEXT NOT NULL,
+        migrated_rows INTEGER NOT NULL DEFAULT 0,
+        migrated_at TEXT NOT NULL,
+        PRIMARY KEY(source, item)
+    )""")
+
+
+def migrate_legacy_tables(
+    connection: sqlite3.Connection,
+    target_path: Path,
+    legacy_path: Path,
+    tables: dict[str, tuple[str, ...]],
+) -> None:
+    if (
+        not migration_enabled_for(target_path)
+        or legacy_path.resolve() == target_path
+        or not legacy_path.is_file()
+    ):
+        return
+    initialize_migration_log(connection)
+    source_name = f"sqlite:{legacy_path.name}"
+    legacy = sqlite3.connect(legacy_path, timeout=10)
+    try:
+        legacy.row_factory = sqlite3.Row
+        for table, columns in tables.items():
+            already_migrated = connection.execute(
+                "SELECT 1 FROM storage_migrations WHERE source=? AND item=?",
+                (source_name, table),
+            ).fetchone()
+            if already_migrated:
+                continue
+            exists = legacy.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
+            ).fetchone()
+            rows = legacy.execute(
+                f"SELECT {', '.join(columns)} FROM {table}"
+            ).fetchall() if exists else []
+            if rows:
+                placeholders = ", ".join("?" for _ in columns)
+                connection.executemany(
+                    f"INSERT OR IGNORE INTO {table} ({', '.join(columns)}) VALUES ({placeholders})",
+                    [tuple(row[column] for column in columns) for row in rows],
+                )
+            connection.execute(
+                """INSERT INTO storage_migrations(source, item, migrated_rows, migrated_at)
+                   VALUES (?, ?, ?, ?)""",
+                (
+                    source_name, table, len(rows),
+                    datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+                ),
+            )
+    finally:
+        legacy.close()
+
+
 @contextmanager
 def auth_connection():
-    AUTH_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(AUTH_DB_PATH, timeout=10)
-    connection.row_factory = sqlite3.Row
+    connection = open_database(AUTH_DB_PATH)
     try:
         yield connection
         connection.commit()
@@ -174,6 +258,16 @@ def initialize_auth_db() -> None:
             created_at TEXT NOT NULL
         )""")
         connection.execute("CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id)")
+        migrate_legacy_tables(connection, AUTH_DB_PATH, LEGACY_DB_PATHS["auth"], {
+            "users": (
+                "id", "username", "display_name", "password_hash", "password_salt", "role",
+                "active", "must_change_password", "created_at", "updated_at",
+            ),
+            "sessions": ("token_hash", "user_id", "csrf_token", "expires_at", "created_at"),
+            "admin_edit_grants": (
+                "token_hash", "acting_user_id", "target_user_id", "expires_at", "created_at",
+            ),
+        })
 
 
 def hash_password(password: str, salt: bytes | None = None) -> tuple[str, str]:
@@ -398,9 +492,7 @@ def change_own_password(user_id: int, current_password: str, new_password: str) 
 
 @contextmanager
 def search_history_connection():
-    SEARCH_HISTORY_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(SEARCH_HISTORY_DB_PATH, timeout=10)
-    connection.row_factory = sqlite3.Row
+    connection = open_database(SEARCH_HISTORY_DB_PATH)
     try:
         yield connection
         connection.commit()
@@ -424,6 +516,14 @@ def initialize_search_history_db() -> None:
             created_at TEXT NOT NULL
         )""")
         connection.execute("CREATE INDEX IF NOT EXISTS idx_search_history_created ON search_history(created_at DESC)")
+        migrate_legacy_tables(
+            connection, SEARCH_HISTORY_DB_PATH, LEGACY_DB_PATHS["search_history"], {
+                "search_history": (
+                    "id", "question", "response_mode", "confidence", "result_json",
+                    "presentation_json", "knowledge_version", "created_at",
+                ),
+            },
+        )
 
 
 def save_search_history(
@@ -483,9 +583,7 @@ def get_search_history(record_id: str) -> dict[str, Any]:
 
 @contextmanager
 def rules_connection():
-    RULES_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(RULES_DB_PATH, timeout=10)
-    connection.row_factory = sqlite3.Row
+    connection = open_database(RULES_DB_PATH)
     try:
         yield connection
         connection.commit()
@@ -544,6 +642,21 @@ def initialize_rules_db() -> None:
         connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_rule_events_candidate ON rule_events(candidate_id, created_at)"
         )
+        migrate_legacy_tables(connection, RULES_DB_PATH, LEGACY_DB_PATHS["rules"], {
+            "rule_candidates": (
+                "id", "normalized_question", "question", "proposed_answer", "confidence",
+                "source_kind", "sources_json", "local_evidence_json", "status",
+                "occurrence_count", "first_asked_at", "last_asked_at", "updated_at",
+                "created_by_username", "created_by_name", "reviewed_by_username",
+                "reviewed_by_name", "reviewed_at", "review_note", "approved_rule_text",
+                "rule_code", "authority", "source_reference", "source_url", "scope",
+                "effective_from", "effective_until", "supersedes",
+            ),
+            "rule_events": (
+                "id", "candidate_id", "action", "actor_username", "actor_name",
+                "details", "created_at",
+            ),
+        })
 
 
 def rule_candidate_dict(row: sqlite3.Row) -> dict[str, Any]:
@@ -736,9 +849,7 @@ def list_approved_rules() -> list[dict[str, Any]]:
 
 @contextmanager
 def bases_connection():
-    BASES_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(BASES_DB_PATH, timeout=10)
-    connection.row_factory = sqlite3.Row
+    connection = open_database(BASES_DB_PATH)
     try:
         yield connection
         connection.commit()
@@ -757,6 +868,9 @@ def initialize_bases_db() -> None:
             status TEXT NOT NULL,
             updated_at TEXT NOT NULL
         )""")
+        migrate_legacy_tables(connection, BASES_DB_PATH, LEGACY_DB_PATHS["bases"], {
+            "bases": ("code", "name", "status", "updated_at"),
+        })
         if connection.execute("SELECT COUNT(*) FROM bases").fetchone()[0] == 0:
             timestamp = now_iso()
             connection.executemany(
@@ -787,9 +901,7 @@ def validate_base_code(code: str, allow_unassigned: bool = False) -> str:
 
 @contextmanager
 def handovers_connection():
-    HANDOVERS_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(HANDOVERS_DB_PATH, timeout=10)
-    connection.row_factory = sqlite3.Row
+    connection = open_database(HANDOVERS_DB_PATH)
     try:
         yield connection
         connection.commit()
@@ -815,6 +927,12 @@ def initialize_handovers_db() -> None:
             completed_at TEXT
         )""")
         connection.execute("CREATE INDEX IF NOT EXISTS idx_handovers_status ON handovers(status, updated_at)")
+        migrate_legacy_tables(connection, HANDOVERS_DB_PATH, LEGACY_DB_PATHS["handovers"], {
+            "handovers": (
+                "id", "origin_shift", "target_shift", "message", "priority", "status",
+                "author", "created_at", "updated_at", "completed_at",
+            ),
+        })
 
 
 def handover_dict(row: sqlite3.Row) -> dict[str, Any]:
@@ -891,9 +1009,7 @@ def delete_handover(handover_id: int) -> None:
 
 @contextmanager
 def reports_connection():
-    REPORTS_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(REPORTS_DB_PATH, timeout=10)
-    connection.row_factory = sqlite3.Row
+    connection = open_database(REPORTS_DB_PATH)
     try:
         yield connection
         connection.commit()
@@ -934,6 +1050,17 @@ def initialize_reports_db() -> None:
         )""")
         connection.execute("CREATE INDEX IF NOT EXISTS idx_reports_status ON reports(status, priority, updated_at)")
         connection.execute("CREATE INDEX IF NOT EXISTS idx_report_events_report ON report_events(report_id, created_at)")
+        migrate_legacy_tables(connection, REPORTS_DB_PATH, LEGACY_DB_PATHS["reports"], {
+            "reports": (
+                "id", "report_type", "title", "description", "reference", "priority",
+                "status", "reporter_user_id", "reporter_username", "reporter_name",
+                "resolution", "created_at", "updated_at", "resolved_at",
+            ),
+            "report_events": (
+                "id", "report_id", "action", "actor_username", "actor_name", "details",
+                "created_at",
+            ),
+        })
 
 
 def report_dict(row: sqlite3.Row) -> dict[str, Any]:
@@ -1072,9 +1199,7 @@ def update_report(report_id: int, data: dict[str, Any], actor: dict[str, Any]) -
 
 @contextmanager
 def instructor_connection():
-    INSTRUCTORS_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(INSTRUCTORS_DB_PATH, timeout=10)
-    connection.row_factory = sqlite3.Row
+    connection = open_database(INSTRUCTORS_DB_PATH)
     try:
         yield connection
         connection.commit()
@@ -1096,6 +1221,9 @@ def initialize_instructors_db() -> None:
             updated_at TEXT NOT NULL
         )""")
         connection.execute("CREATE INDEX IF NOT EXISTS idx_instructors_name ON instructors(name)")
+        migrate_legacy_tables(connection, INSTRUCTORS_DB_PATH, LEGACY_DB_PATHS["instructors"], {
+            "instructors": ("id", "name", "base", "group_name", "releases", "updated_at"),
+        })
         if connection.execute("SELECT COUNT(*) FROM instructors").fetchone()[0] == 0:
             timestamp = now_iso()
             connection.executemany(
@@ -1166,9 +1294,7 @@ def delete_instructor(instructor_id: int) -> None:
 
 @contextmanager
 def aircraft_connection():
-    AIRCRAFT_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(AIRCRAFT_DB_PATH, timeout=10)
-    connection.row_factory = sqlite3.Row
+    connection = open_database(AIRCRAFT_DB_PATH)
     try:
         yield connection
         connection.commit()
@@ -1193,6 +1319,13 @@ def initialize_aircraft_db() -> None:
             restriction_date TEXT,
             updated_at TEXT NOT NULL
         )""")
+        migrate_legacy_tables(connection, AIRCRAFT_DB_PATH, LEGACY_DB_PATHS["aircraft"], {
+            "aircraft": (
+                "id", "model", "registration", "base", "operational_status",
+                "operation_type", "active_restrictions", "temporary_restrictions",
+                "restriction_date", "updated_at",
+            ),
+        })
         connection.execute("UPDATE aircraft SET operational_status='Operacional' WHERE operational_status='Ativa'")
         connection.execute("UPDATE aircraft SET operational_status='Fora de Operação' WHERE operational_status='Inativa'")
         connection.execute("UPDATE aircraft SET operational_status='Em Manutenção' WHERE operational_status='Manutenção'")
@@ -1729,20 +1862,161 @@ def load_learning_graph() -> dict[str, Any]:
     return {"schema_version": 1, "nodes": [], "edges": [], "candidate_relations": []}
 
 
+@contextmanager
+def learning_connection():
+    connection = open_database(LEARNING_DB_PATH)
+    try:
+        yield connection
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
+def migrate_legacy_learning_graph(connection: sqlite3.Connection) -> None:
+    if not migration_enabled_for(LEARNING_DB_PATH) or not LEARNING_GRAPH_PATH.is_file():
+        return
+    initialize_migration_log(connection)
+    source_name = f"json:{LEARNING_GRAPH_PATH.name}"
+    item_name = "learning_graph"
+    if connection.execute(
+        "SELECT 1 FROM storage_migrations WHERE source=? AND item=?",
+        (source_name, item_name),
+    ).fetchone():
+        return
+    graph = load_learning_graph()
+    nodes = [
+        (
+            str(node.get("id", "")),
+            str(node.get("label", "")),
+            str(node.get("created_at", "")) or now_iso(),
+        )
+        for node in graph.get("nodes", [])
+        if node.get("type") == "operator_question" and node.get("id")
+    ]
+    if nodes:
+        connection.executemany(
+            """INSERT OR IGNORE INTO learning_queries(id, question, created_at)
+               VALUES (?, ?, ?)""",
+            nodes,
+        )
+    edges = [
+        (
+            str(edge.get("source", "")),
+            str(edge.get("target", "")),
+            str(edge.get("relation", "answered_using")),
+            str(edge.get("status", "observed")),
+            str(edge.get("created_at", "")) or now_iso(),
+        )
+        for edge in graph.get("edges", [])
+        if edge.get("source") and edge.get("target")
+    ]
+    if edges:
+        connection.executemany(
+            """INSERT OR IGNORE INTO learning_query_evidence
+               (query_id, evidence_id, relation, status, created_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            edges,
+        )
+    relations = [
+        (
+            str(relation.get("origin_query", "")),
+            str(relation.get("source_concept", "")),
+            str(relation.get("target_concept", "")),
+            str(relation.get("relation", "")),
+            str(relation.get("reason", "")),
+            str(relation.get("status", "pending_review")),
+            str(relation.get("created_at", "")) or now_iso(),
+        )
+        for relation in graph.get("candidate_relations", [])
+        if relation.get("origin_query")
+    ]
+    if relations:
+        connection.executemany(
+            """INSERT INTO learning_candidate_relations
+               (query_id, source_concept, target_concept, relation, reason, status, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            relations,
+        )
+    connection.execute(
+        """INSERT INTO storage_migrations(source, item, migrated_rows, migrated_at)
+           VALUES (?, ?, ?, ?)""",
+        (source_name, item_name, len(nodes) + len(edges) + len(relations), now_iso()),
+    )
+
+
+def initialize_learning_db() -> None:
+    with WRITE_LOCK, learning_connection() as connection:
+        connection.execute("""CREATE TABLE IF NOT EXISTS learning_queries (
+            id TEXT PRIMARY KEY,
+            question TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )""")
+        connection.execute("""CREATE TABLE IF NOT EXISTS learning_query_evidence (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            query_id TEXT NOT NULL,
+            evidence_id TEXT NOT NULL,
+            relation TEXT NOT NULL,
+            status TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE(query_id, evidence_id, relation),
+            FOREIGN KEY(query_id) REFERENCES learning_queries(id) ON DELETE CASCADE
+        )""")
+        connection.execute("""CREATE TABLE IF NOT EXISTS learning_candidate_relations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            query_id TEXT NOT NULL,
+            source_concept TEXT NOT NULL,
+            target_concept TEXT NOT NULL,
+            relation TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            status TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(query_id) REFERENCES learning_queries(id) ON DELETE CASCADE
+        )""")
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_learning_evidence_query ON learning_query_evidence(query_id)"
+        )
+        connection.execute(
+            """CREATE INDEX IF NOT EXISTS idx_learning_relations_status
+               ON learning_candidate_relations(status, created_at)"""
+        )
+        migrate_legacy_learning_graph(connection)
+
+
 def record_learning(question: str, evidence: list[dict[str, Any]], result: dict[str, Any]) -> str:
+    initialize_learning_db()
     timestamp = now_iso()
     query_id = "query_" + hashlib.sha256(f"{timestamp}:{question}".encode("utf-8")).hexdigest()[:16]
-    with WRITE_LOCK:
-        graph = load_learning_graph()
-        graph["nodes"].append({"id": query_id, "type": "operator_question", "label": question, "created_at": timestamp})
+    with WRITE_LOCK, learning_connection() as connection:
+        connection.execute(
+            "INSERT INTO learning_queries(id, question, created_at) VALUES (?, ?, ?)",
+            (query_id, question, timestamp),
+        )
         used = {int(value) for value in result.get("used_evidence", []) if str(value).isdigit()}
         for index, item in enumerate(evidence, 1):
             if index in used:
-                graph["edges"].append({"source": query_id, "target": item["id"], "relation": "answered_using", "status": "observed", "created_at": timestamp})
+                connection.execute(
+                    """INSERT OR IGNORE INTO learning_query_evidence
+                       (query_id, evidence_id, relation, status, created_at)
+                       VALUES (?, ?, 'answered_using', 'observed', ?)""",
+                    (query_id, str(item["id"]), timestamp),
+                )
         for relation in result.get("candidate_relations", []):
-            graph["candidate_relations"].append({**relation, "origin_query": query_id, "status": "pending_review", "created_at": timestamp})
-        LEARNING_GRAPH_PATH.parent.mkdir(parents=True, exist_ok=True)
-        LEARNING_GRAPH_PATH.write_text(json.dumps(graph, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            connection.execute(
+                """INSERT INTO learning_candidate_relations
+                   (query_id, source_concept, target_concept, relation, reason, status, created_at)
+                   VALUES (?, ?, ?, ?, ?, 'pending_review', ?)""",
+                (
+                    query_id,
+                    str(relation.get("source_concept", "")),
+                    str(relation.get("target_concept", "")),
+                    str(relation.get("relation", "")),
+                    str(relation.get("reason", "")),
+                    timestamp,
+                ),
+            )
     return query_id
 
 
@@ -1830,6 +2104,18 @@ def answer_question(question: str, actor: dict[str, Any] | None = None) -> dict[
     }
     save_search_history(question, "ai", payload["confidence"], result=payload, record_id=query_id)
     return payload
+
+
+def initialize_portal_storage() -> None:
+    initialize_auth_db()
+    initialize_bases_db()
+    initialize_instructors_db()
+    initialize_aircraft_db()
+    initialize_handovers_db()
+    initialize_reports_db()
+    initialize_search_history_db()
+    initialize_rules_db()
+    initialize_learning_db()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -2194,5 +2480,6 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    initialize_portal_storage()
     print(f"SAFE CCO API em http://{HOST}:{PORT} | modelo={MODEL} | conhecimento={KNOWLEDGE_ROOT}")
     ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()

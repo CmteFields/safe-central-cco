@@ -778,7 +778,7 @@ function openHandoverDialog(item = null) {
   $("#handoverTarget").value = item?.target_shift || "T2";
   $("#handoverPriority").value = item?.priority || "Normal";
   $("#handoverStatus").value = item?.status || "Pendente";
-  $("#handoverAuthor").value = item?.author || localStorage.getItem("safe-cco-operator") || "";
+  $("#handoverAuthor").value = item?.author || currentUser?.display_name || "";
   $("#handoverMessage").value = item?.message || "";
   $("#handoverDialogTitle").textContent = item ? "Editar passagem de turno" : "Nova passagem de turno";
   $("#deleteHandover").classList.toggle("hidden", !item);
@@ -802,7 +802,6 @@ async function saveHandover(event) {
   button.disabled = true;
   try {
     const saved = await handoverRequest(id ? `/${id}` : "", { method: id ? "PUT" : "POST", body: JSON.stringify(payload) });
-    localStorage.setItem("safe-cco-operator", saved.author);
     const index = handovers.findIndex(item => item.id === saved.id);
     if (index >= 0) handovers[index] = saved; else handovers.unshift(saved);
     renderHandovers(); $("#handoverDialog").close(); toast(id ? "Passagem atualizada." : "Passagem registrada para o próximo turno.");
