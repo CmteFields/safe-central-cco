@@ -52,6 +52,14 @@ const moduleInfo = {
 };
 
 const $ = (selector) => document.querySelector(selector);
+function setDialogMessage(selector, message = "", kind = "error") {
+  const element = $(selector);
+  if (!element) return;
+  element.textContent = message;
+  element.classList.toggle("hidden", !message);
+  element.classList.toggle("notice", Boolean(message) && kind === "notice");
+}
+
 const homeView = $("#homeView");
 const answerView = $("#answerView");
 const moduleView = $("#moduleView");
@@ -517,6 +525,7 @@ async function loadInstructors() {
 async function openInstructorDialog(item = null) {
   try { await loadOperationalBases(); } catch (error) { toast(error.message); return; }
   $("#instructorForm").reset();
+  setDialogMessage("#instructorFormError");
   $("#instructorId").value = item?.id || "";
   $("#instructorName").value = item?.name || "";
   renderBaseSelect($("#instructorBase"), false, item?.base || "");
@@ -548,7 +557,7 @@ async function saveInstructor(event) {
     $("#instructorDialog").close();
     toast(id ? "Instrutor atualizado com sucesso." : "Instrutor cadastrado com sucesso.");
   } catch (error) {
-    toast(error.message);
+    setDialogMessage("#instructorFormError", error.message);
   } finally {
     button.disabled = false;
   }
@@ -568,7 +577,7 @@ async function removeInstructor() {
     $("#instructorDialog").close();
     toast("Instrutor excluído.");
   } catch (error) {
-    toast(error.message);
+    setDialogMessage("#instructorFormError", error.message);
   } finally {
     button.disabled = false;
   }
@@ -665,6 +674,7 @@ async function loadAircraft() {
 async function openAircraftDialog(item = null) {
   try { await loadOperationalBases(); } catch (error) { toast(error.message); return; }
   $("#aircraftForm").reset();
+  setDialogMessage("#aircraftFormError");
   $("#aircraftId").value = item?.id || "";
   $("#aircraftModel").value = item?.model || "";
   $("#aircraftRegistration").value = item?.registration || "";
@@ -699,7 +709,7 @@ async function saveAircraft(event) {
     if (index >= 0) aircraft[index] = saved; else aircraft.push(saved);
     fillAircraftFilters(); renderAircraft(); $("#aircraftDialog").close();
     toast(id ? "Aeronave atualizada com sucesso." : "Aeronave cadastrada com sucesso.");
-  } catch (error) { toast(error.message); }
+  } catch (error) { setDialogMessage("#aircraftFormError", error.message); }
   finally { button.disabled = false; }
 }
 
@@ -713,7 +723,7 @@ async function removeAircraft() {
     await aircraftRequest(`/${id}`, { method: "DELETE" });
     aircraft = aircraft.filter(value => value.id !== id);
     fillAircraftFilters(); renderAircraft(); $("#aircraftDialog").close(); toast("Aeronave excluída.");
-  } catch (error) { toast(error.message); }
+  } catch (error) { setDialogMessage("#aircraftFormError", error.message); }
   finally { button.disabled = false; }
 }
 
@@ -773,6 +783,7 @@ async function loadHandovers() {
 
 function openHandoverDialog(item = null) {
   $("#handoverForm").reset();
+  setDialogMessage("#handoverFormError");
   $("#handoverId").value = item?.id || "";
   $("#handoverOrigin").value = item?.origin_shift || "T1";
   $("#handoverTarget").value = item?.target_shift || "T2";
@@ -805,7 +816,7 @@ async function saveHandover(event) {
     const index = handovers.findIndex(item => item.id === saved.id);
     if (index >= 0) handovers[index] = saved; else handovers.unshift(saved);
     renderHandovers(); $("#handoverDialog").close(); toast(id ? "Passagem atualizada." : "Passagem registrada para o próximo turno.");
-  } catch (error) { toast(error.message); }
+  } catch (error) { setDialogMessage("#handoverFormError", error.message); }
   finally { button.disabled = false; }
 }
 
@@ -829,7 +840,7 @@ async function removeHandover() {
     await handoverRequest(`/${id}`, { method: "DELETE" });
     handovers = handovers.filter(item => item.id !== id);
     renderHandovers(); $("#handoverDialog").close(); toast("Passagem excluída.");
-  } catch (error) { toast(error.message); }
+  } catch (error) { setDialogMessage("#handoverFormError", error.message); }
   finally { button.disabled = false; }
 }
 
@@ -1198,10 +1209,18 @@ function applyCurrentUser(user, csrf) {
   $("#reportAnswerIssue").classList.toggle("hidden", user.role === "viewer");
   $("#accountDialogName").textContent = user.display_name;
   $("#accountDialogRole").textContent = `${user.role_label} · ${user.username}`;
+  $("#closeAccount").classList.toggle("hidden", user.must_change_password);
   if (user.must_change_password) {
+    setDialogMessage(
+      "#accountFormError",
+      "Esta é uma senha temporária. Informe-a como senha atual e escolha a nova senha para liberar o portal.",
+      "notice",
+    );
     $("#accountDialog").showModal();
-    toast("Altere sua senha temporária antes de continuar.");
-  } else bootstrapPortal();
+  } else {
+    setDialogMessage("#accountFormError");
+    bootstrapPortal();
+  }
 }
 
 async function loginWithCredentials(username, password) {
@@ -1536,10 +1555,21 @@ $("#resetUserPassword").addEventListener("click", async () => {
     $("#userFormError").classList.remove("hidden");
   }
 });
-$("#accountButton").addEventListener("click", () => $("#accountDialog").showModal());
-$("#closeAccount").addEventListener("click", () => $("#accountDialog").close());
+$("#accountButton").addEventListener("click", () => {
+  setDialogMessage("#accountFormError");
+  $("#accountDialog").showModal();
+});
+$("#closeAccount").addEventListener("click", () => {
+  if (!currentUser?.must_change_password) $("#accountDialog").close();
+});
+$("#accountDialog").addEventListener("cancel", event => {
+  if (currentUser?.must_change_password) event.preventDefault();
+});
 $("#changePasswordForm").addEventListener("submit", async event => {
   event.preventDefault();
+  const button = $("#saveOwnPassword");
+  setDialogMessage("#accountFormError");
+  button.disabled = true;
   try {
     const response = await apiFetch(`${window.location.origin}/api/auth/change-password`, {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -1548,8 +1578,13 @@ $("#changePasswordForm").addEventListener("submit", async event => {
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || "Não foi possível alterar a senha.");
     currentUser.must_change_password = false;
+    $("#closeAccount").classList.remove("hidden");
     event.currentTarget.reset(); $("#accountDialog").close(); bootstrapPortal(); toast("Senha alterada com sucesso.");
-  } catch (error) { toast(error.message); }
+  } catch (error) {
+    setDialogMessage("#accountFormError", error.message);
+  } finally {
+    button.disabled = false;
+  }
 });
 $("#logoutButton").addEventListener("click", async () => {
   try { await apiFetch(`${window.location.origin}/api/auth/logout`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }); } catch {}

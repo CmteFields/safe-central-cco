@@ -270,6 +270,7 @@
       </div>
       <datalist id="groupOptions"><option value="INVA"><option value="INVA Solo"></datalist>
       <fieldset class="release-fieldset"><legend>Liberações</legend><div class="release-options" id="releaseOptions"></div></fieldset>
+      <div class="dialog-error hidden" id="instructorFormError" role="alert"></div>
       <div class="dialog-actions"><button type="button" class="danger-button hidden" id="deleteInstructor">Excluir</button><span></span><button value="cancel" class="secondary-button">Cancelar</button><button type="submit" class="primary-button" id="saveInstructor">Salvar alterações</button></div>
     </form>
   </dialog>
@@ -287,6 +288,7 @@
         <label class="wide">Restrições temporárias<textarea id="aircraftTemporaryRestrictions" maxlength="500" rows="2"></textarea></label>
         <label>Data da restrição temporária<input id="aircraftRestrictionDate" type="date"></label>
       </div>
+      <div class="dialog-error hidden" id="aircraftFormError" role="alert"></div>
       <div class="dialog-actions"><button type="button" class="danger-button hidden" id="deleteAircraft">Excluir</button><span></span><button value="cancel" class="secondary-button">Cancelar</button><button type="submit" class="primary-button" id="saveAircraft">Salvar alterações</button></div>
     </form>
   </dialog>
@@ -302,6 +304,7 @@
         <label class="wide">Operador que está passando<input id="handoverAuthor" maxlength="100" required placeholder="Nome do operador"></label>
         <label class="wide">Mensagem / ação necessária<textarea id="handoverMessage" maxlength="2000" rows="5" required placeholder="Descreva objetivamente o que o próximo turno precisa verificar ou executar."></textarea></label>
       </div>
+      <div class="dialog-error hidden" id="handoverFormError" role="alert"></div>
       <div class="dialog-actions"><button type="button" class="danger-button hidden" id="deleteHandover">Excluir</button><span></span><button value="cancel" class="secondary-button">Cancelar</button><button type="submit" class="primary-button" id="saveHandover">Salvar passagem</button></div>
     </form>
   </dialog>
@@ -390,12 +393,13 @@
         <label class="wide">Senha atual<input id="currentPassword" type="password" autocomplete="current-password" required></label>
         <label class="wide">Nova senha<input id="newPassword" type="password" autocomplete="new-password" required></label>
       </div>
-      <div class="dialog-actions"><button type="button" class="danger-button" id="logoutButton">Sair do portal</button><span></span><button type="submit" class="primary-button">Alterar senha</button></div>
+      <div class="dialog-error hidden" id="accountFormError" role="alert"></div>
+      <div class="dialog-actions"><button type="button" class="danger-button" id="logoutButton">Sair do portal</button><span></span><button type="submit" class="primary-button" id="saveOwnPassword">Alterar senha</button></div>
     </form>
   </dialog>
   <div class="toast" id="toast" role="status"></div>
   <script src="data/public-knowledge-index.js"></script>
   <script src="data/knowledge-index.js"></script>
-  <script src="app.js?v=20260728-23"></script>
+  <script src="app.js?v=20260728-24"></script>
 </body>
 </html>
