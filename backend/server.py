@@ -116,6 +116,10 @@ HANDOVER_STATUSES = {"Pendente", "Em andamento", "Concluída"}
 REPORT_TYPES = {"discrepancy": "Discrepância", "question": "Indicação de pergunta"}
 REPORT_PRIORITIES = {"Baixa", "Normal", "Alta", "Crítica"}
 REPORT_STATUSES = {"Aberto", "Em análise", "Resolvido", "Descartado"}
+GENERAL_CMA_RULE_IDS = {
+    "claim_rbac61_cma_vencido_impede_prerrogativas",
+    "claim_rbac61_tolerancia_habilitacao_nao_prorroga_cma",
+}
 ROLES = {"admin", "supervisor", "operator", "viewer"}
 ROLE_LABELS = {"admin": "Administrador", "supervisor": "Supervisor", "operator": "Operador", "viewer": "Consulta"}
 SESSION_HOURS = 12
@@ -1103,6 +1107,13 @@ def retrieve_public_claims(question: str, limit: int = 8) -> list[dict[str, Any]
     course = requested_course(question)
     question_norm = normalize(question)
     medical_intent = "cma" in query_tokens or "certificado medico" in question_norm
+    medical_enrollment_intent = medical_intent and "matricul" in question_norm
+    medical_validity_intent = medical_intent and any(
+        term in question_norm for term in ("vencid", "validade", "extens", "prorrog", "tolerancia", "30 dias")
+    )
+    medical_operation_intent = medical_intent and any(
+        term in question_norm for term in ("voar", "voo", "operar", "operacao", "prerrogativ")
+    )
     daily_limit_intent = bool(course) and any(
         term in question_norm for term in ("slot", "slots", "hora", "horas", "dia", "diaria", "diarias")
     )
@@ -1113,14 +1124,25 @@ def retrieve_public_claims(question: str, limit: int = 8) -> list[dict[str, Any]
         medical_text = normalize(f"{claim.get('label', '')} {metadata}")
         if medical_intent and "cma" not in medical_text and "certificado medico" not in medical_text:
             continue
+        if (
+            (medical_validity_intent or medical_operation_intent)
+            and claim["id"] not in GENERAL_CMA_RULE_IDS
+            and any(term in medical_text for term in ("matricula", "endosso", "cheque"))
+        ):
+            continue
         if not course_compatible(course, claim.get("label", ""), metadata):
             continue
         score = score_text(query_tokens, claim.get("label", ""), metadata)
-        if medical_intent and "matricula" in medical_text:
+        if medical_enrollment_intent and "matricula" in medical_text:
             score += 20
+        if medical_validity_intent or medical_operation_intent:
+            if claim["id"] in GENERAL_CMA_RULE_IDS:
+                score += 35
+            elif "matricula" in medical_text:
+                score -= 15
         if daily_limit_intent and "limite_diario_instrucao" in claim.get("id", ""):
             score += 20
-        if not score:
+        if score <= 0:
             continue
         results.append({
             "id": claim["id"],
@@ -1211,6 +1233,13 @@ def retrieve(question: str, limit: int = 8) -> list[dict[str, Any]]:
     course = requested_course(question)
     question_norm = normalize(question)
     medical_intent = "cma" in query_tokens or "certificado medico" in question_norm
+    medical_enrollment_intent = medical_intent and "matricul" in question_norm
+    medical_validity_intent = medical_intent and any(
+        term in question_norm for term in ("vencid", "validade", "extens", "prorrog", "tolerancia", "30 dias")
+    )
+    medical_operation_intent = medical_intent and any(
+        term in question_norm for term in ("voar", "voo", "operar", "operacao", "prerrogativ")
+    )
     daily_limit_intent = bool(course) and any(
         term in question_norm for term in ("slot", "slots", "hora", "horas", "dia", "diaria", "diarias")
     )
@@ -1226,16 +1255,27 @@ def retrieve(question: str, limit: int = 8) -> list[dict[str, Any]]:
         medical_text = normalize(f"{claim.get('label', '')} {metadata}")
         if medical_intent and "cma" not in medical_text and "certificado medico" not in medical_text:
             continue
+        if (
+            (medical_validity_intent or medical_operation_intent)
+            and claim["id"] not in GENERAL_CMA_RULE_IDS
+            and any(term in medical_text for term in ("matricula", "endosso", "cheque"))
+        ):
+            continue
         if not course_compatible(course, claim.get("label", ""), metadata):
             continue
         score = score_text(query_tokens, claim.get("label", ""), metadata)
-        if medical_intent and "matricula" in medical_text:
+        if medical_enrollment_intent and "matricula" in medical_text:
             score += 20
+        if medical_validity_intent or medical_operation_intent:
+            if claim["id"] in GENERAL_CMA_RULE_IDS:
+                score += 35
+            elif "matricula" in medical_text:
+                score -= 15
         if daily_limit_intent and (
             "limite_diario_instrucao" in claim["id"] or "limite_instrucao_local" in claim["id"]
         ):
             score += 20
-        if score:
+        if score > 0:
             results.append({
                 "id": claim["id"], "kind": "confirmed_claim", "label": claim["label"],
                 "code": claim.get("document_code", ""), "source": claim.get("source_path", ""),

@@ -27,9 +27,35 @@ class RetrievalTests(unittest.TestCase):
         ):
             evidence = server.retrieve("Um aluno pode voar independente do voo solo sem CMA?")
         self.assertTrue(evidence)
-        self.assertIn("matrícula", evidence[0]["label"].casefold())
+        self.assertEqual(evidence[0]["id"], "claim_rbac61_cma_vencido_impede_prerrogativas")
         self.assertTrue(all("cma" in f"{item['label']} {item['id']}".casefold() for item in evidence))
         self.assertNotIn("claim_bops054_sem_solo_30_dias_novo_endosso", {item["id"] for item in evidence})
+
+    def test_cma_has_no_automatic_thirty_day_extension(self):
+        missing_root = Path("diretorio-privado-ausente")
+        with patch.object(server, "CLAIMS_PATH", missing_root / "claims.json"), patch.object(
+            server, "GRAPH_PATH", missing_root / "graph.json"
+        ):
+            evidence = server.retrieve("O CMA vencido tem extensão de 30 dias para continuar voando?")
+        evidence_ids = [item["id"] for item in evidence]
+        self.assertEqual(evidence_ids, [
+            "claim_rbac61_tolerancia_habilitacao_nao_prorroga_cma",
+            "claim_rbac61_cma_vencido_impede_prerrogativas",
+        ])
+
+    def test_habilitation_tolerance_does_not_override_expired_cma(self):
+        missing_root = Path("diretorio-privado-ausente")
+        with patch.object(server, "CLAIMS_PATH", missing_root / "claims.json"), patch.object(
+            server, "GRAPH_PATH", missing_root / "graph.json"
+        ):
+            evidence = server.retrieve(
+                "A habilitação venceu há 10 dias e o CMA também venceu. O piloto pode operar?"
+            )
+        evidence_ids = {item["id"] for item in evidence[:2]}
+        self.assertEqual(evidence_ids, {
+            "claim_rbac61_cma_vencido_impede_prerrogativas",
+            "claim_rbac61_tolerancia_habilitacao_nao_prorroga_cma",
+        })
 
     def test_banca_ppa_recovers_bops_065(self):
         evidence = server.retrieve("Quantos voos o aluno PPA pode fazer sem a banca da ANAC?")
