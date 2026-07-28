@@ -66,15 +66,18 @@ LEGACY_DB_PATHS = {
 }
 WEB_GROUNDING_ENABLED = os.environ.get("SAFE_CCO_WEB_GROUNDING", "1").lower() in {"1", "true", "yes"}
 MAX_QUESTION_LENGTH = 1200
-WRITE_LOCK = threading.Lock()
-INSTRUCTORS_LOCK = threading.Lock()
-AIRCRAFT_LOCK = threading.Lock()
-BASES_LOCK = threading.Lock()
-HANDOVERS_LOCK = threading.Lock()
-REPORTS_LOCK = threading.Lock()
-SEARCH_HISTORY_LOCK = threading.Lock()
-AUTH_LOCK = threading.Lock()
-RULES_LOCK = threading.Lock()
+PORTAL_STORAGE_LOCK = threading.RLock()
+WRITE_LOCK = PORTAL_STORAGE_LOCK
+INSTRUCTORS_LOCK = PORTAL_STORAGE_LOCK
+AIRCRAFT_LOCK = PORTAL_STORAGE_LOCK
+BASES_LOCK = PORTAL_STORAGE_LOCK
+HANDOVERS_LOCK = PORTAL_STORAGE_LOCK
+REPORTS_LOCK = PORTAL_STORAGE_LOCK
+SEARCH_HISTORY_LOCK = PORTAL_STORAGE_LOCK
+AUTH_LOCK = PORTAL_STORAGE_LOCK
+RULES_LOCK = PORTAL_STORAGE_LOCK
+DATABASE_CONFIGURATION_LOCK = threading.Lock()
+CONFIGURED_DATABASES: set[Path] = set()
 STOPWORDS = {"a", "as", "o", "os", "de", "da", "das", "do", "dos", "e", "em", "na", "no", "para", "por", "com", "um", "uma", "que", "pode", "como", "safe", "fazer", "concluir", "quantos"}
 
 INSTRUCTOR_SEED = [
@@ -144,13 +147,29 @@ PASSWORD_ITERATIONS = 310_000
 
 def open_database(path: Path) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(path, timeout=10)
+    connection = sqlite3.connect(path, timeout=30)
     connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA busy_timeout=10000")
+    connection.execute("PRAGMA busy_timeout=30000")
     connection.execute("PRAGMA foreign_keys=ON")
-    if path == PORTAL_DB_PATH:
-        connection.execute("PRAGMA journal_mode=WAL")
     return connection
+
+
+def configure_database(path: Path) -> None:
+    """Use rollback journaling, which is compatible with hosted network filesystems."""
+    resolved_path = path.resolve()
+    with DATABASE_CONFIGURATION_LOCK:
+        if resolved_path in CONFIGURED_DATABASES:
+            return
+        resolved_path.parent.mkdir(parents=True, exist_ok=True)
+        connection = sqlite3.connect(resolved_path, timeout=30)
+        try:
+            connection.execute("PRAGMA busy_timeout=30000")
+            journal_mode = connection.execute("PRAGMA journal_mode=DELETE").fetchone()[0]
+            if str(journal_mode).casefold() != "delete":
+                raise RuntimeError("Não foi possível preparar o banco central para gravação segura.")
+        finally:
+            connection.close()
+        CONFIGURED_DATABASES.add(resolved_path)
 
 
 def migration_enabled_for(target_path: Path) -> bool:
@@ -977,6 +996,7 @@ def list_handovers() -> list[dict[str, Any]]:
 
 
 def save_handover(data: dict[str, Any], handover_id: int | None = None) -> dict[str, Any]:
+    initialize_handovers_db()
     values = validate_handover(data)
     timestamp = now_iso()
     completed_at = timestamp if values[4] == "Concluída" else None
@@ -1001,6 +1021,7 @@ def save_handover(data: dict[str, Any], handover_id: int | None = None) -> dict[
 
 
 def delete_handover(handover_id: int) -> None:
+    initialize_handovers_db()
     with HANDOVERS_LOCK, handovers_connection() as connection:
         cursor = connection.execute("DELETE FROM handovers WHERE id=?", (handover_id,))
         if not cursor.rowcount:
@@ -1265,6 +1286,7 @@ def list_instructors() -> list[dict[str, Any]]:
 
 
 def save_instructor(data: dict[str, Any], instructor_id: int | None = None) -> dict[str, Any]:
+    initialize_instructors_db()
     name, base, group, releases = validate_instructor(data)
     timestamp = now_iso()
     with INSTRUCTORS_LOCK, instructor_connection() as connection:
@@ -1286,6 +1308,7 @@ def save_instructor(data: dict[str, Any], instructor_id: int | None = None) -> d
 
 
 def delete_instructor(instructor_id: int) -> None:
+    initialize_instructors_db()
     with INSTRUCTORS_LOCK, instructor_connection() as connection:
         cursor = connection.execute("DELETE FROM instructors WHERE id=?", (instructor_id,))
         if not cursor.rowcount:
@@ -1375,6 +1398,7 @@ def list_aircraft() -> list[dict[str, Any]]:
 
 
 def save_aircraft(data: dict[str, Any], aircraft_id: int | None = None) -> dict[str, Any]:
+    initialize_aircraft_db()
     values = validate_aircraft(data)
     timestamp = now_iso()
     with AIRCRAFT_LOCK, aircraft_connection() as connection:
@@ -1401,6 +1425,7 @@ def save_aircraft(data: dict[str, Any], aircraft_id: int | None = None) -> dict[
 
 
 def delete_aircraft(aircraft_id: int) -> None:
+    initialize_aircraft_db()
     with AIRCRAFT_LOCK, aircraft_connection() as connection:
         cursor = connection.execute("DELETE FROM aircraft WHERE id=?", (aircraft_id,))
         if not cursor.rowcount:
@@ -2107,6 +2132,7 @@ def answer_question(question: str, actor: dict[str, Any] | None = None) -> dict[
 
 
 def initialize_portal_storage() -> None:
+    configure_database(PORTAL_DB_PATH)
     initialize_auth_db()
     initialize_bases_db()
     initialize_instructors_db()

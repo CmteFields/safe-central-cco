@@ -2,6 +2,7 @@ import json
 import sqlite3
 import tempfile
 import unittest
+from contextlib import ExitStack
 from io import BytesIO
 from pathlib import Path
 from unittest.mock import patch
@@ -273,6 +274,7 @@ class WSGITests(unittest.TestCase):
         path: str,
         method: str = "GET",
         payload: dict | None = None,
+        request_headers: dict[str, str] | None = None,
     ) -> tuple[str, dict[str, str], bytes]:
         body = json.dumps(payload or {}).encode("utf-8") if payload is not None else b""
         captured: dict[str, object] = {}
@@ -295,6 +297,8 @@ class WSGITests(unittest.TestCase):
         }
         if body:
             environ["CONTENT_TYPE"] = "application/json"
+        for name, value in (request_headers or {}).items():
+            environ[f"HTTP_{name.upper().replace('-', '_')}"] = value
         response_body = b"".join(wsgi.application(environ, start_response))
         headers = {name: value for name, value in captured["headers"]}
         return str(captured["status"]), headers, response_body
@@ -327,6 +331,86 @@ class WSGITests(unittest.TestCase):
         self.assertIn(b'id="reportAnswerIssue"', body)
         self.assertIn(b'data-view="gestao-regras"', body)
         self.assertIn(b'id="ruleManagementView"', body)
+        self.assertIn(b'id="accountFormError"', body)
+        self.assertIn(b'id="handoverFormError"', body)
+
+    def test_temporary_password_and_first_writes_through_wsgi(self):
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+            root = Path(directory)
+            central = root / "portalcco.db"
+            for name in (
+                "PORTAL_DB_PATH", "AUTH_DB_PATH", "BASES_DB_PATH",
+                "INSTRUCTORS_DB_PATH", "AIRCRAFT_DB_PATH", "HANDOVERS_DB_PATH",
+                "REPORTS_DB_PATH", "SEARCH_HISTORY_DB_PATH", "RULES_DB_PATH",
+                "LEARNING_DB_PATH",
+            ):
+                stack.enter_context(patch.object(server, name, central))
+            stack.enter_context(patch.object(
+                server,
+                "LEGACY_DB_PATHS",
+                {name: root / f"legacy-{name}.db" for name in server.LEGACY_DB_PATHS},
+            ))
+            stack.enter_context(patch.object(server, "LEARNING_GRAPH_PATH", root / "missing.json"))
+
+            server.initialize_portal_storage()
+            server.create_user({
+                "username": "admin", "display_name": "Admin", "password": "admin",
+            }, force_admin=True)
+            server.create_user({
+                "username": "supervisor", "display_name": "Supervisor", "password": "temporaria",
+                "role": "supervisor",
+            })
+
+            status, headers, body = self.request("/api/auth/login", "POST", {
+                "username": "supervisor", "password": "temporaria",
+            })
+            self.assertEqual(status, "200 OK")
+            login = json.loads(body)
+            cookie = headers["Set-Cookie"].split(";", 1)[0]
+            authenticated_headers = {
+                "Cookie": cookie,
+                "X-CSRF-Token": login["csrf_token"],
+            }
+            self.assertTrue(login["user"]["must_change_password"])
+
+            status, _, body = self.request(
+                "/api/auth/change-password",
+                "POST",
+                {"current_password": "temporaria", "new_password": "nova"},
+                authenticated_headers,
+            )
+            self.assertEqual(status, "200 OK", json.loads(body))
+
+            first_records = (
+                ("/api/handovers", {
+                    "origin_shift": "T1", "target_shift": "T2",
+                    "message": "Primeira passagem", "priority": "Normal",
+                    "status": "Pendente", "author": "Supervisor",
+                }),
+                ("/api/reports", {
+                    "report_type": "discrepancy", "title": "Primeiro report",
+                    "description": "Descrição da primeira discrepância.",
+                    "reference": "", "priority": "Normal",
+                }),
+                ("/api/reports", {
+                    "report_type": "question", "title": "Primeira indicação",
+                    "description": "Pergunta sugerida para a base de conhecimento.",
+                    "reference": "Qual regra se aplica neste cenário?", "priority": "Normal",
+                }),
+                ("/api/instructors", {
+                    "name": "Instrutor Teste", "base": "SJK",
+                    "group": "INVA", "releases": [],
+                }),
+                ("/api/aircraft", {
+                    "model": "Aeronave Teste", "registration": "PT-TST", "base": "SJK",
+                    "status": "Operacional", "operation_type": "VFR",
+                    "active_restrictions": "Nenhuma",
+                    "temporary_restrictions": "Nenhuma", "restriction_date": "",
+                }),
+            )
+            for path, payload in first_records:
+                status, _, body = self.request(path, "POST", payload, authenticated_headers)
+                self.assertEqual(status, "201 Created", f"{path}: {body.decode('utf-8')}")
 
     def test_secure_initial_setup_through_wsgi(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(
@@ -368,6 +452,29 @@ class OperationalStorageTests(unittest.TestCase):
 
 
 class ConsolidatedStorageTests(unittest.TestCase):
+    def test_central_database_uses_network_filesystem_safe_journal(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "portalcco.db"
+            connection = sqlite3.connect(path)
+            try:
+                self.assertEqual(
+                    connection.execute("PRAGMA journal_mode=WAL").fetchone()[0].casefold(),
+                    "wal",
+                )
+            finally:
+                connection.close()
+
+            server.configure_database(path)
+
+            connection = sqlite3.connect(path)
+            try:
+                self.assertEqual(
+                    connection.execute("PRAGMA journal_mode").fetchone()[0].casefold(),
+                    "delete",
+                )
+            finally:
+                connection.close()
+
     def test_all_default_operational_paths_use_single_database(self):
         self.assertEqual({
             server.AUTH_DB_PATH,
