@@ -50,6 +50,8 @@ HANDOVERS_DB_PATH = Path(os.environ.get("SAFE_HANDOVERS_DB_PATH", DATA_DIR / "ha
 REPORTS_DB_PATH = Path(os.environ.get("SAFE_REPORTS_DB_PATH", DATA_DIR / "reports.db")).resolve()
 SEARCH_HISTORY_DB_PATH = Path(os.environ.get("SAFE_SEARCH_HISTORY_DB_PATH", DATA_DIR / "search_history.db")).resolve()
 AUTH_DB_PATH = Path(os.environ.get("SAFE_AUTH_DB_PATH", DATA_DIR / "auth.db")).resolve()
+RULES_DB_PATH = Path(os.environ.get("SAFE_RULES_DB_PATH", DATA_DIR / "rules.db")).resolve()
+WEB_GROUNDING_ENABLED = os.environ.get("SAFE_CCO_WEB_GROUNDING", "1").lower() in {"1", "true", "yes"}
 MAX_QUESTION_LENGTH = 1200
 WRITE_LOCK = threading.Lock()
 INSTRUCTORS_LOCK = threading.Lock()
@@ -59,6 +61,7 @@ HANDOVERS_LOCK = threading.Lock()
 REPORTS_LOCK = threading.Lock()
 SEARCH_HISTORY_LOCK = threading.Lock()
 AUTH_LOCK = threading.Lock()
+RULES_LOCK = threading.Lock()
 STOPWORDS = {"a", "as", "o", "os", "de", "da", "das", "do", "dos", "e", "em", "na", "no", "para", "por", "com", "um", "uma", "que", "pode", "como", "safe", "fazer", "concluir", "quantos"}
 
 INSTRUCTOR_SEED = [
@@ -479,6 +482,259 @@ def get_search_history(record_id: str) -> dict[str, Any]:
 
 
 @contextmanager
+def rules_connection():
+    RULES_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(RULES_DB_PATH, timeout=10)
+    connection.row_factory = sqlite3.Row
+    try:
+        yield connection
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
+def initialize_rules_db() -> None:
+    with RULES_LOCK, rules_connection() as connection:
+        connection.execute("""CREATE TABLE IF NOT EXISTS rule_candidates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            normalized_question TEXT NOT NULL UNIQUE,
+            question TEXT NOT NULL,
+            proposed_answer TEXT NOT NULL DEFAULT '',
+            confidence TEXT NOT NULL DEFAULT 'low',
+            source_kind TEXT NOT NULL,
+            sources_json TEXT NOT NULL DEFAULT '[]',
+            local_evidence_json TEXT NOT NULL DEFAULT '[]',
+            status TEXT NOT NULL DEFAULT 'pending_review',
+            occurrence_count INTEGER NOT NULL DEFAULT 1,
+            first_asked_at TEXT NOT NULL,
+            last_asked_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            created_by_username TEXT NOT NULL DEFAULT '',
+            created_by_name TEXT NOT NULL DEFAULT '',
+            reviewed_by_username TEXT NOT NULL DEFAULT '',
+            reviewed_by_name TEXT NOT NULL DEFAULT '',
+            reviewed_at TEXT,
+            review_note TEXT NOT NULL DEFAULT '',
+            approved_rule_text TEXT NOT NULL DEFAULT '',
+            rule_code TEXT NOT NULL DEFAULT '',
+            authority TEXT NOT NULL DEFAULT '',
+            source_reference TEXT NOT NULL DEFAULT '',
+            source_url TEXT NOT NULL DEFAULT '',
+            scope TEXT NOT NULL DEFAULT '',
+            effective_from TEXT,
+            effective_until TEXT,
+            supersedes TEXT NOT NULL DEFAULT ''
+        )""")
+        connection.execute("""CREATE TABLE IF NOT EXISTS rule_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            candidate_id INTEGER NOT NULL,
+            action TEXT NOT NULL,
+            actor_username TEXT NOT NULL DEFAULT '',
+            actor_name TEXT NOT NULL DEFAULT '',
+            details TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(candidate_id) REFERENCES rule_candidates(id) ON DELETE CASCADE
+        )""")
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_rule_candidates_status ON rule_candidates(status, last_asked_at DESC)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_rule_events_candidate ON rule_events(candidate_id, created_at)"
+        )
+
+
+def rule_candidate_dict(row: sqlite3.Row) -> dict[str, Any]:
+    item = dict(row)
+    item["sources"] = json.loads(item.pop("sources_json") or "[]")
+    item["local_evidence"] = json.loads(item.pop("local_evidence_json") or "[]")
+    return item
+
+
+def compact_rule_evidence(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [{
+        "id": str(item.get("id", "")),
+        "kind": str(item.get("kind", "")),
+        "label": str(item.get("label", ""))[:600],
+        "code": str(item.get("code", ""))[:100],
+        "source": str(item.get("source", ""))[:500],
+        "location": str(item.get("location", ""))[:500],
+        "url": str(item.get("url", ""))[:1000],
+    } for item in items[:12]]
+
+
+def upsert_rule_candidate(
+    question: str,
+    proposed_answer: str,
+    confidence: str,
+    source_kind: str,
+    sources: list[dict[str, Any]],
+    local_evidence: list[dict[str, Any]],
+    actor: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    initialize_rules_db()
+    clean_question = question.strip()
+    normalized_question = normalize(clean_question)
+    if not normalized_question or len(clean_question) > MAX_QUESTION_LENGTH:
+        raise ValueError("Pergunta inválida para regras em aprovação.")
+    timestamp = now_iso()
+    actor = actor or {}
+    sources_json = json.dumps(compact_rule_evidence(sources), ensure_ascii=False)
+    evidence_json = json.dumps(compact_rule_evidence(local_evidence), ensure_ascii=False)
+    with RULES_LOCK, rules_connection() as connection:
+        current = connection.execute(
+            "SELECT * FROM rule_candidates WHERE normalized_question=?", (normalized_question,)
+        ).fetchone()
+        if current:
+            candidate_id = int(current["id"])
+            next_status = "pending_review" if current["status"] == "rejected" else current["status"]
+            connection.execute(
+                """UPDATE rule_candidates
+                   SET question=?, proposed_answer=?, confidence=?, source_kind=?, sources_json=?,
+                       local_evidence_json=?, status=?, occurrence_count=occurrence_count+1,
+                       last_asked_at=?, updated_at=?
+                   WHERE id=?""",
+                (
+                    clean_question, proposed_answer.strip()[:8000], confidence, source_kind,
+                    sources_json, evidence_json, next_status, timestamp, timestamp, candidate_id,
+                ),
+            )
+            action = "Pergunta repetida"
+        else:
+            cursor = connection.execute(
+                """INSERT INTO rule_candidates(
+                   normalized_question, question, proposed_answer, confidence, source_kind,
+                   sources_json, local_evidence_json, status, occurrence_count,
+                   first_asked_at, last_asked_at, updated_at, created_by_username, created_by_name
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending_review', 1, ?, ?, ?, ?, ?)""",
+                (
+                    normalized_question, clean_question, proposed_answer.strip()[:8000], confidence,
+                    source_kind, sources_json, evidence_json, timestamp, timestamp, timestamp,
+                    str(actor.get("username", "")), str(actor.get("display_name", "")),
+                ),
+            )
+            candidate_id = int(cursor.lastrowid)
+            action = "Criada"
+        connection.execute(
+            """INSERT INTO rule_events(candidate_id, action, actor_username, actor_name, details, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (
+                candidate_id, action, str(actor.get("username", "")), str(actor.get("display_name", "")),
+                json.dumps({"source_kind": source_kind, "confidence": confidence}, ensure_ascii=False),
+                timestamp,
+            ),
+        )
+        row = connection.execute("SELECT * FROM rule_candidates WHERE id=?", (candidate_id,)).fetchone()
+    return rule_candidate_dict(row)
+
+
+def list_rule_candidates(status: str = "pending_review") -> list[dict[str, Any]]:
+    initialize_rules_db()
+    allowed = {"pending_review", "approved", "rejected", "all"}
+    if status not in allowed:
+        raise ValueError("Situação de regra inválida.")
+    with rules_connection() as connection:
+        if status == "all":
+            rows = connection.execute(
+                "SELECT * FROM rule_candidates ORDER BY last_asked_at DESC"
+            ).fetchall()
+        else:
+            rows = connection.execute(
+                """SELECT * FROM rule_candidates WHERE status=?
+                   ORDER BY occurrence_count DESC, last_asked_at DESC""", (status,)
+            ).fetchall()
+    return [rule_candidate_dict(row) for row in rows]
+
+
+def review_rule_candidate(candidate_id: int, data: dict[str, Any], reviewer: dict[str, Any]) -> dict[str, Any]:
+    initialize_rules_db()
+    status = str(data.get("status", "")).strip()
+    if status not in {"approved", "rejected", "pending_review"}:
+        raise ValueError("Selecione uma decisão válida.")
+    review_note = str(data.get("review_note", "")).strip()
+    approved_rule_text = str(data.get("approved_rule_text", "")).strip()
+    rule_code = str(data.get("rule_code", "")).strip()
+    authority = str(data.get("authority", "")).strip()
+    source_reference = str(data.get("source_reference", "")).strip()
+    source_url = str(data.get("source_url", "")).strip()
+    scope = str(data.get("scope", "")).strip()
+    effective_from = str(data.get("effective_from", "")).strip() or None
+    effective_until = str(data.get("effective_until", "")).strip() or None
+    supersedes = str(data.get("supersedes", "")).strip()
+    if not review_note:
+        raise ValueError("Registre a justificativa da decisão.")
+    if status == "approved" and (not approved_rule_text or not source_reference or not authority):
+        raise ValueError("Para aprovar, informe a regra, a autoridade e a referência da fonte.")
+    if source_url and not source_url.startswith(("https://", "http://")):
+        raise ValueError("A URL da fonte deve começar com http:// ou https://.")
+    if any(len(value or "") > limit for value, limit in (
+        (review_note, 3000), (approved_rule_text, 8000), (rule_code, 100),
+        (authority, 120), (source_reference, 1000), (source_url, 1000),
+        (scope, 1000), (supersedes, 500),
+    )):
+        raise ValueError("Um dos campos excede o limite permitido.")
+    timestamp = now_iso()
+    with RULES_LOCK, rules_connection() as connection:
+        current = connection.execute(
+            "SELECT * FROM rule_candidates WHERE id=?", (candidate_id,)
+        ).fetchone()
+        if not current:
+            raise LookupError("Regra em aprovação não encontrada.")
+        connection.execute(
+            """UPDATE rule_candidates SET status=?, review_note=?, approved_rule_text=?,
+               rule_code=?, authority=?, source_reference=?, source_url=?, scope=?,
+               effective_from=?, effective_until=?, supersedes=?, reviewed_by_username=?,
+               reviewed_by_name=?, reviewed_at=?, updated_at=? WHERE id=?""",
+            (
+                status, review_note, approved_rule_text, rule_code, authority, source_reference,
+                source_url, scope, effective_from, effective_until, supersedes,
+                reviewer["username"], reviewer["display_name"], timestamp, timestamp, candidate_id,
+            ),
+        )
+        connection.execute(
+            """INSERT INTO rule_events(candidate_id, action, actor_username, actor_name, details, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (
+                candidate_id, f"Revisão: {status}", reviewer["username"], reviewer["display_name"],
+                json.dumps({"from": current["status"], "to": status, "note": review_note}, ensure_ascii=False),
+                timestamp,
+            ),
+        )
+        row = connection.execute("SELECT * FROM rule_candidates WHERE id=?", (candidate_id,)).fetchone()
+    return rule_candidate_dict(row)
+
+
+def approved_dynamic_rules() -> list[dict[str, Any]]:
+    today = datetime.now(timezone.utc).date().isoformat()
+    return [
+        item for item in list_rule_candidates("approved")
+        if (not item["effective_from"] or item["effective_from"] <= today)
+        and (not item["effective_until"] or item["effective_until"] >= today)
+    ]
+
+
+def list_approved_rules() -> list[dict[str, Any]]:
+    public_index = load_public_knowledge_index(str(PUBLIC_KNOWLEDGE_INDEX_PATH))
+    static_rules = [{
+        "id": item.get("id", ""),
+        "rule_code": item.get("code", ""),
+        "approved_rule_text": item.get("label", ""),
+        "authority": "Base SAFE aprovada",
+        "source_reference": item.get("location", ""),
+        "source_url": "",
+        "scope": item.get("appliesTo", ""),
+        "effective_from": None,
+        "effective_until": None,
+        "status": "approved",
+        "origin": "base_curated",
+    } for item in public_index.get("claims", [])]
+    dynamic_rules = [{**item, "origin": "reviewed_candidate"} for item in approved_dynamic_rules()]
+    return dynamic_rules + static_rules
+
+
+@contextmanager
 def bases_connection():
     BASES_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(BASES_DB_PATH, timeout=10)
@@ -756,7 +1012,20 @@ def create_report(data: dict[str, Any], reporter: dict[str, Any]) -> dict[str, A
             ),
         )
         row = connection.execute("SELECT * FROM reports WHERE id=?", (report_id,)).fetchone()
-    return report_dict(row)
+    report = report_dict(row)
+    if report["report_type"] == "question":
+        question = report["reference"] or report["title"]
+        description = report["description"]
+        upsert_rule_candidate(
+            question=question,
+            proposed_answer=description,
+            confidence="low",
+            source_kind="operator_report",
+            sources=[],
+            local_evidence=[],
+            actor=reporter,
+        )
+    return report
 
 
 def update_report(report_id: int, data: dict[str, Any], actor: dict[str, Any]) -> dict[str, Any]:
@@ -1102,6 +1371,31 @@ def load_public_knowledge_index(path_value: str) -> dict[str, Any]:
     return json.loads(payload.strip().removesuffix(";"))
 
 
+def retrieve_dynamic_rules(question: str) -> list[dict[str, Any]]:
+    query_tokens = tokens(question)
+    results = []
+    for rule in approved_dynamic_rules():
+        label = rule.get("approved_rule_text", "")
+        metadata = " ".join(str(rule.get(field, "")) for field in (
+            "rule_code", "authority", "source_reference", "scope", "supersedes"
+        ))
+        score = score_text(query_tokens, label, metadata) + 6
+        if score <= 6:
+            continue
+        results.append({
+            "id": f"approved_rule_{rule['id']}",
+            "kind": "confirmed_claim",
+            "label": label,
+            "code": rule.get("rule_code", ""),
+            "source": rule.get("source_reference", ""),
+            "location": rule.get("scope", "") or rule.get("source_reference", ""),
+            "url": rule.get("source_url", ""),
+            "score": score,
+            "excerpt": label,
+        })
+    return results
+
+
 def retrieve_public_claims(question: str, limit: int = 8) -> list[dict[str, Any]]:
     query_tokens = tokens(question)
     course = requested_course(question)
@@ -1117,7 +1411,7 @@ def retrieve_public_claims(question: str, limit: int = 8) -> list[dict[str, Any]
     daily_limit_intent = bool(course) and any(
         term in question_norm for term in ("slot", "slots", "hora", "horas", "dia", "diaria", "diarias")
     )
-    results = []
+    results = retrieve_dynamic_rules(question)
     public_index = load_public_knowledge_index(str(PUBLIC_KNOWLEDGE_INDEX_PATH))
     for claim in public_index.get("claims", []):
         metadata = f"{claim.get('code', '')} {claim.get('appliesTo', '')} {claim.get('relation', '')}"
@@ -1245,7 +1539,7 @@ def retrieve(question: str, limit: int = 8) -> list[dict[str, Any]]:
     )
     claims_data = load_json(CLAIMS_PATH)
     graph_data = load_json(GRAPH_PATH)
-    results: list[dict[str, Any]] = []
+    results: list[dict[str, Any]] = retrieve_dynamic_rules(question)
     claim_ids = set()
     for claim in claims_data.get("claims", []):
         if claim.get("status") not in {"confirmed", "confirmed_temporary_override"}:
@@ -1327,7 +1621,7 @@ def gemini_key() -> str:
     return os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or ""
 
 
-def call_gemini(question: str, evidence: list[dict[str, Any]]) -> dict[str, Any]:
+def call_gemini(question: str, evidence: list[dict[str, Any]], grounded: bool = False) -> dict[str, Any]:
     key = gemini_key()
     if not key:
         raise RuntimeError("GEMINI_API_KEY não configurada no processo do backend.")
@@ -1336,11 +1630,25 @@ def call_gemini(question: str, evidence: list[dict[str, Any]]) -> dict[str, Any]
         f"CÓDIGO: {item['code']}\nLOCAL: {item['location']}\nTRECHO:\n{item['excerpt']}"
         for index, item in enumerate(evidence, 1)
     )
-    prompt = f"""Você é o assistente operacional do CCO da Escola SAFE.
+    if grounded:
+        prompt = f"""Você é o assistente de pesquisa regulatória do CCO da Escola SAFE.
+A base aprovada não foi suficiente para responder à pergunta abaixo.
+Pesquise na web e use somente fontes primárias oficiais, priorizando ANAC, gov.br e legislação brasileira vigente.
+Não trate blogs, fóruns, resumos de terceiros ou resultados sem fonte oficial como regra.
+Responda de forma direta em português do Brasil e deixe claro quando a fonte não resolver integralmente a dúvida.
+Esta resposta é apenas uma proposta para revisão humana e não é uma regra aprovada da SAFE.
+Defina confidence como low quando houver conflito, dúvida de vigência ou ausência de fonte oficial conclusiva.
+used_evidence deve ser uma lista vazia. candidate_relations pode registrar relações conceituais percebidas.
+
+PERGUNTA: {question}
+"""
+    else:
+        prompt = f"""Você é o assistente operacional do CCO da Escola SAFE.
 Responda somente com base nas evidências fornecidas. Não invente regras, prazos ou permissões.
 Responda diretamente o que foi perguntado. Você pode fazer inferência aritmética ou sequencial simples quando sustentada pelas evidências, deixando claro que se trata de uma conclusão lógica.
 Se as evidências forem insuficientes ou conflitantes, diga isso claramente e defina confidence como low.
 Prefira regras confirmadas e documentos vigentes. Seja direto e use português do Brasil.
+Hierarquia operacional: o MGOP vigente é a fonte consolidada. Uma AVOP ativa pode complementar ou alterar temporariamente apenas o tema específico quando isso estiver explícito e enquanto ainda não tiver sido incorporada ao MGOP. Depois da incorporação, prevalece o MGOP atualizado. Em conflito não resolvido, não escolha automaticamente: informe a divergência e use confidence low.
 Uma exceção ao intervalo entre atividades não é uma exceção ao limite máximo diário, a menos que a evidência diga isso expressamente.
 Indique em used_evidence apenas números das evidências realmente usadas.
 candidate_relations são possíveis relações conceituais percebidas na pergunta; elas serão revisadas e nunca são regras oficiais.
@@ -1366,6 +1674,8 @@ PERGUNTA: {question}
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {"maxOutputTokens": 1000, "responseMimeType": "application/json", "responseSchema": schema},
     }
+    if grounded:
+        body["tools"] = [{"google_search": {}}]
     request = urllib.request.Request(
         f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:generateContent",
         data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
@@ -1379,8 +1689,38 @@ PERGUNTA: {question}
         raise RuntimeError(f"Gemini respondeu HTTP {error.code}: {detail}") from error
     except TimeoutError as error:
         raise RuntimeError("Gemini excedeu o tempo de resposta de 90 segundos.") from error
-    text = payload["candidates"][0]["content"]["parts"][0]["text"]
-    return json.loads(text)
+    candidate = payload["candidates"][0]
+    text = next(
+        str(part["text"]).strip()
+        for part in candidate["content"]["parts"]
+        if part.get("text")
+    )
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.IGNORECASE)
+    result = json.loads(text)
+    if grounded:
+        metadata = candidate.get("groundingMetadata", {})
+        web_sources = []
+        seen_urls = set()
+        for chunk in metadata.get("groundingChunks", []):
+            web = chunk.get("web") or {}
+            url = str(web.get("uri", "")).strip()
+            if not url or url in seen_urls:
+                continue
+            seen_urls.add(url)
+            web_sources.append({
+                "id": f"web_{len(web_sources) + 1}",
+                "kind": "external_source",
+                "label": str(web.get("title", "")).strip() or "Fonte oficial consultada",
+                "code": "Fonte externa",
+                "source": url,
+                "location": url,
+                "url": url,
+                "excerpt": "",
+            })
+        result["_web_sources"] = web_sources
+        result["_search_queries"] = metadata.get("webSearchQueries", [])
+    return result
 
 
 def load_learning_graph() -> dict[str, Any]:
@@ -1406,16 +1746,87 @@ def record_learning(question: str, evidence: list[dict[str, Any]], result: dict[
     return query_id
 
 
-def answer_question(question: str) -> dict[str, Any]:
+def answer_question(question: str, actor: dict[str, Any] | None = None) -> dict[str, Any]:
     evidence = retrieve(question)
-    result = call_gemini(question, evidence)
-    used_indices = [int(value) for value in result.get("used_evidence", []) if str(value).isdigit()]
-    sources = [evidence[index - 1] for index in used_indices if 1 <= index <= len(evidence)]
-    query_id = record_learning(question, evidence, result)
+    local_error = ""
+    try:
+        local_result = call_gemini(question, evidence)
+    except Exception as error:
+        local_error = str(error)
+        local_result = {
+            "answer": "",
+            "confidence": "low",
+            "used_evidence": [],
+            "candidate_relations": [],
+        }
+    used_indices = [int(value) for value in local_result.get("used_evidence", []) if str(value).isdigit()]
+    local_sources = [evidence[index - 1] for index in used_indices if 1 <= index <= len(evidence)]
+    local_answer_norm = normalize(str(local_result.get("answer", "")))
+    local_sufficient = (
+        local_result.get("confidence") in {"high", "medium"}
+        and any(item.get("kind") == "confirmed_claim" for item in local_sources)
+        and not any(term in local_answer_norm for term in ("conflit", "diverg"))
+    )
+    result = local_result
+    sources = local_sources
+    response_mode = "local_approved"
+    knowledge_status = "approved"
+    candidate = None
+    external_error = ""
+
+    if not local_sufficient:
+        response_mode = "unanswered"
+        knowledge_status = "pending_review"
+        if WEB_GROUNDING_ENABLED:
+            try:
+                external_result = call_gemini(question, evidence, grounded=True)
+                external_sources = external_result.get("_web_sources", [])
+                if external_result.get("answer") and external_sources:
+                    result = external_result
+                    sources = external_sources
+                    response_mode = "external_grounded"
+            except Exception as error:
+                external_error = str(error)
+        if response_mode == "unanswered":
+            result = local_result
+            sources = local_sources
+            if not result.get("answer"):
+                result["answer"] = (
+                    "Não encontrei uma resposta sustentada pela base aprovada nem uma fonte oficial "
+                    "externa conclusiva. A pergunta foi registrada para análise em Regras em aprovação."
+                )
+            result["confidence"] = "low"
+        answer_norm = normalize(str(result.get("answer", "")))
+        source_kind = (
+            "conflict" if any(term in answer_norm for term in ("conflit", "diverg"))
+            else "external_grounded" if response_mode == "external_grounded"
+            else "unanswered"
+        )
+        candidate = upsert_rule_candidate(
+            question=question,
+            proposed_answer=str(result.get("answer", "")),
+            confidence=str(result.get("confidence", "low")),
+            source_kind=source_kind,
+            sources=sources,
+            local_evidence=evidence,
+            actor=actor,
+        )
+
+    try:
+        query_id = record_learning(question, evidence, result)
+    except Exception:
+        timestamp = now_iso()
+        query_id = "query_" + hashlib.sha256(f"{timestamp}:{question}".encode("utf-8")).hexdigest()[:16]
     payload = {
         "query_id": query_id, "answer": result.get("answer", ""),
         "confidence": result.get("confidence", "low"), "sources": sources,
         "candidate_relations_count": len(result.get("candidate_relations", [])),
+        "knowledge_status": knowledge_status,
+        "response_mode": response_mode,
+        "provisional": knowledge_status != "approved",
+        "candidate_id": candidate["id"] if candidate else None,
+        "local_error": local_error if not gemini_key() else "",
+        "external_error": external_error if WEB_GROUNDING_ENABLED and not gemini_key() else "",
     }
     save_search_history(question, "ai", payload["confidence"], result=payload, record_id=query_id)
     return payload
@@ -1489,6 +1900,16 @@ class Handler(BaseHTTPRequestHandler):
                 if user["role"] != "admin":
                     self.send_json(403, {"error": "Apenas administradores podem gerenciar usuários."}); return
                 self.send_json(200, {"items": list_users(), "roles": ROLE_LABELS}); return
+        if urllib.parse.urlparse(self.path).path == "/api/approved-rules":
+            self.send_json(200, {"items": list_approved_rules()})
+            return
+        if urllib.parse.urlparse(self.path).path == "/api/rule-candidates":
+            if user["role"] not in {"admin", "supervisor"}:
+                self.send_json(403, {"error": "Somente Supervisor ou Administrador pode revisar regras."}); return
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            status = query.get("status", ["pending_review"])[0]
+            self.send_json(200, {"items": list_rule_candidates(status)})
+            return
         if urllib.parse.urlparse(self.path).path == "/api/instructors":
             self.send_json(200, {"items": list_instructors()})
             return
@@ -1620,7 +2041,7 @@ class Handler(BaseHTTPRequestHandler):
             question = str(data.get("question", "")).strip()
             if not question or len(question) > MAX_QUESTION_LENGTH:
                 self.send_json(400, {"error": "Pergunta vazia ou muito longa."}); return
-            self.send_json(200, answer_question(question))
+            self.send_json(200, answer_question(question, user))
         except (ValueError, json.JSONDecodeError) as error:
             self.send_json(400, {"error": str(error)})
         except PermissionError as error:
@@ -1635,6 +2056,21 @@ class Handler(BaseHTTPRequestHandler):
         if not context:
             return
         user, _ = context
+        rule_match = re.fullmatch(r"/api/rule-candidates/(\d+)", urllib.parse.urlparse(self.path).path)
+        if rule_match:
+            if user["role"] not in {"admin", "supervisor"}:
+                self.send_json(403, {"error": "Somente Supervisor ou Administrador pode revisar regras."}); return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                data = json.loads(self.rfile.read(min(length, 16_384)).decode("utf-8"))
+                self.send_json(200, review_rule_candidate(int(rule_match.group(1)), data, user))
+            except (ValueError, json.JSONDecodeError) as error:
+                self.send_json(400, {"error": str(error)})
+            except LookupError as error:
+                self.send_json(404, {"error": str(error)})
+            except Exception as error:
+                self.send_json(500, {"error": str(error)})
+            return
         user_match = re.fullmatch(r"/api/users/(\d+)", urllib.parse.urlparse(self.path).path)
         if user_match:
             if user["role"] != "admin":

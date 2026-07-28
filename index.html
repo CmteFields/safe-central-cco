@@ -10,7 +10,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css?v=20260724-7">
-  <link rel="stylesheet" href="instrutores.css?v=20260728-13">
+  <link rel="stylesheet" href="instrutores.css?v=20260728-14">
   <link rel="stylesheet" href="topbar.css?v=20260724-13">
   <link rel="stylesheet" href="auth.css?v=20260724-16">
 </head>
@@ -41,6 +41,7 @@
       <nav class="main-nav" aria-label="Navegação principal">
         <p class="nav-label">OPERAÇÃO</p>
         <button class="nav-item active" data-view="regras"><span class="nav-icon">✓</span>Regras e procedimentos<span class="nav-count">128</span></button>
+        <button class="nav-item hidden" data-view="gestao-regras" id="ruleManagementNav"><span class="nav-icon">⇧</span>Gestão de regras<span class="handover-nav-count" id="ruleCandidateNavCount">0</span></button>
         <button class="nav-item" data-view="reports"><span class="nav-icon">⚑</span>Reports<span class="handover-nav-count report-nav-count" id="reportNavCount">0</span></button>
         <button class="nav-item" data-view="passagem"><span class="nav-icon">⇄</span>Passagem de turno<span class="handover-nav-count" id="handoverNavCount">0</span></button>
         <button class="nav-item" data-view="instrutores"><span class="nav-icon">♙</span>Instrutores</button>
@@ -130,7 +131,7 @@
           <article class="answer-card">
             <p class="eyebrow">RESPOSTA DA BASE DE CONHECIMENTO</p>
             <h1 id="answerQuestion"></h1>
-            <div class="confidence"><span>✓</span><div><strong>Resposta confirmada</strong><small>Baseada em documento vigente</small></div></div>
+            <div class="confidence" id="answerConfidence"><span id="answerConfidenceIcon">✓</span><div><strong id="answerConfidenceTitle">Resposta confirmada</strong><small id="answerConfidenceDetail">Baseada em documento vigente</small></div></div>
             <div class="archived-answer-notice hidden" id="archivedAnswerNotice"><span>↺</span><div><strong id="archivedAnswerTitle">Pesquisa armazenada</strong><small id="archivedAnswerDate"></small></div><button id="repeatArchivedSearch">Pesquisar novamente</button></div>
             <div class="answer-body" id="answerBody"></div>
             <div class="source-box"><span>▤</span><div><small>FONTE PRINCIPAL</small><strong id="sourceTitle"></strong><p id="sourceDetail"></p></div><button id="sourceButton">Ver fonte</button></div>
@@ -218,6 +219,25 @@
           <label>Situação<select id="reportStatusFilter"><option value="">Todas</option><option>Aberto</option><option>Em análise</option><option>Resolvido</option><option>Descartado</option></select></label>
         </div>
         <div class="report-list" id="reportList"><div class="table-message">Carregando reports…</div></div>
+      </section>
+
+      <section class="page hidden" id="ruleManagementView">
+        <div class="instructors-head">
+          <div><p class="eyebrow">GOVERNANÇA · CONHECIMENTO</p><h1>Gestão de regras</h1><p>Revise perguntas sem resposta e publique somente regras validadas por fonte e autoridade.</p></div>
+        </div>
+        <div class="rule-summary">
+          <div><small>EM APROVAÇÃO</small><strong id="pendingRuleCount">0</strong></div>
+          <div><small>REGRAS APROVADAS</small><strong id="approvedRuleCount">0</strong></div>
+          <div class="rule-governance-note"><span>i</span><p>Resultados externos são provisórios. Nenhuma pergunta vira regra sem revisão humana.</p></div>
+        </div>
+        <div class="rule-toolbar">
+          <div class="rule-tabs" role="tablist">
+            <button class="active" id="pendingRulesTab" type="button">Em aprovação</button>
+            <button id="approvedRulesTab" type="button">Regras aprovadas</button>
+          </div>
+          <label class="table-search"><span>⌕</span><input id="ruleSearch" type="search" placeholder="Buscar pergunta, regra ou fonte…"></label>
+        </div>
+        <div class="rule-review-list" id="ruleReviewList"><div class="table-message">Carregando regras…</div></div>
       </section>
 
       <section class="page hidden" id="usersView">
@@ -313,6 +333,28 @@
       <div class="dialog-actions"><span></span><button value="cancel" class="secondary-button">Cancelar</button><button type="submit" class="primary-button" id="saveReportReview">Salvar tratativa</button></div>
     </form>
   </dialog>
+  <dialog class="instructor-dialog rule-review-dialog" id="ruleReviewDialog">
+    <form method="dialog" id="ruleReviewForm">
+      <div class="dialog-head"><div><p class="eyebrow">GOVERNANÇA DO CONHECIMENTO</p><h2 id="ruleReviewTitle">Revisar regra</h2></div><button class="dialog-close" value="cancel" aria-label="Fechar">×</button></div>
+      <input type="hidden" id="ruleReviewId">
+      <div class="rule-review-context" id="ruleReviewContext"></div>
+      <div class="form-grid">
+        <label>Decisão<select id="ruleReviewStatus" required><option value="pending_review">Manter em aprovação</option><option value="approved">Aprovar regra</option><option value="rejected">Rejeitar proposta</option></select></label>
+        <label>Código da regra<input id="ruleCode" maxlength="100" placeholder="Ex.: RG-PORTAL-001"></label>
+        <label class="wide">Texto aprovado da regra<textarea id="approvedRuleText" maxlength="8000" rows="5" placeholder="Redação exata que poderá ser usada nas próximas respostas."></textarea></label>
+        <label>Autoridade responsável<input id="ruleAuthority" maxlength="120" placeholder="Ex.: Coordenação Operacional"></label>
+        <label>Data de início<input id="ruleEffectiveFrom" type="date"></label>
+        <label class="wide">Referência da fonte<input id="ruleSourceReference" maxlength="1000" placeholder="Documento, revisão, seção e linhas."></label>
+        <label class="wide">URL oficial da fonte <span class="optional-label">(opcional)</span><input id="ruleSourceUrl" type="url" maxlength="1000" placeholder="https://…"></label>
+        <label class="wide">Escopo <span class="optional-label">(opcional)</span><input id="ruleScope" maxlength="1000" placeholder="Cursos, bases, pessoas ou operações abrangidas."></label>
+        <label>Válida até <span class="optional-label">(opcional)</span><input id="ruleEffectiveUntil" type="date"></label>
+        <label>Substitui <span class="optional-label">(opcional)</span><input id="ruleSupersedes" maxlength="500"></label>
+        <label class="wide">Justificativa da decisão<textarea id="ruleReviewNote" maxlength="3000" rows="4" required placeholder="Registre por que a proposta foi aprovada, rejeitada ou mantida em análise."></textarea></label>
+      </div>
+      <div class="dialog-error hidden" id="ruleReviewError" role="alert"></div>
+      <div class="dialog-actions"><span></span><button value="cancel" class="secondary-button">Cancelar</button><button type="submit" class="primary-button" id="saveRuleReview">Salvar decisão</button></div>
+    </form>
+  </dialog>
   <dialog class="help-dialog" id="helpDialog">
     <div class="dialog-head"><div><p class="eyebrow">SUPORTE AO OPERADOR</p><h2>Como podemos ajudar?</h2></div><button class="dialog-close" id="closeHelp" aria-label="Fechar">×</button></div>
     <div class="help-grid">
@@ -354,6 +396,6 @@
   <div class="toast" id="toast" role="status"></div>
   <script src="data/public-knowledge-index.js"></script>
   <script src="data/knowledge-index.js"></script>
-  <script src="app.js?v=20260728-22"></script>
+  <script src="app.js?v=20260728-23"></script>
 </body>
 </html>

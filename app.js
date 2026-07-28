@@ -59,6 +59,7 @@ const instructorsView = $("#instructorsView");
 const aircraftView = $("#aircraftView");
 const handoverView = $("#handoverView");
 const reportsView = $("#reportsView");
+const ruleManagementView = $("#ruleManagementView");
 const usersView = $("#usersView");
 const input = $("#searchInput");
 const searchBox = $("#searchForm");
@@ -88,6 +89,11 @@ let handovers = [];
 let handoversLoaded = false;
 let reports = [];
 let reportsLoaded = false;
+let ruleCandidates = [];
+let approvedRules = [];
+let rulesLoaded = false;
+let activeRulesTab = "pending";
+let currentSourceUrl = "";
 let users = [];
 let usersLoaded = false;
 const instructorReleases = ["Liberado MC01", "Liberado C150", "Liberado P-Mentor VFR/IFR SIC", "Liberado IFR Avião", "Liberado IFR AATD", "Liberado IFR PCATD (Laboratório)", "Liberado COLT", "Instrutor Eventual"];
@@ -114,7 +120,7 @@ function renderBaseSelect(select, includeUnassigned, selected = "") {
 }
 
 function showView(view, name) {
-  [homeView, answerView, moduleView, instructorsView, aircraftView, handoverView, reportsView, usersView].forEach(item => item.classList.add("hidden"));
+  [homeView, answerView, moduleView, instructorsView, aircraftView, handoverView, reportsView, ruleManagementView, usersView].forEach(item => item.classList.add("hidden"));
   view.classList.remove("hidden");
   $("#pageName").textContent = name;
   window.scrollTo({ top: 0, behavior: "smooth" });
@@ -320,12 +326,16 @@ function graphResultAnswer(query, results) {
 function apiResultAnswer(query, result) {
   const confidenceLabels = { high: "Alta confiança", medium: "Confiança moderada", low: "Baixa confiança" };
   const sources = result.sources || [];
+  const provisional = result.knowledge_status === "pending_review" || result.provisional;
+  const primary = sources[0];
   return {
     question: query,
-    answer: `<p>${escapeHtml(result.answer).replace(/\n/g, "<br>")}</p><div class="answer-highlight"><strong>${confidenceLabels[result.confidence] || "Confiança não informada"}</strong><br><small>Consulta ${escapeHtml(result.query_id || "")} · ${result.candidate_relations_count || 0} nova(s) relação(ões) candidata(s)</small></div>`,
-    source: sources[0]?.code || sources[0]?.label || "Grafo SAFE + Gemini",
-    detail: sources[0] ? `${sources[0].location || "Localização não informada"}` : "Nenhuma evidência suficiente localizada",
-    relations: sources.slice(0, 3).map(item => [item.kind === "confirmed_claim" ? "REGRA CONFIRMADA" : "DOCUMENTO", item.label, item.code || item.location || "Grafo SAFE"]),
+    answer: `${provisional ? `<div class="answer-highlight provisional-answer"><strong>Resposta provisória — aguardando aprovação.</strong><br><small>A pergunta foi registrada automaticamente em Regras em aprovação${result.candidate_id ? ` como item #${escapeHtml(result.candidate_id)}` : ""}. Não use esta proposta como regra interna definitiva.</small></div>` : ""}<p>${escapeHtml(result.answer).replace(/\n/g, "<br>")}</p><div class="answer-highlight"><strong>${confidenceLabels[result.confidence] || "Confiança não informada"}</strong><br><small>Consulta ${escapeHtml(result.query_id || "")} · ${result.candidate_relations_count || 0} nova(s) relação(ões) candidata(s)</small></div>`,
+    source: primary?.code || primary?.label || (provisional ? "Pesquisa pendente de aprovação" : "Grafo SAFE + Gemini"),
+    detail: primary ? `${primary.location || "Localização não informada"}` : "Nenhuma evidência suficiente localizada",
+    sourceUrl: primary?.url || "",
+    provisional,
+    relations: sources.slice(0, 5).map(item => [item.kind === "confirmed_claim" ? "REGRA CONFIRMADA" : item.kind === "external_source" ? "FONTE EXTERNA · PROVISÓRIA" : "DOCUMENTO", item.label, item.code || item.location || "Grafo SAFE", item.url || ""]),
   };
 }
 
@@ -357,7 +367,15 @@ function showAnswer(item, originalQuestion, options = {}) {
   $("#answerBody").innerHTML = item.answer;
   $("#sourceTitle").textContent = item.source;
   $("#sourceDetail").textContent = item.detail;
-  $("#relationList").innerHTML = item.relations.map(r => `<div class="relation"><small>${r[0]}</small><strong>${r[1]}</strong><span>${r[2]}</span></div>`).join("");
+  currentSourceUrl = item.sourceUrl || "";
+  $("#sourceButton").disabled = !currentSourceUrl;
+  $("#sourceButton").textContent = currentSourceUrl ? "Ver fonte" : "Fonte interna";
+  $("#relationList").innerHTML = item.relations.map(r => `<div class="relation"><small>${r[0]}</small><strong>${r[1]}</strong><span>${r[2]}</span>${r[3] ? `<a href="${escapeHtml(r[3])}" target="_blank" rel="noopener noreferrer">Abrir fonte oficial ↗</a>` : ""}</div>`).join("");
+  const provisional = Boolean(item.provisional);
+  $("#answerConfidence").classList.toggle("provisional", provisional);
+  $("#answerConfidenceIcon").textContent = provisional ? "!" : "✓";
+  $("#answerConfidenceTitle").textContent = provisional ? "Resposta provisória" : "Resposta confirmada";
+  $("#answerConfidenceDetail").textContent = provisional ? "Aguardando validação humana" : "Baseada em documento vigente";
   const storedAnswer = Boolean(options.archivedAt || options.storedDetail);
   archivedQuestion = storedAnswer ? (originalQuestion || item.question) : "";
   $("#archivedAnswerNotice").classList.toggle("hidden", !storedAnswer);
@@ -383,6 +401,7 @@ async function search(query) {
     await finishSearchProgress(false);
     showAnswer(apiResultAnswer(query, apiResult), query);
     loadSearchHistory();
+    if (hasRole("admin", "supervisor") && apiResult.provisional) loadRules();
   } catch (error) {
     console.info("Backend de IA indisponível; usando busca local.", error.message);
     showLocalFallbackProgress();
@@ -918,6 +937,7 @@ async function saveReport(event) {
     reports.unshift(saved);
     reportsLoaded = true;
     renderReports();
+    if (saved.report_type === "question" && hasRole("admin", "supervisor")) loadRules();
     $("#reportDialog").close();
     toast("Report registrado e encaminhado para análise.");
   } catch (error) {
@@ -962,6 +982,143 @@ async function saveReportReview(event) {
     renderReports();
     $("#reportReviewDialog").close();
     toast("Tratativa do report atualizada.");
+  } catch (error) {
+    errorBox.textContent = error.message;
+    errorBox.classList.remove("hidden");
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function ruleRequest(path = "", options = {}) {
+  const response = await apiFetch(`${window.location.origin}/api/${path}`, {
+    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+    ...options,
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || "Não foi possível acessar a gestão de regras.");
+  return data;
+}
+
+function sourceKindLabel(value) {
+  return {
+    external_grounded: "Pesquisa oficial externa",
+    unanswered: "Sem resposta conclusiva",
+    conflict: "Conflito entre fontes",
+    operator_report: "Indicação do operador",
+  }[value] || value;
+}
+
+function renderRules() {
+  const list = $("#ruleReviewList");
+  const search = normalizeText($("#ruleSearch").value);
+  $("#pendingRuleCount").textContent = ruleCandidates.length;
+  $("#approvedRuleCount").textContent = approvedRules.length;
+  $("#ruleCandidateNavCount").textContent = ruleCandidates.length;
+  $("#ruleCandidateNavCount").classList.toggle("hidden", !ruleCandidates.length);
+  $("#pendingRulesTab").classList.toggle("active", activeRulesTab === "pending");
+  $("#approvedRulesTab").classList.toggle("active", activeRulesTab === "approved");
+  const source = activeRulesTab === "pending" ? ruleCandidates : approvedRules;
+  const filtered = source.filter(item => normalizeText([
+    item.question, item.proposed_answer, item.approved_rule_text, item.rule_code,
+    item.source_reference, item.authority,
+  ].join(" ")).includes(search));
+  if (!filtered.length) {
+    list.innerHTML = `<div class="table-message">${activeRulesTab === "pending" ? "Nenhuma regra aguardando aprovação." : "Nenhuma regra aprovada encontrada."}</div>`;
+    return;
+  }
+  if (activeRulesTab === "pending") {
+    list.innerHTML = filtered.map(item => `
+      <article class="rule-review-card">
+        <div class="rule-review-head">
+          <div><span class="rule-kind">${escapeHtml(sourceKindLabel(item.source_kind))}</span><strong>#${item.id} · ${escapeHtml(item.question)}</strong></div>
+          <span class="rule-occurrences">${item.occurrence_count} ocorrência${item.occurrence_count === 1 ? "" : "s"}</span>
+        </div>
+        <p>${escapeHtml(item.proposed_answer || "Nenhuma proposta de resposta foi localizada.")}</p>
+        <div class="rule-meta"><span>Confiança: ${escapeHtml(item.confidence)}</span><span>Última consulta: ${formatInstructorDate(item.last_asked_at)}</span><span>${item.sources.length} fonte(s) externa(s)</span></div>
+        ${item.sources.length ? `<div class="rule-source-links">${item.sources.slice(0, 3).map(sourceItem => sourceItem.url ? `<a href="${escapeHtml(sourceItem.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(sourceItem.label || sourceItem.url)} ↗</a>` : "").join("")}</div>` : ""}
+        <button class="primary-button compact-button" type="button" data-rule-review="${item.id}">Revisar proposta</button>
+      </article>`).join("");
+    list.querySelectorAll("[data-rule-review]").forEach(button => button.addEventListener("click", () => openRuleReview(Number(button.dataset.ruleReview))));
+    return;
+  }
+  list.innerHTML = filtered.map(item => `
+    <article class="rule-review-card approved">
+      <div class="rule-review-head"><div><span class="rule-kind approved">APROVADA</span><strong>${escapeHtml(item.rule_code || "Regra aprovada")}</strong></div><span>${escapeHtml(item.authority || "Base SAFE aprovada")}</span></div>
+      <p>${escapeHtml(item.approved_rule_text || "")}</p>
+      <div class="rule-meta"><span>${escapeHtml(item.source_reference || "Referência na base aprovada")}</span>${item.scope ? `<span>Escopo: ${escapeHtml(item.scope)}</span>` : ""}</div>
+      ${item.source_url ? `<div class="rule-source-links"><a href="${escapeHtml(item.source_url)}" target="_blank" rel="noopener noreferrer">Abrir fonte oficial ↗</a></div>` : ""}
+      ${item.origin === "reviewed_candidate" ? `<button class="primary-button compact-button" type="button" data-rule-review="${item.id}">Revisar regra aprovada</button>` : ""}
+    </article>`).join("");
+  list.querySelectorAll("[data-rule-review]").forEach(button => button.addEventListener("click", () => openRuleReview(Number(button.dataset.ruleReview))));
+}
+
+async function loadRules() {
+  try {
+    const [pending, approved] = await Promise.all([
+      ruleRequest("rule-candidates?status=pending_review"),
+      ruleRequest("approved-rules"),
+    ]);
+    ruleCandidates = pending.items;
+    approvedRules = approved.items;
+    rulesLoaded = true;
+    renderRules();
+  } catch (error) {
+    $("#ruleReviewList").innerHTML = `<div class="table-message">${escapeHtml(error.message)}</div>`;
+    toast(error.message);
+  }
+}
+
+function openRuleReview(id) {
+  const item = ruleCandidates.find(candidate => candidate.id === id)
+    || approvedRules.find(rule => rule.origin === "reviewed_candidate" && rule.id === id);
+  if (!item) return;
+  $("#ruleReviewForm").reset();
+  $("#ruleReviewError").classList.add("hidden");
+  $("#ruleReviewId").value = item.id;
+  $("#ruleReviewTitle").textContent = `Revisar proposta #${item.id}`;
+  $("#ruleReviewContext").innerHTML = `<strong>${escapeHtml(item.question)}</strong><p>${escapeHtml(item.proposed_answer || "Sem proposta de resposta.")}</p><small>${escapeHtml(sourceKindLabel(item.source_kind))} · ${item.occurrence_count} ocorrência(s)</small>`;
+  $("#ruleReviewStatus").value = item.status;
+  $("#ruleCode").value = item.rule_code || `RG-PORTAL-${String(item.id).padStart(3, "0")}`;
+  $("#approvedRuleText").value = item.approved_rule_text || item.proposed_answer || "";
+  $("#ruleAuthority").value = item.authority || "";
+  $("#ruleSourceReference").value = item.source_reference || item.sources[0]?.label || "";
+  $("#ruleSourceUrl").value = item.source_url || item.sources[0]?.url || "";
+  $("#ruleScope").value = item.scope || "";
+  $("#ruleEffectiveFrom").value = item.effective_from || "";
+  $("#ruleEffectiveUntil").value = item.effective_until || "";
+  $("#ruleSupersedes").value = item.supersedes || "";
+  $("#ruleReviewNote").value = item.review_note || "";
+  $("#ruleReviewDialog").showModal();
+}
+
+async function saveRuleReview(event) {
+  event.preventDefault();
+  const id = Number($("#ruleReviewId").value);
+  const button = $("#saveRuleReview");
+  const errorBox = $("#ruleReviewError");
+  errorBox.classList.add("hidden");
+  button.disabled = true;
+  try {
+    await ruleRequest(`rule-candidates/${id}`, {
+      method: "PUT",
+      body: JSON.stringify({
+        status: $("#ruleReviewStatus").value,
+        rule_code: $("#ruleCode").value,
+        approved_rule_text: $("#approvedRuleText").value,
+        authority: $("#ruleAuthority").value,
+        source_reference: $("#ruleSourceReference").value,
+        source_url: $("#ruleSourceUrl").value,
+        scope: $("#ruleScope").value,
+        effective_from: $("#ruleEffectiveFrom").value,
+        effective_until: $("#ruleEffectiveUntil").value,
+        supersedes: $("#ruleSupersedes").value,
+        review_note: $("#ruleReviewNote").value,
+      }),
+    });
+    $("#ruleReviewDialog").close();
+    await loadRules();
+    toast("Decisão registrada. A trilha de auditoria foi atualizada.");
   } catch (error) {
     errorBox.textContent = error.message;
     errorBox.classList.remove("hidden");
@@ -1034,6 +1191,7 @@ function applyCurrentUser(user, csrf) {
   $("#operatorRole").textContent = user.role_label;
   $("#operatorAvatar").textContent = user.display_name.split(/\s+/).slice(0, 2).map(value => value[0]).join("").toUpperCase();
   $("#usersNavItem").classList.toggle("hidden", user.role !== "admin");
+  $("#ruleManagementNav").classList.toggle("hidden", !hasRole("admin", "supervisor"));
   $("#addInstructor").classList.toggle("hidden", !hasRole("admin", "supervisor"));
   $("#addAircraft").classList.toggle("hidden", !hasRole("admin", "supervisor"));
   $("#addHandover").classList.toggle("hidden", user.role === "viewer");
@@ -1083,6 +1241,7 @@ async function initializeAuth() {
 function bootstrapPortal() {
   if (portalBootstrapped) {
     renderInstructors(); renderAircraft(); renderHandovers(); renderReports();
+    if (hasRole("admin", "supervisor") && rulesLoaded) renderRules();
     return;
   }
   portalBootstrapped = true;
@@ -1091,6 +1250,7 @@ function bootstrapPortal() {
   loadInstructors();
   loadAircraft();
   loadReports();
+  if (hasRole("admin", "supervisor")) loadRules();
   updateShiftStatus();
   updateSystemStatus();
   setInterval(updateShiftStatus, 30_000);
@@ -1103,7 +1263,7 @@ function applyInitialRoute() {
   const initialQuestion = params.get("q");
   const initialView = params.get("view");
   if (initialQuestion) { input.value = initialQuestion; searchBox.classList.add("has-value"); search(initialQuestion); }
-  if (["instrutores", "aeronaves", "passagem", "reports", "usuarios"].includes(initialView)) {
+  if (["instrutores", "aeronaves", "passagem", "reports", "gestao-regras", "usuarios"].includes(initialView)) {
     document.querySelectorAll(".nav-item").forEach(item => item.classList.toggle("active", item.dataset.view === initialView));
     openModule(initialView);
   }
@@ -1213,6 +1373,12 @@ function openModule(key) {
     if (!reportsLoaded) loadReports();
     return;
   }
+  if (key === "gestao-regras") {
+    if (!hasRole("admin", "supervisor")) { toast("Somente Supervisor ou Administrador pode revisar regras."); return; }
+    showView(ruleManagementView, "Gestão de regras");
+    if (!rulesLoaded) loadRules();
+    return;
+  }
   if (key === "usuarios") {
     if (!hasRole("admin")) { toast("Apenas administradores podem gerenciar usuários."); return; }
     showView(usersView, "Usuários e permissões");
@@ -1252,7 +1418,10 @@ $("#backButton").addEventListener("click", () => showView(homeView, "Regras e pr
 $("#moduleBack").addEventListener("click", () => showView(homeView, "Regras e procedimentos"));
 $("#returnHome").addEventListener("click", () => showView(homeView, "Regras e procedimentos"));
 $("#menuButton").addEventListener("click", () => $("#sidebar").classList.toggle("open"));
-$("#sourceButton").addEventListener("click", () => toast("A abertura do documento original será conectada na próxima integração."));
+$("#sourceButton").addEventListener("click", () => {
+  if (!currentSourceUrl) { toast("A fonte está registrada na base interna."); return; }
+  window.open(currentSourceUrl, "_blank", "noopener,noreferrer");
+});
 $("#addInstructor").addEventListener("click", () => openInstructorDialog());
 $("#instructorSearch").addEventListener("input", renderInstructors);
 $("#baseFilter").addEventListener("change", renderInstructors);
@@ -1274,6 +1443,10 @@ $("#reportTypeFilter").addEventListener("change", renderReports);
 $("#reportStatusFilter").addEventListener("change", renderReports);
 $("#reportForm").addEventListener("submit", saveReport);
 $("#reportReviewForm").addEventListener("submit", saveReportReview);
+$("#pendingRulesTab").addEventListener("click", () => { activeRulesTab = "pending"; renderRules(); });
+$("#approvedRulesTab").addEventListener("click", () => { activeRulesTab = "approved"; renderRules(); });
+$("#ruleSearch").addEventListener("input", renderRules);
+$("#ruleReviewForm").addEventListener("submit", saveRuleReview);
 $("#reportAnswerIssue").addEventListener("click", () => {
   const question = $("#answerQuestion").textContent.trim();
   const source = $("#sourceTitle").textContent.trim();

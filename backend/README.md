@@ -19,3 +19,8 @@ Cada resposta registra no arquivo interno `Knowledge/query_graph.json`:
 - relações sugeridas pelo modelo com estado `pending_review`.
 
 Nenhuma relação candidata é promovida automaticamente a regra confirmada.
+
+Se a base aprovada não sustentar a resposta, o backend pode usar Google Search
+Grounding (`SAFE_CCO_WEB_GROUNDING=1`) e registra a proposta no banco persistente
+`rules.db`. Somente Administrador ou Supervisor pode aprovar ou rejeitar a
+proposta, sempre com fonte, autoridade e justificativa registradas.

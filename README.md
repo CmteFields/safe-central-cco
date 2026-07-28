@@ -12,6 +12,12 @@ powershell -ExecutionPolicy Bypass -File .\start_portal.ps1
 
 O navegador abrirá `http://127.0.0.1:8765/`. Mantenha a janela do servidor aberta durante o uso.
 
+O portal consulta primeiro as regras aprovadas. Quando a evidência local é
+insuficiente, `SAFE_CCO_WEB_GROUNDING=1` (padrão) permite ao Gemini pesquisar
+fontes oficiais na web. A resposta externa é sempre marcada como provisória e
+registrada em **Gestão de regras > Em aprovação**; ela nunca é promovida
+automaticamente. Defina `SAFE_CCO_WEB_GROUNDING=0` para desativar esse fallback.
+
 ## Publicar a aplicação completa
 
 ### PythonAnywhere (sem cartão)
@@ -51,7 +57,7 @@ entrada WSGI está em `backend/wsgi.py` e a configuração pronta para a conta
 5. Pressione **Reload**. O portal ficará disponível em
    `https://ccofields.pythonanywhere.com`.
 
-Os bancos de usuários, instrutores, aeronaves, bases, passagens, reports e pesquisas
+Os bancos de usuários, instrutores, aeronaves, bases, passagens, reports, pesquisas e regras em aprovação
 ficam em `/home/CCOFields/portalcco-data`, fora do GitHub e preservados entre
 recargas da aplicação.
 
