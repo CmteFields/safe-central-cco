@@ -10,7 +10,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css?v=20260724-7">
-  <link rel="stylesheet" href="instrutores.css?v=20260724-12">
+  <link rel="stylesheet" href="instrutores.css?v=20260728-13">
   <link rel="stylesheet" href="topbar.css?v=20260724-13">
   <link rel="stylesheet" href="auth.css?v=20260724-16">
 </head>
@@ -41,6 +41,7 @@
       <nav class="main-nav" aria-label="Navegação principal">
         <p class="nav-label">OPERAÇÃO</p>
         <button class="nav-item active" data-view="regras"><span class="nav-icon">✓</span>Regras e procedimentos<span class="nav-count">128</span></button>
+        <button class="nav-item" data-view="reports"><span class="nav-icon">⚑</span>Reports<span class="handover-nav-count report-nav-count" id="reportNavCount">0</span></button>
         <button class="nav-item" data-view="passagem"><span class="nav-icon">⇄</span>Passagem de turno<span class="handover-nav-count" id="handoverNavCount">0</span></button>
         <button class="nav-item" data-view="instrutores"><span class="nav-icon">♙</span>Instrutores</button>
         <button class="nav-item" data-view="aeronaves"><span class="nav-icon">✈</span>Aeronaves</button>
@@ -133,7 +134,7 @@
             <div class="archived-answer-notice hidden" id="archivedAnswerNotice"><span>↺</span><div><strong id="archivedAnswerTitle">Pesquisa armazenada</strong><small id="archivedAnswerDate"></small></div><button id="repeatArchivedSearch">Pesquisar novamente</button></div>
             <div class="answer-body" id="answerBody"></div>
             <div class="source-box"><span>▤</span><div><small>FONTE PRINCIPAL</small><strong id="sourceTitle"></strong><p id="sourceDetail"></p></div><button id="sourceButton">Ver fonte</button></div>
-            <div class="answer-footer"><span>Esta resposta foi útil?</span><button>♡ Sim</button><button>△ Não</button><small>Consulte sempre a documentação oficial em decisões críticas.</small></div>
+            <div class="answer-footer"><span>Esta resposta foi útil?</span><button>♡ Sim</button><button>△ Não</button><button id="reportAnswerIssue">⚑ Reportar discrepância</button><small>Consulte sempre a documentação oficial em decisões críticas.</small></div>
           </article>
           <aside class="context-panel"><p class="eyebrow">CONTEXTO RELACIONADO</p><h3>Conexões no conhecimento</h3><div class="relation-list" id="relationList"></div><div class="context-note"><span>i</span><p>As relações ajudam a encontrar regras complementares e reduzem respostas isoladas.</p></div></aside>
         </div>
@@ -198,6 +199,25 @@
           <label>Destino<select id="handoverShiftFilter"><option value="">Todos os turnos</option><option value="T1">T1</option><option value="T2">T2</option><option value="T3">T3</option></select></label>
         </div>
         <div class="handover-board" id="handoverBoard"><div class="table-message">Carregando passagens de turno…</div></div>
+      </section>
+
+      <section class="page hidden" id="reportsView">
+        <div class="instructors-head">
+          <div><p class="eyebrow">OPERAÇÃO · MELHORIA CONTÍNUA</p><h1>Reports</h1><p>Registre discrepâncias nas respostas e indique perguntas que precisam entrar na base.</p></div>
+          <button class="primary-button" id="addReport">+ Novo report</button>
+        </div>
+        <div class="report-type-guide">
+          <div class="discrepancy"><span>!</span><div><strong>Discrepância</strong><small>Resposta, regra, fonte ou relação incorreta, incompleta ou desatualizada.</small></div></div>
+          <div class="question"><span>?</span><div><strong>Indicação de pergunta</strong><small>Pergunta recorrente que ainda não possui uma resposta adequada na base.</small></div></div>
+        </div>
+        <div class="report-summary">
+          <div><small>ABERTOS</small><strong id="reportOpenCount">0</strong></div>
+          <div><small>EM ANÁLISE</small><strong id="reportAnalysisCount">0</strong></div>
+          <div><small>ENCERRADOS</small><strong id="reportClosedCount">0</strong></div>
+          <label>Tipo<select id="reportTypeFilter"><option value="">Todos</option><option value="discrepancy">Discrepâncias</option><option value="question">Indicações de pergunta</option></select></label>
+          <label>Situação<select id="reportStatusFilter"><option value="">Todas</option><option>Aberto</option><option>Em análise</option><option>Resolvido</option><option>Descartado</option></select></label>
+        </div>
+        <div class="report-list" id="reportList"><div class="table-message">Carregando reports…</div></div>
       </section>
 
       <section class="page hidden" id="usersView">
@@ -265,6 +285,34 @@
       <div class="dialog-actions"><button type="button" class="danger-button hidden" id="deleteHandover">Excluir</button><span></span><button value="cancel" class="secondary-button">Cancelar</button><button type="submit" class="primary-button" id="saveHandover">Salvar passagem</button></div>
     </form>
   </dialog>
+  <dialog class="instructor-dialog report-dialog" id="reportDialog">
+    <form method="dialog" id="reportForm">
+      <div class="dialog-head"><div><p class="eyebrow">MELHORIA CONTÍNUA</p><h2>Novo report</h2></div><button class="dialog-close" value="cancel" aria-label="Fechar">×</button></div>
+      <div class="form-grid">
+        <label>Tipo<select id="reportType" required><option value="discrepancy">Discrepância</option><option value="question">Indicação de pergunta</option></select></label>
+        <label>Prioridade<select id="reportPriority" required><option>Normal</option><option>Alta</option><option>Crítica</option><option>Baixa</option></select></label>
+        <label class="wide">Título<input id="reportTitle" maxlength="160" required placeholder="Resuma o ponto que precisa de atenção"></label>
+        <label class="wide">Descrição<textarea id="reportDescription" maxlength="3000" rows="6" required placeholder="Explique o que foi encontrado, qual seria o comportamento esperado e por que isso importa."></textarea></label>
+        <label class="wide">Pergunta, consulta ou fonte relacionada <span class="optional-label">(opcional)</span><textarea id="reportReference" maxlength="500" rows="3" placeholder="Cole a pergunta, o código da consulta ou indique a fonte relacionada."></textarea></label>
+      </div>
+      <div class="dialog-error hidden" id="reportFormError" role="alert"></div>
+      <div class="dialog-actions"><span></span><button value="cancel" class="secondary-button">Cancelar</button><button type="submit" class="primary-button" id="saveReport">Enviar report</button></div>
+    </form>
+  </dialog>
+  <dialog class="instructor-dialog report-dialog" id="reportReviewDialog">
+    <form method="dialog" id="reportReviewForm">
+      <div class="dialog-head"><div><p class="eyebrow">TRATATIVA DO REPORT</p><h2 id="reportReviewTitle">Analisar report</h2></div><button class="dialog-close" value="cancel" aria-label="Fechar">×</button></div>
+      <input type="hidden" id="reportReviewId">
+      <div class="report-review-context" id="reportReviewContext"></div>
+      <div class="form-grid">
+        <label>Situação<select id="reportReviewStatus" required><option>Aberto</option><option>Em análise</option><option>Resolvido</option><option>Descartado</option></select></label>
+        <label>Prioridade<select id="reportReviewPriority" required><option>Normal</option><option>Alta</option><option>Crítica</option><option>Baixa</option></select></label>
+        <label class="wide">Tratativa / conclusão<textarea id="reportResolution" maxlength="2000" rows="6" placeholder="Registre a análise, correção realizada ou motivo do descarte."></textarea></label>
+      </div>
+      <div class="dialog-error hidden" id="reportReviewError" role="alert"></div>
+      <div class="dialog-actions"><span></span><button value="cancel" class="secondary-button">Cancelar</button><button type="submit" class="primary-button" id="saveReportReview">Salvar tratativa</button></div>
+    </form>
+  </dialog>
   <dialog class="help-dialog" id="helpDialog">
     <div class="dialog-head"><div><p class="eyebrow">SUPORTE AO OPERADOR</p><h2>Como podemos ajudar?</h2></div><button class="dialog-close" id="closeHelp" aria-label="Fechar">×</button></div>
     <div class="help-grid">
@@ -272,6 +320,7 @@
       <button data-help-target="passagem"><span>⇄</span><div><strong>Passagem de turno</strong><small>Registre, assuma ou conclua pendências.</small></div></button>
       <button data-help-target="aeronaves"><span>✈</span><div><strong>Consultar aeronaves</strong><small>Verifique situação e restrições da frota.</small></div></button>
       <button data-help-target="instrutores"><span>♙</span><div><strong>Consultar instrutores</strong><small>Confira bases, grupos e liberações.</small></div></button>
+      <button data-help-target="reports"><span>⚑</span><div><strong>Enviar um report</strong><small>Reporte discrepâncias ou indique perguntas para a base.</small></div></button>
     </div>
     <div class="help-note"><span>i</span><p>Em decisões críticas, confirme a informação na fonte oficial indicada pelo portal.</p></div>
   </dialog>
@@ -305,6 +354,6 @@
   <div class="toast" id="toast" role="status"></div>
   <script src="data/public-knowledge-index.js"></script>
   <script src="data/knowledge-index.js"></script>
-  <script src="app.js?v=20260728-21"></script>
+  <script src="app.js?v=20260728-22"></script>
 </body>
 </html>

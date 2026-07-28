@@ -47,6 +47,7 @@ INSTRUCTORS_DB_PATH = Path(os.environ.get("SAFE_INSTRUCTORS_DB_PATH", DATA_DIR /
 AIRCRAFT_DB_PATH = Path(os.environ.get("SAFE_AIRCRAFT_DB_PATH", DATA_DIR / "aircraft.db")).resolve()
 BASES_DB_PATH = Path(os.environ.get("SAFE_BASES_DB_PATH", DATA_DIR / "bases.db")).resolve()
 HANDOVERS_DB_PATH = Path(os.environ.get("SAFE_HANDOVERS_DB_PATH", DATA_DIR / "handovers.db")).resolve()
+REPORTS_DB_PATH = Path(os.environ.get("SAFE_REPORTS_DB_PATH", DATA_DIR / "reports.db")).resolve()
 SEARCH_HISTORY_DB_PATH = Path(os.environ.get("SAFE_SEARCH_HISTORY_DB_PATH", DATA_DIR / "search_history.db")).resolve()
 AUTH_DB_PATH = Path(os.environ.get("SAFE_AUTH_DB_PATH", DATA_DIR / "auth.db")).resolve()
 MAX_QUESTION_LENGTH = 1200
@@ -55,6 +56,7 @@ INSTRUCTORS_LOCK = threading.Lock()
 AIRCRAFT_LOCK = threading.Lock()
 BASES_LOCK = threading.Lock()
 HANDOVERS_LOCK = threading.Lock()
+REPORTS_LOCK = threading.Lock()
 SEARCH_HISTORY_LOCK = threading.Lock()
 AUTH_LOCK = threading.Lock()
 STOPWORDS = {"a", "as", "o", "os", "de", "da", "das", "do", "dos", "e", "em", "na", "no", "para", "por", "com", "um", "uma", "que", "pode", "como", "safe", "fazer", "concluir", "quantos"}
@@ -111,6 +113,9 @@ SHIFTS = {
 }
 HANDOVER_PRIORITIES = {"Baixa", "Normal", "Alta", "Crítica"}
 HANDOVER_STATUSES = {"Pendente", "Em andamento", "Concluída"}
+REPORT_TYPES = {"discrepancy": "Discrepância", "question": "Indicação de pergunta"}
+REPORT_PRIORITIES = {"Baixa", "Normal", "Alta", "Crítica"}
+REPORT_STATUSES = {"Aberto", "Em análise", "Resolvido", "Descartado"}
 ROLES = {"admin", "supervisor", "operator", "viewer"}
 ROLE_LABELS = {"admin": "Administrador", "supervisor": "Supervisor", "operator": "Operador", "viewer": "Consulta"}
 SESSION_HOURS = 12
@@ -622,6 +627,174 @@ def delete_handover(handover_id: int) -> None:
         cursor = connection.execute("DELETE FROM handovers WHERE id=?", (handover_id,))
         if not cursor.rowcount:
             raise LookupError("Passagem de turno não encontrada.")
+
+
+@contextmanager
+def reports_connection():
+    REPORTS_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(REPORTS_DB_PATH, timeout=10)
+    connection.row_factory = sqlite3.Row
+    try:
+        yield connection
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
+def initialize_reports_db() -> None:
+    with REPORTS_LOCK, reports_connection() as connection:
+        connection.execute("""CREATE TABLE IF NOT EXISTS reports (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            report_type TEXT NOT NULL,
+            title TEXT NOT NULL,
+            description TEXT NOT NULL,
+            reference TEXT NOT NULL DEFAULT '',
+            priority TEXT NOT NULL,
+            status TEXT NOT NULL,
+            reporter_user_id INTEGER NOT NULL,
+            reporter_username TEXT NOT NULL,
+            reporter_name TEXT NOT NULL,
+            resolution TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            resolved_at TEXT
+        )""")
+        connection.execute("""CREATE TABLE IF NOT EXISTS report_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            report_id INTEGER NOT NULL,
+            action TEXT NOT NULL,
+            actor_username TEXT NOT NULL,
+            actor_name TEXT NOT NULL,
+            details TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(report_id) REFERENCES reports(id) ON DELETE CASCADE
+        )""")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_reports_status ON reports(status, priority, updated_at)")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_report_events_report ON report_events(report_id, created_at)")
+
+
+def report_dict(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "report_type": row["report_type"],
+        "type_label": REPORT_TYPES.get(row["report_type"], row["report_type"]),
+        "title": row["title"],
+        "description": row["description"],
+        "reference": row["reference"],
+        "priority": row["priority"],
+        "status": row["status"],
+        "reporter_username": row["reporter_username"],
+        "reporter_name": row["reporter_name"],
+        "resolution": row["resolution"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+        "resolved_at": row["resolved_at"],
+    }
+
+
+def validate_new_report(data: dict[str, Any]) -> tuple[str, str, str, str, str]:
+    report_type = str(data.get("report_type", "")).strip()
+    title = str(data.get("title", "")).strip()
+    description = str(data.get("description", "")).strip()
+    reference = str(data.get("reference", "")).strip()
+    priority = str(data.get("priority", "Normal")).strip()
+    if report_type not in REPORT_TYPES:
+        raise ValueError("Selecione um tipo de report válido.")
+    if not title or len(title) > 160:
+        raise ValueError("Informe um título de até 160 caracteres.")
+    if not description or len(description) > 3000:
+        raise ValueError("Descreva o report em até 3.000 caracteres.")
+    if len(reference) > 500:
+        raise ValueError("A referência deve ter até 500 caracteres.")
+    if priority not in REPORT_PRIORITIES:
+        raise ValueError("Selecione uma prioridade válida.")
+    return report_type, title, description, reference, priority
+
+
+def list_reports() -> list[dict[str, Any]]:
+    initialize_reports_db()
+    with reports_connection() as connection:
+        rows = connection.execute(
+            """SELECT * FROM reports ORDER BY
+               CASE status WHEN 'Aberto' THEN 0 WHEN 'Em análise' THEN 1
+                   WHEN 'Resolvido' THEN 2 ELSE 3 END,
+               CASE priority WHEN 'Crítica' THEN 0 WHEN 'Alta' THEN 1
+                   WHEN 'Normal' THEN 2 ELSE 3 END,
+               updated_at DESC"""
+        ).fetchall()
+    return [report_dict(row) for row in rows]
+
+
+def create_report(data: dict[str, Any], reporter: dict[str, Any]) -> dict[str, Any]:
+    initialize_reports_db()
+    values = validate_new_report(data)
+    timestamp = now_iso()
+    with REPORTS_LOCK, reports_connection() as connection:
+        cursor = connection.execute(
+            """INSERT INTO reports(report_type, title, description, reference, priority, status,
+               reporter_user_id, reporter_username, reporter_name, resolution, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, 'Aberto', ?, ?, ?, '', ?, ?)""",
+            (*values, reporter["id"], reporter["username"], reporter["display_name"], timestamp, timestamp),
+        )
+        report_id = int(cursor.lastrowid)
+        connection.execute(
+            """INSERT INTO report_events(report_id, action, actor_username, actor_name, details, created_at)
+               VALUES (?, 'Criado', ?, ?, ?, ?)""",
+            (
+                report_id,
+                reporter["username"],
+                reporter["display_name"],
+                json.dumps({"report_type": values[0], "priority": values[4]}, ensure_ascii=False),
+                timestamp,
+            ),
+        )
+        row = connection.execute("SELECT * FROM reports WHERE id=?", (report_id,)).fetchone()
+    return report_dict(row)
+
+
+def update_report(report_id: int, data: dict[str, Any], actor: dict[str, Any]) -> dict[str, Any]:
+    initialize_reports_db()
+    priority = str(data.get("priority", "")).strip()
+    status = str(data.get("status", "")).strip()
+    resolution = str(data.get("resolution", "")).strip()
+    if priority not in REPORT_PRIORITIES or status not in REPORT_STATUSES:
+        raise ValueError("Prioridade ou situação do report inválida.")
+    if len(resolution) > 2000:
+        raise ValueError("A tratativa deve ter até 2.000 caracteres.")
+    if status in {"Resolvido", "Descartado"} and not resolution:
+        raise ValueError("Registre a tratativa antes de encerrar o report.")
+    timestamp = now_iso()
+    resolved_at = timestamp if status in {"Resolvido", "Descartado"} else None
+    with REPORTS_LOCK, reports_connection() as connection:
+        current = connection.execute("SELECT * FROM reports WHERE id=?", (report_id,)).fetchone()
+        if not current:
+            raise LookupError("Report não encontrado.")
+        changes = {
+            "status": {"from": current["status"], "to": status},
+            "priority": {"from": current["priority"], "to": priority},
+            "resolution_updated": resolution != current["resolution"],
+        }
+        connection.execute(
+            """UPDATE reports SET priority=?, status=?, resolution=?, updated_at=?, resolved_at=?
+               WHERE id=?""",
+            (priority, status, resolution, timestamp, resolved_at, report_id),
+        )
+        connection.execute(
+            """INSERT INTO report_events(report_id, action, actor_username, actor_name, details, created_at)
+               VALUES (?, 'Atualizado', ?, ?, ?, ?)""",
+            (
+                report_id,
+                actor["username"],
+                actor["display_name"],
+                json.dumps(changes, ensure_ascii=False),
+                timestamp,
+            ),
+        )
+        row = connection.execute("SELECT * FROM reports WHERE id=?", (report_id,)).fetchone()
+    return report_dict(row)
 
 
 @contextmanager
@@ -1288,6 +1461,14 @@ class Handler(BaseHTTPRequestHandler):
         if urllib.parse.urlparse(self.path).path == "/api/handovers":
             self.send_json(200, {"items": list_handovers(), "shifts": SHIFTS})
             return
+        if urllib.parse.urlparse(self.path).path == "/api/reports":
+            self.send_json(200, {
+                "items": list_reports(),
+                "types": REPORT_TYPES,
+                "priorities": sorted(REPORT_PRIORITIES),
+                "statuses": ["Aberto", "Em análise", "Resolvido", "Descartado"],
+            })
+            return
         if urllib.parse.urlparse(self.path).path == "/api/searches":
             query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             try:
@@ -1382,6 +1563,11 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(403, {"error": "Perfil de consulta não pode registrar passagens."}); return
                 self.send_json(201, save_handover(data))
                 return
+            if self.path == "/api/reports":
+                if user["role"] not in {"admin", "supervisor", "operator"}:
+                    self.send_json(403, {"error": "Perfil de consulta não pode registrar reports."}); return
+                self.send_json(201, create_report(data, user))
+                return
             if self.path == "/api/searches":
                 record_id = save_search_history(
                     str(data.get("question", "")), "local", str(data.get("confidence", "low")),
@@ -1423,6 +1609,21 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(403, {"error": str(error)})
             except LookupError as error:
                 self.send_json(404, {"error": str(error)})
+            return
+        report_match = re.fullmatch(r"/api/reports/(\d+)", urllib.parse.urlparse(self.path).path)
+        if report_match:
+            if user["role"] not in {"admin", "supervisor"}:
+                self.send_json(403, {"error": "Somente Supervisor ou Administrador pode tratar reports."}); return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                data = json.loads(self.rfile.read(min(length, 16_384)).decode("utf-8"))
+                self.send_json(200, update_report(int(report_match.group(1)), data, user))
+            except (ValueError, json.JSONDecodeError) as error:
+                self.send_json(400, {"error": str(error)})
+            except LookupError as error:
+                self.send_json(404, {"error": str(error)})
+            except Exception as error:
+                self.send_json(500, {"error": str(error)})
             return
         handover_match = re.fullmatch(r"/api/handovers/(\d+)", urllib.parse.urlparse(self.path).path)
         if handover_match:

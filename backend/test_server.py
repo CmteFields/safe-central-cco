@@ -272,8 +272,16 @@ class WSGITests(unittest.TestCase):
         status, _, body = self.request("/app.js")
         self.assertEqual(status, "200 OK")
         self.assertIn(b"`${window.location.origin}/api/ask`", body)
+        self.assertIn(b"`${window.location.origin}/api/reports", body)
         self.assertNotIn(b"http://127.0.0.1:8765/api/ask", body)
         self.assertIn("Modo de contingência".encode(), body)
+
+    def test_static_portal_contains_reports_section(self):
+        status, _, body = self.request("/")
+        self.assertEqual(status, "200 OK")
+        self.assertIn(b'data-view="reports"', body)
+        self.assertIn(b'id="reportsView"', body)
+        self.assertIn(b'id="reportAnswerIssue"', body)
 
     def test_secure_initial_setup_through_wsgi(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(
@@ -312,6 +320,85 @@ class OperationalStorageTests(unittest.TestCase):
             detail = server.get_search_history(record_id)
             self.assertEqual(detail["presentation"]["answer"], "Resposta salva")
             self.assertEqual(server.list_search_history()[0]["id"], record_id)
+
+
+class ReportStorageTests(unittest.TestCase):
+    def test_operator_creates_report_with_authenticated_identity_and_audit(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            server, "REPORTS_DB_PATH", Path(directory) / "reports.db"
+        ):
+            operator = {
+                "id": 17,
+                "username": "operador.cco",
+                "display_name": "Operador CCO",
+                "role": "operator",
+            }
+            created = server.create_report({
+                "report_type": "discrepancy",
+                "title": "Fonte divergente",
+                "description": "A resposta não corresponde ao procedimento vigente.",
+                "reference": "Pergunta: exemplo operacional",
+                "priority": "Alta",
+                "reporter_name": "Nome forjado",
+            }, operator)
+
+            self.assertEqual(created["status"], "Aberto")
+            self.assertEqual(created["reporter_name"], "Operador CCO")
+            self.assertEqual(created["reporter_username"], "operador.cco")
+            self.assertEqual(server.list_reports()[0]["id"], created["id"])
+            with server.reports_connection() as connection:
+                event = connection.execute(
+                    "SELECT action, actor_username FROM report_events WHERE report_id=?",
+                    (created["id"],),
+                ).fetchone()
+            self.assertEqual(event["action"], "Criado")
+            self.assertEqual(event["actor_username"], "operador.cco")
+
+    def test_closed_report_requires_resolution_and_records_management(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            server, "REPORTS_DB_PATH", Path(directory) / "reports.db"
+        ):
+            operator = {
+                "id": 5,
+                "username": "operador",
+                "display_name": "Operador",
+                "role": "operator",
+            }
+            supervisor = {
+                "id": 8,
+                "username": "supervisor",
+                "display_name": "Supervisor",
+                "role": "supervisor",
+            }
+            created = server.create_report({
+                "report_type": "question",
+                "title": "Nova pergunta recorrente",
+                "description": "A equipe precisa desta orientação na base.",
+                "priority": "Normal",
+            }, operator)
+
+            with self.assertRaises(ValueError):
+                server.update_report(created["id"], {
+                    "status": "Resolvido",
+                    "priority": "Normal",
+                    "resolution": "",
+                }, supervisor)
+
+            resolved = server.update_report(created["id"], {
+                "status": "Resolvido",
+                "priority": "Alta",
+                "resolution": "Pergunta validada e encaminhada para publicação.",
+            }, supervisor)
+            self.assertEqual(resolved["status"], "Resolvido")
+            self.assertEqual(resolved["priority"], "Alta")
+            self.assertTrue(resolved["resolved_at"])
+            with server.reports_connection() as connection:
+                events = connection.execute(
+                    "SELECT action, actor_username FROM report_events WHERE report_id=? ORDER BY id",
+                    (created["id"],),
+                ).fetchall()
+            self.assertEqual([row["action"] for row in events], ["Criado", "Atualizado"])
+            self.assertEqual(events[-1]["actor_username"], "supervisor")
 
 
 if __name__ == "__main__":

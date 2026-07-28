@@ -28,6 +28,8 @@ data/bases.db
 data/bases.db-*
 data/handovers.db
 data/handovers.db-*
+data/reports.db
+data/reports.db-*
 data/search_history.db
 data/search_history.db-*
 data/auth.db
