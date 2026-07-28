@@ -10,6 +10,16 @@ from backend import wsgi
 
 
 class RetrievalTests(unittest.TestCase):
+    def test_public_index_is_used_when_private_knowledge_is_not_deployed(self):
+        missing_root = Path("diretorio-privado-ausente")
+        with patch.object(server, "CLAIMS_PATH", missing_root / "claims.json"), patch.object(
+            server, "GRAPH_PATH", missing_root / "graph.json"
+        ):
+            evidence = server.retrieve("Quantas horas por dia o aluno PP pode voar?")
+        evidence_ids = {item["id"] for item in evidence}
+        self.assertIn("claim_ppap001k_limite_diario_instrucao", evidence_ids)
+        self.assertTrue(all(item["source"] == "Índice público de regras confirmadas" for item in evidence))
+
     def test_banca_ppa_recovers_bops_065(self):
         evidence = server.retrieve("Quantos voos o aluno PPA pode fazer sem a banca da ANAC?")
         self.assertTrue(any("065" in f"{item['label']} {item['code']}" for item in evidence))
@@ -246,6 +256,12 @@ class WSGITests(unittest.TestCase):
         self.assertEqual(status, "200 OK")
         self.assertIn("text/html", headers["Content-Type"])
         self.assertIn(b"SAFE Hub", body)
+
+    def test_browser_uses_same_origin_ai_endpoint(self):
+        status, _, body = self.request("/app.js")
+        self.assertEqual(status, "200 OK")
+        self.assertIn(b"`${window.location.origin}/api/ask`", body)
+        self.assertNotIn(b"http://127.0.0.1:8765/api/ask", body)
 
     def test_secure_initial_setup_through_wsgi(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(
