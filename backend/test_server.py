@@ -1,4 +1,5 @@
 import json
+import sqlite3
 import tempfile
 import unittest
 from io import BytesIO
@@ -145,18 +146,34 @@ class RetrievalTests(unittest.TestCase):
 class LearningGraphTests(unittest.TestCase):
     def test_records_question_evidence_and_pending_candidate(self):
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "query_graph.json"
+            path = Path(directory) / "portalcco.db"
+            legacy_path = Path(directory) / "query_graph.json"
             evidence = [{"id": "claim_1"}]
             result = {"used_evidence": [1], "candidate_relations": [{
                 "source_concept": "PPA", "target_concept": "Banca ANAC",
                 "relation": "requires", "reason": "Evidência recuperada",
             }]}
-            with patch.object(server, "LEARNING_GRAPH_PATH", path):
+            with patch.object(server, "LEARNING_DB_PATH", path), patch.object(
+                server, "LEARNING_GRAPH_PATH", legacy_path
+            ):
                 query_id = server.record_learning("Pergunta de teste", evidence, result)
-            graph = json.loads(path.read_text(encoding="utf-8"))
-            self.assertEqual(graph["nodes"][0]["id"], query_id)
-            self.assertEqual(graph["edges"][0]["relation"], "answered_using")
-            self.assertEqual(graph["candidate_relations"][0]["status"], "pending_review")
+            connection = sqlite3.connect(path)
+            try:
+                question = connection.execute(
+                    "SELECT question FROM learning_queries WHERE id=?", (query_id,)
+                ).fetchone()
+                evidence_row = connection.execute(
+                    "SELECT relation FROM learning_query_evidence WHERE query_id=?", (query_id,)
+                ).fetchone()
+                candidate = connection.execute(
+                    "SELECT status FROM learning_candidate_relations WHERE query_id=?", (query_id,)
+                ).fetchone()
+            finally:
+                connection.close()
+            self.assertEqual(question[0], "Pergunta de teste")
+            self.assertEqual(evidence_row[0], "answered_using")
+            self.assertEqual(candidate[0], "pending_review")
+            self.assertFalse(legacy_path.exists())
 
 
 class AuthenticationTests(unittest.TestCase):
@@ -350,6 +367,142 @@ class OperationalStorageTests(unittest.TestCase):
             self.assertEqual(server.list_search_history()[0]["id"], record_id)
 
 
+class ConsolidatedStorageTests(unittest.TestCase):
+    def test_all_default_operational_paths_use_single_database(self):
+        self.assertEqual({
+            server.AUTH_DB_PATH,
+            server.BASES_DB_PATH,
+            server.INSTRUCTORS_DB_PATH,
+            server.AIRCRAFT_DB_PATH,
+            server.HANDOVERS_DB_PATH,
+            server.REPORTS_DB_PATH,
+            server.SEARCH_HISTORY_DB_PATH,
+            server.RULES_DB_PATH,
+            server.LEARNING_DB_PATH,
+        }, {server.PORTAL_DB_PATH})
+
+    def test_initialization_migrates_all_legacy_stores_without_deleting_them(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            legacy = {
+                name: root / f"{name}.db"
+                for name in (
+                    "auth", "search_history", "rules", "bases", "handovers",
+                    "reports", "instructors", "aircraft",
+                )
+            }
+            with patch.object(server, "AUTH_DB_PATH", legacy["auth"]):
+                server.create_user({
+                    "username": "admin.legado",
+                    "display_name": "Administrador Legado",
+                    "password": "senha",
+                }, force_admin=True)
+            with patch.object(server, "BASES_DB_PATH", legacy["bases"]):
+                server.initialize_bases_db()
+            with patch.object(server, "INSTRUCTORS_DB_PATH", legacy["instructors"]):
+                server.initialize_instructors_db()
+            with patch.object(server, "AIRCRAFT_DB_PATH", legacy["aircraft"]):
+                server.initialize_aircraft_db()
+            with patch.object(server, "HANDOVERS_DB_PATH", legacy["handovers"]):
+                server.initialize_handovers_db()
+                server.save_handover({
+                    "origin_shift": "T1",
+                    "target_shift": "T2",
+                    "message": "Pendência legada",
+                    "priority": "Alta",
+                    "status": "Pendente",
+                    "author": "Operador Legado",
+                })
+            with patch.object(server, "REPORTS_DB_PATH", legacy["reports"]):
+                server.initialize_reports_db()
+                server.create_report({
+                    "report_type": "discrepancy",
+                    "title": "Report legado",
+                    "description": "Descrição do report legado.",
+                    "priority": "Normal",
+                }, {
+                    "id": 1,
+                    "username": "admin.legado",
+                    "display_name": "Administrador Legado",
+                    "role": "admin",
+                })
+            with patch.object(server, "SEARCH_HISTORY_DB_PATH", legacy["search_history"]):
+                server.save_search_history(
+                    "Pesquisa legada", "local", "medium",
+                    presentation={"answer": "Resposta legada"},
+                )
+            with patch.object(server, "RULES_DB_PATH", legacy["rules"]):
+                server.upsert_rule_candidate(
+                    "Pergunta legada", "Proposta legada", "low", "unanswered",
+                    [], [], {"username": "admin.legado", "display_name": "Administrador Legado"},
+                )
+
+            legacy_graph = root / "query_graph.json"
+            legacy_graph.write_text(json.dumps({
+                "schema_version": 1,
+                "nodes": [{
+                    "id": "query_legacy",
+                    "type": "operator_question",
+                    "label": "Pergunta aprendida legada",
+                    "created_at": "2026-01-01T00:00:00+00:00",
+                }],
+                "edges": [{
+                    "source": "query_legacy",
+                    "target": "claim_legacy",
+                    "relation": "answered_using",
+                    "status": "observed",
+                    "created_at": "2026-01-01T00:00:00+00:00",
+                }],
+                "candidate_relations": [],
+            }), encoding="utf-8")
+
+            central = root / "portalcco.db"
+            path_patches = [
+                patch.object(server, name, central)
+                for name in (
+                    "PORTAL_DB_PATH", "AUTH_DB_PATH", "BASES_DB_PATH",
+                    "INSTRUCTORS_DB_PATH", "AIRCRAFT_DB_PATH", "HANDOVERS_DB_PATH",
+                    "REPORTS_DB_PATH", "SEARCH_HISTORY_DB_PATH", "RULES_DB_PATH",
+                    "LEARNING_DB_PATH",
+                )
+            ]
+            for item in path_patches:
+                item.start()
+            try:
+                with patch.object(server, "LEGACY_DB_PATHS", legacy), patch.object(
+                    server, "LEARNING_GRAPH_PATH", legacy_graph
+                ):
+                    server.initialize_portal_storage()
+                    server.initialize_portal_storage()
+            finally:
+                for item in reversed(path_patches):
+                    item.stop()
+
+            connection = sqlite3.connect(central)
+            try:
+                self.assertEqual(
+                    connection.execute(
+                        "SELECT display_name FROM users WHERE username='admin.legado'"
+                    ).fetchone()[0],
+                    "Administrador Legado",
+                )
+                self.assertGreater(connection.execute("SELECT COUNT(*) FROM instructors").fetchone()[0], 0)
+                self.assertGreater(connection.execute("SELECT COUNT(*) FROM aircraft").fetchone()[0], 0)
+                self.assertEqual(connection.execute("SELECT COUNT(*) FROM bases").fetchone()[0], 2)
+                self.assertEqual(connection.execute("SELECT COUNT(*) FROM handovers").fetchone()[0], 1)
+                self.assertEqual(connection.execute("SELECT COUNT(*) FROM reports").fetchone()[0], 1)
+                self.assertEqual(connection.execute("SELECT COUNT(*) FROM search_history").fetchone()[0], 1)
+                self.assertEqual(connection.execute("SELECT COUNT(*) FROM rule_candidates").fetchone()[0], 1)
+                self.assertEqual(connection.execute("SELECT COUNT(*) FROM learning_queries").fetchone()[0], 1)
+                self.assertGreaterEqual(
+                    connection.execute("SELECT COUNT(*) FROM storage_migrations").fetchone()[0], 11
+                )
+            finally:
+                connection.close()
+            self.assertTrue(all(path.exists() for path in legacy.values()))
+            self.assertTrue(legacy_graph.exists())
+
+
 class ReportStorageTests(unittest.TestCase):
     def test_operator_creates_report_with_authenticated_identity_and_audit(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(
@@ -504,6 +657,8 @@ class RuleCandidateStorageTests(unittest.TestCase):
             server, "RULES_DB_PATH", Path(directory) / "rules.db"
         ), patch.object(
             server, "SEARCH_HISTORY_DB_PATH", Path(directory) / "history.db"
+        ), patch.object(
+            server, "LEARNING_DB_PATH", Path(directory) / "learning.db"
         ), patch.object(
             server, "LEARNING_GRAPH_PATH", Path(directory) / "learning.json"
         ), patch.object(server, "retrieve", return_value=[{

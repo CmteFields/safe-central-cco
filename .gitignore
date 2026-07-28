@@ -36,3 +36,5 @@ data/auth.db
 data/auth.db-*
 data/rules.db
 data/rules.db-*
+data/portalcco.db
+data/portalcco.db-*
