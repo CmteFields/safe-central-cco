@@ -10,7 +10,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css?v=20260724-7">
-  <link rel="stylesheet" href="instrutores.css?v=20260728-14">
+  <link rel="stylesheet" href="instrutores.css?v=20260729-15">
   <link rel="stylesheet" href="topbar.css?v=20260724-13">
   <link rel="stylesheet" href="auth.css?v=20260724-16">
 </head>
@@ -169,7 +169,7 @@
           <div><p class="eyebrow">OPERAÇÃO · FROTA</p><h1>Aeronaves</h1><p>Consulte a situação operacional, autorizações e restrições da frota.</p></div>
           <button class="primary-button" id="addAircraft">+ Nova aeronave</button>
         </div>
-        <div class="instructor-toolbar">
+        <div class="instructor-toolbar aircraft-toolbar">
           <label class="table-search"><span>⌕</span><input id="aircraftSearch" type="search" placeholder="Buscar modelo, matrícula ou restrição…"></label>
           <select id="aircraftBaseFilter" aria-label="Filtrar aeronaves por base"><option value="">Todas as bases</option></select>
           <select id="aircraftFleetFilter" aria-label="Filtrar pela situação da frota"><option value="">Ativas e inativas</option></select>
@@ -178,8 +178,8 @@
         </div>
         <div class="instructor-table-wrap">
           <table class="instructor-table aircraft-table">
-            <thead><tr><th>Aeronave</th><th>Matrícula</th><th class="priority-column">Base</th><th>Situação da frota</th><th class="priority-column">Situação operacional</th><th>Tipo de operação</th><th>Restrições</th><th>Última atualização</th><th><span class="sr-only">Ações</span></th></tr></thead>
-            <tbody id="aircraftRows"><tr><td colspan="9" class="table-message">Carregando banco de aeronaves…</td></tr></tbody>
+            <thead><tr><th>Aeronave</th><th>Matrícula</th><th class="priority-column">Base</th><th class="priority-column">Situação</th><th>Tipo de operação</th><th>Restrições</th><th>Última atualização</th><th>Ações</th></tr></thead>
+            <tbody id="aircraftRows"><tr><td colspan="8" class="table-message">Carregando banco de aeronaves…</td></tr></tbody>
           </table>
         </div>
       </section>
@@ -402,6 +402,6 @@
   <div class="toast" id="toast" role="status"></div>
   <script src="data/public-knowledge-index.js"></script>
   <script src="data/knowledge-index.js"></script>
-  <script src="app.js?v=20260729-25"></script>
+  <script src="app.js?v=20260729-26"></script>
 </body>
 </html>

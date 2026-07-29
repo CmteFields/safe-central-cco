@@ -323,6 +323,8 @@ class WSGITests(unittest.TestCase):
         self.assertNotIn(b"http://127.0.0.1:8765/api/ask", body)
         self.assertIn("Modo de contingência".encode(), body)
         self.assertIn(b'item.fleet_status === "Ativa" && item.status !== "Operacional"', body)
+        self.assertIn(b"edit-aircraft-button", body)
+        self.assertIn("Somente leitura".encode(), body)
 
     def test_static_portal_contains_reports_section(self):
         status, _, body = self.request("/")
@@ -336,6 +338,7 @@ class WSGITests(unittest.TestCase):
         self.assertIn(b'id="handoverFormError"', body)
         self.assertIn(b'id="aircraftFleetFilter"', body)
         self.assertIn(b'id="aircraftFleetStatus"', body)
+        self.assertIn("<th>Ações</th>".encode(), body)
 
     def test_temporary_password_and_first_writes_through_wsgi(self):
         with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
