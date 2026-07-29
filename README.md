@@ -64,6 +64,21 @@ antigos (`auth.db`, `instructors.db`, `aircraft.db` e demais) são importados
 automaticamente. Os arquivos antigos não são excluídos e permanecem como
 backup da migração.
 
+### Sincronizar o catálogo documental de regras
+
+As propostas e regras internas permanecem fora do repositório público. Para
+espelhá-las em **Gestão de regras**, copie o arquivo interno
+`Regras/catalogo_regras.json` para:
+
+```text
+/home/CCOFields/portalcco-data/catalogo_regras.json
+```
+
+O WSGI aponta `SAFE_RULES_CATALOG_PATH` para esse arquivo. A cada recarga, o
+Portal importa novos itens e atualizações ainda gerenciadas pelo catálogo. Uma
+revisão feita no Portal deixa de ser sobrescrita automaticamente, preservando a
+decisão e sua trilha de auditoria.
+
 ### Render
 
 O arquivo `render.yaml` prepara um Web Service Python no Render com:

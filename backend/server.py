@@ -34,6 +34,9 @@ PUBLIC_KNOWLEDGE_INDEX_PATH = PORTAL_ROOT / "data" / "public-knowledge-index.js"
 LEARNING_GRAPH_PATH = Path(
     os.environ.get("SAFE_LEARNING_GRAPH_PATH", KNOWLEDGE_ROOT / "Knowledge" / "query_graph.json")
 ).resolve()
+RULES_CATALOG_PATH = Path(
+    os.environ.get("SAFE_RULES_CATALOG_PATH", KNOWLEDGE_ROOT / "Regras" / "catalogo_regras.json")
+).resolve()
 MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite")
 HOST = os.environ.get("SAFE_CCO_HOST", "0.0.0.0" if os.environ.get("RENDER") else "127.0.0.1")
 PORT = int(os.environ.get("SAFE_CCO_PORT") or os.environ.get("PORT") or "8765")
@@ -110,14 +113,14 @@ INSTRUCTOR_SEED = [
 ]
 
 AIRCRAFT_SEED = [
-    ("Tecnam P-Mentor", "PS-SFP", "Não informada", "Operacional", "IFR (RNAV/PBN)", "Nenhuma", "Nenhuma", None),
-    ("Inpaer COLT 100", "PS-SFJ", "Não informada", "Operacional", "IFR Capota / VFR Noturno", "Nenhuma", "Nenhuma", None),
-    ("Inpaer COLT 100", "PS-SFL", "Não informada", "Operacional", "IFR Capota / VFR Noturno", "Nenhuma", "Nenhuma", None),
-    ("Montaer MC-01", "PS-LOM", "Não informada", "Operacional", "IFR Capota / VFR Noturno", "Nenhuma", "Nenhuma", None),
-    ("Montaer MC-01", "PS-SFI", "Não informada", "Operacional", "VFR Noturno", "Restrita a voos VFR (não homologada para IFR)", "Nenhuma", None),
-    ("Montaer MC-01", "PS-SFE", "Não informada", "Operacional", "IFR Capota, Diurno", "Restrita a IFR Capota Diurno (não homologada para voos noturnos)", "Nenhuma", None),
-    ("Montaer MC-01", "PS-SFH", "Não informada", "Operacional", "VFR Diurno", "Restrita a voos VFR Diurnos (não homologada para IFR ou voos noturnos)", "Nenhuma", None),
-    ("Cessna 150", "PS-CRS", "Não informada", "Fora de Operação", "Não listada", "Fora de operação (não consta nas certificações ativas)", "Nenhuma", None),
+    ("Tecnam P-Mentor", "PS-SFP", "Não informada", "Ativa", "Operacional", "IFR (RNAV/PBN)", "Nenhuma", "Nenhuma", None),
+    ("Inpaer COLT 100", "PS-SFJ", "Não informada", "Inativa", "Fora de Operação", "Não aplicável (vendida)", "Aeronave vendida; não pertence à frota SAFE desde 29/07/2006", "Nenhuma", "2006-07-29"),
+    ("Inpaer COLT 100", "PS-SFL", "Não informada", "Ativa", "Operacional", "IFR Capota / VFR Noturno", "Nenhuma", "Nenhuma", None),
+    ("Montaer MC-01", "PS-LOM", "Não informada", "Ativa", "Operacional", "IFR Capota / VFR Noturno", "Nenhuma", "Nenhuma", None),
+    ("Montaer MC-01", "PS-SFI", "Não informada", "Ativa", "Operacional", "VFR Noturno", "Restrita a voos VFR (não homologada para IFR)", "Nenhuma", None),
+    ("Montaer MC-01", "PS-SFE", "Não informada", "Ativa", "Operacional", "IFR Capota, Diurno", "Restrita a IFR Capota Diurno (não homologada para voos noturnos)", "Nenhuma", None),
+    ("Montaer MC-01", "PS-SFH", "Não informada", "Ativa", "Operacional", "VFR Diurno", "Restrita a voos VFR Diurnos (não homologada para IFR ou voos noturnos)", "Nenhuma", None),
+    ("Cessna 150", "PS-CRS", "Não informada", "Inativa", "Fora de Operação", "Não listada", "Fora de operação (não consta nas certificações ativas)", "Nenhuma", None),
 ]
 
 BASE_SEED = [
@@ -142,6 +145,13 @@ RULE_CANDIDATE_STATUS_LABELS = {
     "pending_approval": "Pendente de aprovação",
     "approved": "Aprovada",
     "rejected": "Rejeitada",
+}
+CATALOG_STATUS_MAP = {
+    "rascunho": "unreviewed",
+    "em_discussao": "unreviewed",
+    "aguardando_aprovacao": "pending_approval",
+    "aprovada": "approved",
+    "rejeitada": "rejected",
 }
 GENERAL_CMA_RULE_IDS = {
     "claim_rbac61_cma_vencido_impede_prerrogativas",
@@ -651,7 +661,13 @@ def initialize_rules_db() -> None:
             scope TEXT NOT NULL DEFAULT '',
             effective_from TEXT,
             effective_until TEXT,
-            supersedes TEXT NOT NULL DEFAULT ''
+            supersedes TEXT NOT NULL DEFAULT '',
+            document_id TEXT NOT NULL DEFAULT '',
+            document_path TEXT NOT NULL DEFAULT '',
+            catalog_status TEXT NOT NULL DEFAULT '',
+            catalog_hash TEXT NOT NULL DEFAULT '',
+            catalog_synced_at TEXT,
+            catalog_managed INTEGER NOT NULL DEFAULT 0
         )""")
         connection.execute("""CREATE TABLE IF NOT EXISTS rule_events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -665,6 +681,24 @@ def initialize_rules_db() -> None:
         )""")
         connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_rule_candidates_status ON rule_candidates(status, last_asked_at DESC)"
+        )
+        existing_columns = {
+            row["name"] for row in connection.execute("PRAGMA table_info(rule_candidates)").fetchall()
+        }
+        catalog_columns = {
+            "document_id": "TEXT NOT NULL DEFAULT ''",
+            "document_path": "TEXT NOT NULL DEFAULT ''",
+            "catalog_status": "TEXT NOT NULL DEFAULT ''",
+            "catalog_hash": "TEXT NOT NULL DEFAULT ''",
+            "catalog_synced_at": "TEXT",
+            "catalog_managed": "INTEGER NOT NULL DEFAULT 0",
+        }
+        for column, declaration in catalog_columns.items():
+            if column not in existing_columns:
+                connection.execute(f"ALTER TABLE rule_candidates ADD COLUMN {column} {declaration}")
+        connection.execute(
+            """CREATE UNIQUE INDEX IF NOT EXISTS idx_rule_candidates_document_id
+               ON rule_candidates(document_id) WHERE document_id <> ''"""
         )
         connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_rule_events_candidate ON rule_events(candidate_id, created_at)"
@@ -692,6 +726,134 @@ def initialize_rules_db() -> None:
                END
                WHERE status='pending_review'"""
         )
+
+
+def synchronize_rules_catalog(connection: sqlite3.Connection) -> int:
+    """Importa o catálogo documental sem sobrescrever uma revisão feita no Portal."""
+    if not RULES_CATALOG_PATH.is_file():
+        return 0
+    try:
+        payload = json.loads(RULES_CATALOG_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise RuntimeError(f"Catálogo de regras inválido: {RULES_CATALOG_PATH}") from error
+    if payload.get("schema_version") != 1 or not isinstance(payload.get("items"), list):
+        raise RuntimeError("O catálogo de regras não possui o schema_version 1 esperado.")
+
+    catalog_updated_at = str(payload.get("updated_at", "")).strip() or now_iso()
+    synchronized = 0
+    for raw_item in payload["items"]:
+        if not isinstance(raw_item, dict):
+            raise RuntimeError("O catálogo de regras contém um item inválido.")
+        item = {str(key): value for key, value in raw_item.items()}
+        document_id = str(item.get("document_id", "")).strip().upper()
+        title = str(item.get("title", "")).strip()
+        catalog_status = str(item.get("status", "")).strip()
+        if not re.fullmatch(r"(?:PR|RG)-\d{3}", document_id) or not title:
+            raise RuntimeError("Todo item do catálogo deve possuir document_id e title válidos.")
+        if catalog_status not in CATALOG_STATUS_MAP:
+            raise RuntimeError(f"Estado inválido no catálogo para {document_id}: {catalog_status}")
+
+        portal_status = CATALOG_STATUS_MAP[catalog_status]
+        published_rule_id = str(item.get("published_rule_id", "")).strip().upper()
+        if portal_status == "approved":
+            published_rule_id = published_rule_id or document_id
+            if not re.fullmatch(r"RG-\d{3}", published_rule_id):
+                raise RuntimeError(
+                    f"A regra aprovada {document_id} deve possuir um published_rule_id RG-###."
+                )
+        summary = str(item.get("summary", "")).strip()
+        document_path = str(item.get("document_path", "")).strip()
+        authority = str(item.get("authority", "")).strip()
+        source_reference = str(item.get("source_reference", "")).strip()
+        scope = str(item.get("scope", "")).strip()
+        review_note = str(item.get("review_note", "")).strip()
+        approved_text = str(item.get("approved_rule_text", "")).strip()
+        if portal_status == "approved" and (not approved_text or not authority or not source_reference):
+            raise RuntimeError(f"A regra aprovada {document_id} está incompleta no catálogo.")
+        canonical = json.dumps(item, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        catalog_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        current = connection.execute(
+            "SELECT * FROM rule_candidates WHERE document_id=?", (document_id,)
+        ).fetchone()
+        if current and (not current["catalog_managed"] or current["catalog_hash"] == catalog_hash):
+            continue
+
+        evidence = [{
+            "id": document_id,
+            "kind": "local_rule_document",
+            "label": source_reference or title,
+            "code": document_id,
+            "source": document_path,
+            "location": document_path,
+            "url": "",
+        }]
+        evidence_json = json.dumps(evidence, ensure_ascii=False)
+        reviewed_at = catalog_updated_at if portal_status != "unreviewed" else None
+        reviewed_by_username = "catalogo_local" if reviewed_at else ""
+        reviewed_by_name = "Catálogo documental" if reviewed_at else ""
+        confidence = "high" if portal_status == "approved" else (
+            "medium" if portal_status == "pending_approval" else "low"
+        )
+        if current:
+            connection.execute(
+                """UPDATE rule_candidates
+                   SET normalized_question=?, question=?, proposed_answer=?, confidence=?,
+                       source_kind='local_document', sources_json=?, local_evidence_json=?,
+                       status=?, last_asked_at=?, updated_at=?, reviewed_by_username=?,
+                       reviewed_by_name=?, reviewed_at=?, review_note=?, approved_rule_text=?,
+                       rule_code=?, authority=?, source_reference=?, scope=?, document_path=?,
+                       catalog_status=?, catalog_hash=?, catalog_synced_at=?, catalog_managed=1
+                   WHERE id=?""",
+                (
+                    normalize(f"{document_id} {title}"), title, summary, confidence,
+                    evidence_json, evidence_json, portal_status, catalog_updated_at,
+                    catalog_updated_at, reviewed_by_username, reviewed_by_name, reviewed_at,
+                    review_note, approved_text, published_rule_id if portal_status == "approved" else "",
+                    authority, source_reference, scope, document_path, catalog_status,
+                    catalog_hash, now_iso(), current["id"],
+                ),
+            )
+            candidate_id = int(current["id"])
+            action = "Sincronizada do catálogo"
+        else:
+            cursor = connection.execute(
+                """INSERT INTO rule_candidates(
+                   normalized_question, question, proposed_answer, confidence, source_kind,
+                   sources_json, local_evidence_json, status, occurrence_count, first_asked_at,
+                   last_asked_at, updated_at, created_by_username, created_by_name,
+                   reviewed_by_username, reviewed_by_name, reviewed_at, review_note,
+                   approved_rule_text, rule_code, authority, source_reference, scope,
+                   document_id, document_path, catalog_status, catalog_hash,
+                   catalog_synced_at, catalog_managed
+                   ) VALUES (?, ?, ?, ?, 'local_document', ?, ?, ?, 1, ?, ?, ?, ?, ?,
+                             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)""",
+                (
+                    normalize(f"{document_id} {title}"), title, summary, confidence,
+                    evidence_json, evidence_json, portal_status, catalog_updated_at,
+                    catalog_updated_at, catalog_updated_at, "catalogo_local",
+                    "Catálogo documental", reviewed_by_username, reviewed_by_name, reviewed_at,
+                    review_note, approved_text,
+                    published_rule_id if portal_status == "approved" else "", authority,
+                    source_reference, scope, document_id, document_path, catalog_status,
+                    catalog_hash, now_iso(),
+                ),
+            )
+            candidate_id = int(cursor.lastrowid)
+            action = "Importada do catálogo"
+        connection.execute(
+            """INSERT INTO rule_events(candidate_id, action, actor_username, actor_name, details, created_at)
+               VALUES (?, ?, 'catalogo_local', 'Catálogo documental', ?, ?)""",
+            (
+                candidate_id, action,
+                json.dumps(
+                    {"document_id": document_id, "catalog_status": catalog_status},
+                    ensure_ascii=False,
+                ),
+                now_iso(),
+            ),
+        )
+        synchronized += 1
+    return synchronized
 
 
 def rule_candidate_dict(row: sqlite3.Row) -> dict[str, Any]:
@@ -852,7 +1014,7 @@ def review_rule_candidate(candidate_id: int, data: dict[str, Any], reviewer: dic
             """UPDATE rule_candidates SET status=?, review_note=?, approved_rule_text=?,
                rule_code=?, authority=?, source_reference=?, source_url=?, scope=?,
                effective_from=?, effective_until=?, supersedes=?, reviewed_by_username=?,
-               reviewed_by_name=?, reviewed_at=?, updated_at=? WHERE id=?""",
+               reviewed_by_name=?, reviewed_at=?, updated_at=?, catalog_managed=0 WHERE id=?""",
             (
                 status, review_note, approved_rule_text, rule_code, authority, source_reference,
                 source_url, scope, effective_from, effective_until, supersedes,
@@ -1403,11 +1565,24 @@ def initialize_aircraft_db() -> None:
         if connection.execute("SELECT COUNT(*) FROM aircraft").fetchone()[0] == 0:
             timestamp = now_iso()
             connection.executemany(
-                """INSERT INTO aircraft(model, registration, base, operational_status, operation_type,
+                """INSERT INTO aircraft(model, registration, base, fleet_status, operational_status, operation_type,
                    active_restrictions, temporary_restrictions, restriction_date, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 [(*item, timestamp) for item in AIRCRAFT_SEED],
             )
+        sold_note = "Aeronave vendida; não pertence à frota SAFE desde 29/07/2006"
+        connection.execute(
+            """UPDATE aircraft
+               SET fleet_status='Inativa', operational_status='Fora de Operação',
+                   operation_type='Não aplicável (vendida)', active_restrictions=?,
+                   temporary_restrictions='Nenhuma', restriction_date='2006-07-29',
+                   updated_at=?
+               WHERE registration='PS-SFJ'
+                 AND (fleet_status<>'Inativa' OR operational_status<>'Fora de Operação'
+                      OR operation_type<>'Não aplicável (vendida)'
+                      OR active_restrictions<>? OR IFNULL(restriction_date, '')<>'2006-07-29')""",
+            (sold_note, now_iso(), sold_note),
+        )
 
 
 def aircraft_dict(row: sqlite3.Row) -> dict[str, Any]:
@@ -1599,8 +1774,15 @@ def retrieve_dynamic_rules(question: str) -> list[dict[str, Any]]:
         metadata = " ".join(str(rule.get(field, "")) for field in (
             "rule_code", "authority", "source_reference", "scope", "supersedes"
         ))
+        searchable = normalize(f"{label} {metadata}")
+        matched_tokens = {
+            token for token in query_tokens if contains_normalized_token(searchable, token)
+        }
         score = score_text(query_tokens, label, metadata) + 6
-        if score <= 6:
+        # Termos genéricos como "voo", "aluno" e "instrução" não bastam para
+        # inserir uma regra interna aprovada em uma resposta de outro assunto.
+        coverage = len(matched_tokens) / max(1, len(query_tokens))
+        if len(matched_tokens) < 2 or coverage < 0.45:
             continue
         results.append({
             "id": f"approved_rule_{rule['id']}",
@@ -2034,6 +2216,34 @@ def migrate_legacy_learning_graph(connection: sqlite3.Connection) -> None:
     )
 
 
+def synchronize_legacy_learning_reviews(connection: sqlite3.Connection) -> int:
+    """Replica no banco as revisões humanas registradas no grafo local."""
+    if not LEARNING_GRAPH_PATH.is_file():
+        return 0
+    graph = load_learning_graph()
+    reviewed = [
+        relation for relation in graph.get("candidate_relations", [])
+        if relation.get("origin_query") and relation.get("status") != "pending_review"
+    ]
+    updated = 0
+    for item in reviewed:
+        cursor = connection.execute(
+            """UPDATE learning_candidate_relations SET status=?
+               WHERE query_id=? AND source_concept=? AND target_concept=? AND relation=?
+                 AND status<>?""",
+            (
+                str(item.get("status", "rejected_superseded")),
+                str(item.get("origin_query", "")),
+                str(item.get("source_concept", "")),
+                str(item.get("target_concept", "")),
+                str(item.get("relation", "")),
+                str(item.get("status", "rejected_superseded")),
+            ),
+        )
+        updated += cursor.rowcount
+    return updated
+
+
 def initialize_learning_db() -> None:
     with WRITE_LOCK, learning_connection() as connection:
         connection.execute("""CREATE TABLE IF NOT EXISTS learning_queries (
@@ -2070,6 +2280,7 @@ def initialize_learning_db() -> None:
                ON learning_candidate_relations(status, created_at)"""
         )
         migrate_legacy_learning_graph(connection)
+        synchronize_legacy_learning_reviews(connection)
 
 
 def record_learning(question: str, evidence: list[dict[str, Any]], result: dict[str, Any]) -> str:
@@ -2203,6 +2414,8 @@ def initialize_portal_storage() -> None:
     initialize_reports_db()
     initialize_search_history_db()
     initialize_rules_db()
+    with RULES_LOCK, rules_connection() as connection:
+        synchronize_rules_catalog(connection)
     initialize_learning_db()
 
 

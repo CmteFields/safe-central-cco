@@ -16,6 +16,7 @@ secrets = json.loads(SECRETS_PATH.read_text(encoding="utf-8"))
 os.environ["SAFE_CCO_DATA_DIR"] = str(DATA_ROOT)
 os.environ["SAFE_PORTAL_DB_PATH"] = str(DATA_ROOT / "portalcco.db")
 os.environ["SAFE_LEARNING_GRAPH_PATH"] = str(DATA_ROOT / "query_graph.json")
+os.environ["SAFE_RULES_CATALOG_PATH"] = str(DATA_ROOT / "catalogo_regras.json")
 os.environ["SAFE_CCO_SECURE_COOKIES"] = "true"
 os.environ["SAFE_CCO_REQUIRE_SETUP_TOKEN"] = "true"
 os.environ["SAFE_CCO_SETUP_TOKEN"] = secrets["SAFE_CCO_SETUP_TOKEN"]
