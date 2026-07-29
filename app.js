@@ -628,6 +628,7 @@ function renderAircraft() {
   const base = $("#aircraftBaseFilter").value;
   const fleetStatus = $("#aircraftFleetFilter").value;
   const status = $("#aircraftStatusFilter").value;
+  const canEditAircraft = hasRole("admin", "supervisor");
   const visible = aircraft.filter(item => {
     const searchable = normalizeText(`${item.model} ${item.registration} ${item.base} ${item.fleet_status} ${item.status} ${item.operation_type} ${item.active_restrictions} ${item.temporary_restrictions}`);
     return (!query || searchable.includes(query))
@@ -641,8 +642,10 @@ function renderAircraft() {
       <td><span class="instructor-name">${escapeHtml(item.model)}</span></td>
       <td><span class="registration">${escapeHtml(item.registration)}</span></td>
       <td><span class="base-badge ${item.base === "CPQ" ? "cpq" : ""}">${escapeHtml(item.base)}</span></td>
-      <td><span class="status-badge ${item.fleet_status === "Inativa" ? "inactive" : ""}">${escapeHtml(item.fleet_status)}</span></td>
-      <td><span class="status-badge ${aircraftStatusClass(item.status)}">${escapeHtml(item.status)}</span></td>
+      <td class="aircraft-situation-cell">
+        <div><small>FROTA</small><span class="status-badge ${item.fleet_status === "Inativa" ? "inactive" : ""}">${escapeHtml(item.fleet_status)}</span></div>
+        <div><small>OPERAÇÃO</small><span class="status-badge ${aircraftStatusClass(item.status)}">${escapeHtml(item.status)}</span></div>
+      </td>
       <td>${escapeHtml(item.operation_type)}</td>
       <td class="restriction-cell">
         <strong>${escapeHtml(item.active_restrictions)}</strong>
@@ -652,8 +655,10 @@ function renderAircraft() {
         </div>
       </td>
       <td class="updated-cell">${formatInstructorDate(item.updated_at)}</td>
-      <td class="row-actions">${hasRole("admin", "supervisor") ? `<button class="edit-instructor" data-aircraft-id="${item.id}" aria-label="Editar ${escapeHtml(item.registration)}">✎</button>` : ""}</td>
-    </tr>`).join("") : `<tr><td colspan="9" class="table-message">Nenhuma aeronave encontrada com esses filtros.</td></tr>`;
+      <td class="row-actions aircraft-actions">${canEditAircraft
+        ? `<button class="edit-aircraft-button" data-aircraft-id="${item.id}" aria-label="Editar ${escapeHtml(item.registration)}"><span>✎</span> Editar</button>`
+        : `<span class="aircraft-readonly">Somente leitura</span>`}</td>
+    </tr>`).join("") : `<tr><td colspan="8" class="table-message">Nenhuma aeronave encontrada com esses filtros.</td></tr>`;
   document.querySelectorAll("[data-aircraft-id]").forEach(button => button.addEventListener("click", () => openAircraftDialog(aircraft.find(item => item.id === Number(button.dataset.aircraftId)))));
   renderRestrictedAircraftDashboard();
 }
@@ -669,7 +674,7 @@ async function aircraftRequest(path = "", options = {}) {
 }
 
 async function loadAircraft() {
-  $("#aircraftRows").innerHTML = `<tr><td colspan="9" class="table-message">Carregando banco de aeronaves…</td></tr>`;
+  $("#aircraftRows").innerHTML = `<tr><td colspan="8" class="table-message">Carregando banco de aeronaves…</td></tr>`;
   try {
     const data = await aircraftRequest();
     aircraft = data.items;
@@ -677,7 +682,7 @@ async function loadAircraft() {
     fillAircraftFilters();
     renderAircraft();
   } catch (error) {
-    $("#aircraftRows").innerHTML = `<tr><td colspan="9" class="table-message">Não foi possível acessar o banco de aeronaves.</td></tr>`;
+    $("#aircraftRows").innerHTML = `<tr><td colspan="8" class="table-message">Não foi possível acessar o banco de aeronaves.</td></tr>`;
     toast(error.message);
   }
 }
