@@ -101,6 +101,10 @@ a reconstrução e a validação. Para sincronizar sem reconstruir:
 python PortalCCO/scripts/sync_pythonanywhere_knowledge.py
 ```
 
+O backend detecta e instala automaticamente a versão mais recente de
+`portalcco-data/knowledge-bundle.zip` antes de carregar as regras. A instalação
+é atômica, validada por hashes e não sobrescreve o banco operacional.
+
 ### Render
 
 O arquivo `render.yaml` prepara um Web Service Python no Render com:
