@@ -114,7 +114,7 @@
             <div id="recentList"></div>
           </section>
           <section class="panel dashboard-restrictions">
-            <div class="panel-head"><div><h2>Aeronaves com restrição</h2><p>Aeronaves fora de operação ou em manutenção</p></div><button class="text-button" id="openAircraftDashboard">Ver frota →</button></div>
+            <div class="panel-head"><div><h2>Aeronaves com restrição</h2><p>Somente aeronaves ativas fora de operação ou em manutenção</p></div><button class="text-button" id="openAircraftDashboard">Ver frota →</button></div>
             <div id="restrictedAircraftList"><div class="dashboard-loading">Carregando aeronaves…</div></div>
           </section>
           <section class="panel dashboard-instructors">
@@ -172,13 +172,14 @@
         <div class="instructor-toolbar">
           <label class="table-search"><span>⌕</span><input id="aircraftSearch" type="search" placeholder="Buscar modelo, matrícula ou restrição…"></label>
           <select id="aircraftBaseFilter" aria-label="Filtrar aeronaves por base"><option value="">Todas as bases</option></select>
+          <select id="aircraftFleetFilter" aria-label="Filtrar pela situação da frota"><option value="">Ativas e inativas</option></select>
           <select id="aircraftStatusFilter" aria-label="Filtrar por status"><option value="">Todos os status</option></select>
           <span class="instructor-total" id="aircraftTotal">Carregando…</span>
         </div>
         <div class="instructor-table-wrap">
           <table class="instructor-table aircraft-table">
-            <thead><tr><th>Aeronave</th><th>Matrícula</th><th class="priority-column">Base</th><th class="priority-column">Situação operacional</th><th>Tipo de operação</th><th>Restrições</th><th>Última atualização</th><th><span class="sr-only">Ações</span></th></tr></thead>
-            <tbody id="aircraftRows"><tr><td colspan="8" class="table-message">Carregando banco de aeronaves…</td></tr></tbody>
+            <thead><tr><th>Aeronave</th><th>Matrícula</th><th class="priority-column">Base</th><th>Situação da frota</th><th class="priority-column">Situação operacional</th><th>Tipo de operação</th><th>Restrições</th><th>Última atualização</th><th><span class="sr-only">Ações</span></th></tr></thead>
+            <tbody id="aircraftRows"><tr><td colspan="9" class="table-message">Carregando banco de aeronaves…</td></tr></tbody>
           </table>
         </div>
       </section>
@@ -282,6 +283,7 @@
         <label>Aeronave / modelo<input id="aircraftModel" maxlength="120" required></label>
         <label>Matrícula<input id="aircraftRegistration" maxlength="20" required placeholder="PS-XXX"></label>
         <label>Base<select id="aircraftBase" required><option value="Não informada">Não informada</option></select></label>
+        <label>Situação da frota<select id="aircraftFleetStatus" required><option value="Ativa">Ativa</option><option value="Inativa">Inativa</option></select></label>
         <label>Situação operacional<select id="aircraftStatus" required><option value="Operacional">Operacional</option><option value="Fora de Operação">Fora de Operação</option><option value="Em Manutenção">Em Manutenção</option></select></label>
         <label class="wide">Tipo de operação<input id="aircraftOperation" maxlength="200" required></label>
         <label class="wide">Restrições ativas<textarea id="aircraftActiveRestrictions" maxlength="500" rows="2"></textarea></label>
@@ -400,6 +402,6 @@
   <div class="toast" id="toast" role="status"></div>
   <script src="data/public-knowledge-index.js"></script>
   <script src="data/knowledge-index.js"></script>
-  <script src="app.js?v=20260728-24"></script>
+  <script src="app.js?v=20260729-25"></script>
 </body>
 </html>

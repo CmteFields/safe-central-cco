@@ -592,21 +592,27 @@ function aircraftStatusClass(status) {
 
 function fillAircraftFilters() {
   const selectedBase = $("#aircraftBaseFilter").value;
+  const selectedFleetStatus = $("#aircraftFleetFilter").value;
   const selectedStatus = $("#aircraftStatusFilter").value;
   const bases = [...new Set(aircraft.map(item => item.base))].sort();
+  const fleetStatuses = [...new Set(aircraft.map(item => item.fleet_status))].sort();
   const statuses = [...new Set(aircraft.map(item => item.status))].sort();
   $("#aircraftBaseFilter").innerHTML = `<option value="">Todas as bases</option>${bases.map(value => `<option>${escapeHtml(value)}</option>`).join("")}`;
+  $("#aircraftFleetFilter").innerHTML = `<option value="">Ativas e inativas</option>${fleetStatuses.map(value => `<option>${escapeHtml(value)}</option>`).join("")}`;
   $("#aircraftStatusFilter").innerHTML = `<option value="">Todos os status</option>${statuses.map(value => `<option>${escapeHtml(value)}</option>`).join("")}`;
   $("#aircraftBaseFilter").value = bases.includes(selectedBase) ? selectedBase : "";
+  $("#aircraftFleetFilter").value = fleetStatuses.includes(selectedFleetStatus) ? selectedFleetStatus : "";
   $("#aircraftStatusFilter").value = statuses.includes(selectedStatus) ? selectedStatus : "";
 }
 
 function renderRestrictedAircraftDashboard() {
   const box = $("#restrictedAircraftList");
   if (!box) return;
-  const restricted = aircraft.filter(item => item.status !== "Operacional");
+  const restricted = aircraft.filter(
+    item => item.fleet_status === "Ativa" && item.status !== "Operacional"
+  );
   if (!restricted.length) {
-    box.innerHTML = `<div class="dashboard-clear"><span>✓</span>Nenhuma aeronave possui restrição registrada.</div>`;
+    box.innerHTML = `<div class="dashboard-clear"><span>✓</span>Nenhuma aeronave ativa possui restrição operacional.</div>`;
     return;
   }
   box.innerHTML = restricted.map(item => {
@@ -620,10 +626,14 @@ function renderRestrictedAircraftDashboard() {
 function renderAircraft() {
   const query = normalizeText($("#aircraftSearch").value);
   const base = $("#aircraftBaseFilter").value;
+  const fleetStatus = $("#aircraftFleetFilter").value;
   const status = $("#aircraftStatusFilter").value;
   const visible = aircraft.filter(item => {
-    const searchable = normalizeText(`${item.model} ${item.registration} ${item.base} ${item.status} ${item.operation_type} ${item.active_restrictions} ${item.temporary_restrictions}`);
-    return (!query || searchable.includes(query)) && (!base || item.base === base) && (!status || item.status === status);
+    const searchable = normalizeText(`${item.model} ${item.registration} ${item.base} ${item.fleet_status} ${item.status} ${item.operation_type} ${item.active_restrictions} ${item.temporary_restrictions}`);
+    return (!query || searchable.includes(query))
+      && (!base || item.base === base)
+      && (!fleetStatus || item.fleet_status === fleetStatus)
+      && (!status || item.status === status);
   });
   $("#aircraftTotal").textContent = `${visible.length} de ${aircraft.length} aeronave${aircraft.length === 1 ? "" : "s"}`;
   $("#aircraftRows").innerHTML = visible.length ? visible.map(item => `
@@ -631,6 +641,7 @@ function renderAircraft() {
       <td><span class="instructor-name">${escapeHtml(item.model)}</span></td>
       <td><span class="registration">${escapeHtml(item.registration)}</span></td>
       <td><span class="base-badge ${item.base === "CPQ" ? "cpq" : ""}">${escapeHtml(item.base)}</span></td>
+      <td><span class="status-badge ${item.fleet_status === "Inativa" ? "inactive" : ""}">${escapeHtml(item.fleet_status)}</span></td>
       <td><span class="status-badge ${aircraftStatusClass(item.status)}">${escapeHtml(item.status)}</span></td>
       <td>${escapeHtml(item.operation_type)}</td>
       <td class="restriction-cell">
@@ -642,7 +653,7 @@ function renderAircraft() {
       </td>
       <td class="updated-cell">${formatInstructorDate(item.updated_at)}</td>
       <td class="row-actions">${hasRole("admin", "supervisor") ? `<button class="edit-instructor" data-aircraft-id="${item.id}" aria-label="Editar ${escapeHtml(item.registration)}">✎</button>` : ""}</td>
-    </tr>`).join("") : `<tr><td colspan="8" class="table-message">Nenhuma aeronave encontrada com esses filtros.</td></tr>`;
+    </tr>`).join("") : `<tr><td colspan="9" class="table-message">Nenhuma aeronave encontrada com esses filtros.</td></tr>`;
   document.querySelectorAll("[data-aircraft-id]").forEach(button => button.addEventListener("click", () => openAircraftDialog(aircraft.find(item => item.id === Number(button.dataset.aircraftId)))));
   renderRestrictedAircraftDashboard();
 }
@@ -658,7 +669,7 @@ async function aircraftRequest(path = "", options = {}) {
 }
 
 async function loadAircraft() {
-  $("#aircraftRows").innerHTML = `<tr><td colspan="8" class="table-message">Carregando banco de aeronaves…</td></tr>`;
+  $("#aircraftRows").innerHTML = `<tr><td colspan="9" class="table-message">Carregando banco de aeronaves…</td></tr>`;
   try {
     const data = await aircraftRequest();
     aircraft = data.items;
@@ -666,7 +677,7 @@ async function loadAircraft() {
     fillAircraftFilters();
     renderAircraft();
   } catch (error) {
-    $("#aircraftRows").innerHTML = `<tr><td colspan="8" class="table-message">Não foi possível acessar o banco de aeronaves.</td></tr>`;
+    $("#aircraftRows").innerHTML = `<tr><td colspan="9" class="table-message">Não foi possível acessar o banco de aeronaves.</td></tr>`;
     toast(error.message);
   }
 }
@@ -679,6 +690,7 @@ async function openAircraftDialog(item = null) {
   $("#aircraftModel").value = item?.model || "";
   $("#aircraftRegistration").value = item?.registration || "";
   renderBaseSelect($("#aircraftBase"), true, item?.base || "Não informada");
+  $("#aircraftFleetStatus").value = item?.fleet_status || "Ativa";
   $("#aircraftStatus").value = item?.status || "Operacional";
   $("#aircraftOperation").value = item?.operation_type || "";
   $("#aircraftActiveRestrictions").value = item?.active_restrictions || "Nenhuma";
@@ -695,7 +707,8 @@ async function saveAircraft(event) {
   const id = $("#aircraftId").value;
   const payload = {
     model: $("#aircraftModel").value, registration: $("#aircraftRegistration").value,
-    base: $("#aircraftBase").value, status: $("#aircraftStatus").value,
+    base: $("#aircraftBase").value, fleet_status: $("#aircraftFleetStatus").value,
+    status: $("#aircraftStatus").value,
     operation_type: $("#aircraftOperation").value,
     active_restrictions: $("#aircraftActiveRestrictions").value,
     temporary_restrictions: $("#aircraftTemporaryRestrictions").value,
@@ -1449,6 +1462,7 @@ $("#deleteInstructor").addEventListener("click", removeInstructor);
 $("#addAircraft").addEventListener("click", () => openAircraftDialog());
 $("#aircraftSearch").addEventListener("input", renderAircraft);
 $("#aircraftBaseFilter").addEventListener("change", renderAircraft);
+$("#aircraftFleetFilter").addEventListener("change", renderAircraft);
 $("#aircraftStatusFilter").addEventListener("change", renderAircraft);
 $("#aircraftForm").addEventListener("submit", saveAircraft);
 $("#deleteAircraft").addEventListener("click", removeAircraft);
