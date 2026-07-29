@@ -10,7 +10,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css?v=20260724-7">
-  <link rel="stylesheet" href="instrutores.css?v=20260729-15">
+  <link rel="stylesheet" href="instrutores.css?v=20260729-16">
   <link rel="stylesheet" href="topbar.css?v=20260724-13">
   <link rel="stylesheet" href="auth.css?v=20260724-16">
 </head>
@@ -224,16 +224,18 @@
 
       <section class="page hidden" id="ruleManagementView">
         <div class="instructors-head">
-          <div><p class="eyebrow">GOVERNANÇA · CONHECIMENTO</p><h1>Gestão de regras</h1><p>Revise perguntas sem resposta e publique somente regras validadas por fonte e autoridade.</p></div>
+          <div><p class="eyebrow">GOVERNANÇA · CONHECIMENTO</p><h1>Gestão de regras</h1><p>Faça a primeira revisão, encaminhe para aprovação e publique somente regras validadas por fonte e autoridade.</p></div>
         </div>
         <div class="rule-summary">
-          <div><small>EM APROVAÇÃO</small><strong id="pendingRuleCount">0</strong></div>
+          <div><small>NÃO REVISADAS</small><strong id="unreviewedRuleCount">0</strong></div>
+          <div><small>PENDENTES DE APROVAÇÃO</small><strong id="pendingApprovalRuleCount">0</strong></div>
           <div><small>REGRAS APROVADAS</small><strong id="approvedRuleCount">0</strong></div>
-          <div class="rule-governance-note"><span>i</span><p>Resultados externos são provisórios. Nenhuma pergunta vira regra sem revisão humana.</p></div>
+          <div class="rule-governance-note"><span>i</span><p>Uma pergunta nova começa como não revisada. Mesmo após a análise, ela só responde consultas quando for aprovada.</p></div>
         </div>
         <div class="rule-toolbar">
           <div class="rule-tabs" role="tablist">
-            <button class="active" id="pendingRulesTab" type="button">Em aprovação</button>
+            <button class="active" id="unreviewedRulesTab" type="button">Não revisadas</button>
+            <button id="pendingApprovalRulesTab" type="button">Pendentes de aprovação</button>
             <button id="approvedRulesTab" type="button">Regras aprovadas</button>
           </div>
           <label class="table-search"><span>⌕</span><input id="ruleSearch" type="search" placeholder="Buscar pergunta, regra ou fonte…"></label>
@@ -344,7 +346,7 @@
       <input type="hidden" id="ruleReviewId">
       <div class="rule-review-context" id="ruleReviewContext"></div>
       <div class="form-grid">
-        <label>Decisão<select id="ruleReviewStatus" required><option value="pending_review">Manter em aprovação</option><option value="approved">Aprovar regra</option><option value="rejected">Rejeitar proposta</option></select></label>
+        <label>Decisão<select id="ruleReviewStatus" required><option value="pending_approval">Encaminhar / manter pendente de aprovação</option><option value="approved">Aprovar regra</option><option value="rejected">Rejeitar proposta</option></select></label>
         <label>Código da regra<input id="ruleCode" maxlength="100" placeholder="Ex.: RG-PORTAL-001"></label>
         <label class="wide">Texto aprovado da regra<textarea id="approvedRuleText" maxlength="8000" rows="5" placeholder="Redação exata que poderá ser usada nas próximas respostas."></textarea></label>
         <label>Autoridade responsável<input id="ruleAuthority" maxlength="120" placeholder="Ex.: Coordenação Operacional"></label>
@@ -402,6 +404,6 @@
   <div class="toast" id="toast" role="status"></div>
   <script src="data/public-knowledge-index.js"></script>
   <script src="data/knowledge-index.js"></script>
-  <script src="app.js?v=20260729-26"></script>
+  <script src="app.js?v=20260729-27"></script>
 </body>
 </html>

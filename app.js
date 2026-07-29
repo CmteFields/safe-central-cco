@@ -97,10 +97,11 @@ let handovers = [];
 let handoversLoaded = false;
 let reports = [];
 let reportsLoaded = false;
-let ruleCandidates = [];
+let unreviewedRules = [];
+let pendingApprovalRules = [];
 let approvedRules = [];
 let rulesLoaded = false;
-let activeRulesTab = "pending";
+let activeRulesTab = "unreviewed";
 let currentSourceUrl = "";
 let users = [];
 let usersLoaded = false;
@@ -334,11 +335,11 @@ function graphResultAnswer(query, results) {
 function apiResultAnswer(query, result) {
   const confidenceLabels = { high: "Alta confiança", medium: "Confiança moderada", low: "Baixa confiança" };
   const sources = result.sources || [];
-  const provisional = result.knowledge_status === "pending_review" || result.provisional;
+  const provisional = ["unreviewed", "pending_approval", "pending_review"].includes(result.knowledge_status) || result.provisional;
   const primary = sources[0];
   return {
     question: query,
-    answer: `${provisional ? `<div class="answer-highlight provisional-answer"><strong>Resposta provisória — aguardando aprovação.</strong><br><small>A pergunta foi registrada automaticamente em Regras em aprovação${result.candidate_id ? ` como item #${escapeHtml(result.candidate_id)}` : ""}. Não use esta proposta como regra interna definitiva.</small></div>` : ""}<p>${escapeHtml(result.answer).replace(/\n/g, "<br>")}</p><div class="answer-highlight"><strong>${confidenceLabels[result.confidence] || "Confiança não informada"}</strong><br><small>Consulta ${escapeHtml(result.query_id || "")} · ${result.candidate_relations_count || 0} nova(s) relação(ões) candidata(s)</small></div>`,
+    answer: `${provisional ? `<div class="answer-highlight provisional-answer"><strong>Resposta provisória — ainda não aprovada.</strong><br><small>A pergunta foi registrada automaticamente na Gestão de regras como Não revisada${result.candidate_id ? `, item #${escapeHtml(result.candidate_id)}` : ""}. Não use esta proposta como regra interna definitiva.</small></div>` : ""}<p>${escapeHtml(result.answer).replace(/\n/g, "<br>")}</p><div class="answer-highlight"><strong>${confidenceLabels[result.confidence] || "Confiança não informada"}</strong><br><small>Consulta ${escapeHtml(result.query_id || "")} · ${result.candidate_relations_count || 0} nova(s) relação(ões) candidata(s)</small></div>`,
     source: primary?.code || primary?.label || (provisional ? "Pesquisa pendente de aprovação" : "Grafo SAFE + Gemini"),
     detail: primary ? `${primary.location || "Localização não informada"}` : "Nenhuma evidência suficiente localizada",
     sourceUrl: primary?.url || "",
@@ -1040,32 +1041,44 @@ function sourceKindLabel(value) {
 function renderRules() {
   const list = $("#ruleReviewList");
   const search = normalizeText($("#ruleSearch").value);
-  $("#pendingRuleCount").textContent = ruleCandidates.length;
+  const openCount = unreviewedRules.length + pendingApprovalRules.length;
+  $("#unreviewedRuleCount").textContent = unreviewedRules.length;
+  $("#pendingApprovalRuleCount").textContent = pendingApprovalRules.length;
   $("#approvedRuleCount").textContent = approvedRules.length;
-  $("#ruleCandidateNavCount").textContent = ruleCandidates.length;
-  $("#ruleCandidateNavCount").classList.toggle("hidden", !ruleCandidates.length);
-  $("#pendingRulesTab").classList.toggle("active", activeRulesTab === "pending");
+  $("#ruleCandidateNavCount").textContent = openCount;
+  $("#ruleCandidateNavCount").classList.toggle("hidden", !openCount);
+  $("#unreviewedRulesTab").classList.toggle("active", activeRulesTab === "unreviewed");
+  $("#pendingApprovalRulesTab").classList.toggle("active", activeRulesTab === "pending_approval");
   $("#approvedRulesTab").classList.toggle("active", activeRulesTab === "approved");
-  const source = activeRulesTab === "pending" ? ruleCandidates : approvedRules;
+  const source = activeRulesTab === "unreviewed"
+    ? unreviewedRules
+    : activeRulesTab === "pending_approval" ? pendingApprovalRules : approvedRules;
   const filtered = source.filter(item => normalizeText([
     item.question, item.proposed_answer, item.approved_rule_text, item.rule_code,
     item.source_reference, item.authority,
   ].join(" ")).includes(search));
   if (!filtered.length) {
-    list.innerHTML = `<div class="table-message">${activeRulesTab === "pending" ? "Nenhuma regra aguardando aprovação." : "Nenhuma regra aprovada encontrada."}</div>`;
+    const emptyMessages = {
+      unreviewed: "Nenhuma regra aguardando a primeira revisão.",
+      pending_approval: "Nenhuma regra pendente de aprovação.",
+      approved: "Nenhuma regra aprovada encontrada.",
+    };
+    list.innerHTML = `<div class="table-message">${emptyMessages[activeRulesTab]}</div>`;
     return;
   }
-  if (activeRulesTab === "pending") {
+  if (activeRulesTab !== "approved") {
+    const isUnreviewed = activeRulesTab === "unreviewed";
     list.innerHTML = filtered.map(item => `
-      <article class="rule-review-card">
+      <article class="rule-review-card ${isUnreviewed ? "unreviewed" : "pending-approval"}">
         <div class="rule-review-head">
-          <div><span class="rule-kind">${escapeHtml(sourceKindLabel(item.source_kind))}</span><strong>#${item.id} · ${escapeHtml(item.question)}</strong></div>
+          <div><span class="rule-kind ${isUnreviewed ? "unreviewed" : "pending-approval"}">${isUnreviewed ? "NÃO REVISADA" : "PENDENTE DE APROVAÇÃO"}</span><strong>#${item.id} · ${escapeHtml(item.question)}</strong></div>
           <span class="rule-occurrences">${item.occurrence_count} ocorrência${item.occurrence_count === 1 ? "" : "s"}</span>
         </div>
         <p>${escapeHtml(item.proposed_answer || "Nenhuma proposta de resposta foi localizada.")}</p>
-        <div class="rule-meta"><span>Confiança: ${escapeHtml(item.confidence)}</span><span>Última consulta: ${formatInstructorDate(item.last_asked_at)}</span><span>${item.sources.length} fonte(s) externa(s)</span></div>
+        <div class="rule-meta"><span>Origem: ${escapeHtml(sourceKindLabel(item.source_kind))}</span><span>Confiança: ${escapeHtml(item.confidence)}</span><span>Última consulta: ${formatInstructorDate(item.last_asked_at)}</span><span>${item.sources.length} fonte(s) externa(s)</span>${!isUnreviewed && item.reviewed_by_name ? `<span>Revisada por: ${escapeHtml(item.reviewed_by_name)}</span>` : ""}</div>
+        ${!isUnreviewed && item.review_note ? `<div class="rule-review-note"><strong>ÚLTIMA ANÁLISE</strong>${escapeHtml(item.review_note)}</div>` : ""}
         ${item.sources.length ? `<div class="rule-source-links">${item.sources.slice(0, 3).map(sourceItem => sourceItem.url ? `<a href="${escapeHtml(sourceItem.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(sourceItem.label || sourceItem.url)} ↗</a>` : "").join("")}</div>` : ""}
-        <button class="primary-button compact-button" type="button" data-rule-review="${item.id}">Revisar proposta</button>
+        <button class="primary-button compact-button" type="button" data-rule-review="${item.id}">${isUnreviewed ? "Iniciar revisão" : "Continuar análise"}</button>
       </article>`).join("");
     list.querySelectorAll("[data-rule-review]").forEach(button => button.addEventListener("click", () => openRuleReview(Number(button.dataset.ruleReview))));
     return;
@@ -1083,11 +1096,13 @@ function renderRules() {
 
 async function loadRules() {
   try {
-    const [pending, approved] = await Promise.all([
-      ruleRequest("rule-candidates?status=pending_review"),
+    const [unreviewed, pendingApproval, approved] = await Promise.all([
+      ruleRequest("rule-candidates?status=unreviewed"),
+      ruleRequest("rule-candidates?status=pending_approval"),
       ruleRequest("approved-rules"),
     ]);
-    ruleCandidates = pending.items;
+    unreviewedRules = unreviewed.items;
+    pendingApprovalRules = pendingApproval.items;
     approvedRules = approved.items;
     rulesLoaded = true;
     renderRules();
@@ -1098,15 +1113,18 @@ async function loadRules() {
 }
 
 function openRuleReview(id) {
-  const item = ruleCandidates.find(candidate => candidate.id === id)
+  const item = unreviewedRules.find(candidate => candidate.id === id)
+    || pendingApprovalRules.find(candidate => candidate.id === id)
     || approvedRules.find(rule => rule.origin === "reviewed_candidate" && rule.id === id);
   if (!item) return;
   $("#ruleReviewForm").reset();
   $("#ruleReviewError").classList.add("hidden");
   $("#ruleReviewId").value = item.id;
-  $("#ruleReviewTitle").textContent = `Revisar proposta #${item.id}`;
-  $("#ruleReviewContext").innerHTML = `<strong>${escapeHtml(item.question)}</strong><p>${escapeHtml(item.proposed_answer || "Sem proposta de resposta.")}</p><small>${escapeHtml(sourceKindLabel(item.source_kind))} · ${item.occurrence_count} ocorrência(s)</small>`;
-  $("#ruleReviewStatus").value = item.status;
+  $("#ruleReviewTitle").textContent = item.status === "unreviewed"
+    ? `Primeira revisão da proposta #${item.id}`
+    : `Analisar proposta #${item.id}`;
+  $("#ruleReviewContext").innerHTML = `<strong>${escapeHtml(item.question)}</strong><p>${escapeHtml(item.proposed_answer || "Sem proposta de resposta.")}</p><small>${escapeHtml(item.status_label || sourceKindLabel(item.source_kind))} · ${item.occurrence_count} ocorrência(s)</small>`;
+  $("#ruleReviewStatus").value = item.status === "unreviewed" ? "pending_approval" : item.status;
   $("#ruleCode").value = item.rule_code || `RG-PORTAL-${String(item.id).padStart(3, "0")}`;
   $("#approvedRuleText").value = item.approved_rule_text || item.proposed_answer || "";
   $("#ruleAuthority").value = item.authority || "";
@@ -1480,7 +1498,8 @@ $("#reportTypeFilter").addEventListener("change", renderReports);
 $("#reportStatusFilter").addEventListener("change", renderReports);
 $("#reportForm").addEventListener("submit", saveReport);
 $("#reportReviewForm").addEventListener("submit", saveReportReview);
-$("#pendingRulesTab").addEventListener("click", () => { activeRulesTab = "pending"; renderRules(); });
+$("#unreviewedRulesTab").addEventListener("click", () => { activeRulesTab = "unreviewed"; renderRules(); });
+$("#pendingApprovalRulesTab").addEventListener("click", () => { activeRulesTab = "pending_approval"; renderRules(); });
 $("#approvedRulesTab").addEventListener("click", () => { activeRulesTab = "approved"; renderRules(); });
 $("#ruleSearch").addEventListener("input", renderRules);
 $("#ruleReviewForm").addEventListener("submit", saveRuleReview);

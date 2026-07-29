@@ -325,6 +325,8 @@ class WSGITests(unittest.TestCase):
         self.assertIn(b'item.fleet_status === "Ativa" && item.status !== "Operacional"', body)
         self.assertIn(b"edit-aircraft-button", body)
         self.assertIn("Somente leitura".encode(), body)
+        self.assertIn(b"rule-candidates?status=unreviewed", body)
+        self.assertIn(b"rule-candidates?status=pending_approval", body)
 
     def test_static_portal_contains_reports_section(self):
         status, _, body = self.request("/")
@@ -339,6 +341,8 @@ class WSGITests(unittest.TestCase):
         self.assertIn(b'id="aircraftFleetFilter"', body)
         self.assertIn(b'id="aircraftFleetStatus"', body)
         self.assertIn("<th>Ações</th>".encode(), body)
+        self.assertIn(b'id="unreviewedRulesTab"', body)
+        self.assertIn(b'id="pendingApprovalRulesTab"', body)
 
     def test_temporary_password_and_first_writes_through_wsgi(self):
         with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
@@ -768,7 +772,89 @@ class RuleCandidateStorageTests(unittest.TestCase):
             )
             self.assertEqual(first["id"], repeated["id"])
             self.assertEqual(repeated["occurrence_count"], 2)
+            self.assertEqual(repeated["status"], "unreviewed")
+            self.assertEqual(repeated["status_label"], "Não revisada")
             self.assertEqual(len(server.list_rule_candidates()), 1)
+
+    def test_review_separates_unreviewed_from_pending_approval(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            server, "RULES_DB_PATH", Path(directory) / "rules.db"
+        ):
+            candidate = server.upsert_rule_candidate(
+                "Qual regra precisa de validação?", "Resposta proposta", "medium",
+                "external_grounded", [], [], self.operator,
+            )
+            self.assertEqual(candidate["status"], "unreviewed")
+
+            pending = server.review_rule_candidate(candidate["id"], {
+                "status": "pending_approval",
+                "review_note": "Primeira análise concluída; aguarda validação final.",
+                "approved_rule_text": "Texto preparado para aprovação.",
+            }, self.supervisor)
+
+            self.assertEqual(pending["status"], "pending_approval")
+            self.assertEqual(pending["status_label"], "Pendente de aprovação")
+            self.assertEqual(server.list_rule_candidates("unreviewed"), [])
+            self.assertEqual(
+                server.list_rule_candidates("pending_approval")[0]["id"],
+                candidate["id"],
+            )
+            self.assertEqual(server.retrieve_dynamic_rules(candidate["question"]), [])
+
+    def test_legacy_pending_review_is_migrated_by_review_history(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            server, "RULES_DB_PATH", Path(directory) / "rules.db"
+        ):
+            never_reviewed = server.upsert_rule_candidate(
+                "Pergunta nunca revisada", "", "low", "unanswered", [], [], self.operator
+            )
+            already_reviewed = server.upsert_rule_candidate(
+                "Pergunta já revisada", "Proposta", "medium", "operator_report", [], [],
+                self.operator,
+            )
+            with server.rules_connection() as connection:
+                connection.execute(
+                    "UPDATE rule_candidates SET status='pending_review' WHERE id=?",
+                    (never_reviewed["id"],),
+                )
+                connection.execute(
+                    """UPDATE rule_candidates SET status='pending_review',
+                       reviewed_at=?, reviewed_by_name=? WHERE id=?""",
+                    ("2026-01-10T10:00:00+00:00", "Supervisor", already_reviewed["id"]),
+                )
+
+            server.initialize_rules_db()
+
+            self.assertEqual(
+                server.list_rule_candidates("unreviewed")[0]["id"],
+                never_reviewed["id"],
+            )
+            self.assertEqual(
+                server.list_rule_candidates("pending_approval")[0]["id"],
+                already_reviewed["id"],
+            )
+
+    def test_rejected_candidate_reopens_as_unreviewed_after_new_question(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            server, "RULES_DB_PATH", Path(directory) / "rules.db"
+        ):
+            candidate = server.upsert_rule_candidate(
+                "Pergunta que pode retornar", "Proposta antiga", "low", "unanswered",
+                [], [], self.operator,
+            )
+            server.review_rule_candidate(candidate["id"], {
+                "status": "rejected",
+                "review_note": "Proposta rejeitada na primeira análise.",
+            }, self.supervisor)
+
+            reopened = server.upsert_rule_candidate(
+                "Pergunta que pode retornar", "Nova proposta", "medium", "operator_report",
+                [], [], self.operator,
+            )
+
+            self.assertEqual(reopened["status"], "unreviewed")
+            self.assertIsNone(reopened["reviewed_at"])
+            self.assertEqual(reopened["review_note"], "")
 
     def test_approved_candidate_becomes_retrievable_rule(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(
