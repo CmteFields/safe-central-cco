@@ -1035,6 +1035,7 @@ function sourceKindLabel(value) {
     unanswered: "Sem resposta conclusiva",
     conflict: "Conflito entre fontes",
     operator_report: "Indicação do operador",
+    local_document: "Catálogo documental local",
   }[value] || value;
 }
 
@@ -1071,11 +1072,11 @@ function renderRules() {
     list.innerHTML = filtered.map(item => `
       <article class="rule-review-card ${isUnreviewed ? "unreviewed" : "pending-approval"}">
         <div class="rule-review-head">
-          <div><span class="rule-kind ${isUnreviewed ? "unreviewed" : "pending-approval"}">${isUnreviewed ? "NÃO REVISADA" : "PENDENTE DE APROVAÇÃO"}</span><strong>#${item.id} · ${escapeHtml(item.question)}</strong></div>
+          <div><span class="rule-kind ${isUnreviewed ? "unreviewed" : "pending-approval"}">${isUnreviewed ? "NÃO REVISADA" : "PENDENTE DE APROVAÇÃO"}</span><strong>${escapeHtml(item.document_id || `#${item.id}`)} · ${escapeHtml(item.question)}</strong></div>
           <span class="rule-occurrences">${item.occurrence_count} ocorrência${item.occurrence_count === 1 ? "" : "s"}</span>
         </div>
         <p>${escapeHtml(item.proposed_answer || "Nenhuma proposta de resposta foi localizada.")}</p>
-        <div class="rule-meta"><span>Origem: ${escapeHtml(sourceKindLabel(item.source_kind))}</span><span>Confiança: ${escapeHtml(item.confidence)}</span><span>Última consulta: ${formatInstructorDate(item.last_asked_at)}</span><span>${item.sources.length} fonte(s) externa(s)</span>${!isUnreviewed && item.reviewed_by_name ? `<span>Revisada por: ${escapeHtml(item.reviewed_by_name)}</span>` : ""}</div>
+        <div class="rule-meta"><span>Origem: ${escapeHtml(sourceKindLabel(item.source_kind))}</span><span>Confiança: ${escapeHtml(item.confidence)}</span><span>${item.source_kind === "local_document" ? "Catálogo atualizado" : "Última consulta"}: ${formatInstructorDate(item.last_asked_at)}</span><span>${item.sources.length} fonte(s)</span>${item.document_path ? `<span>Documento: ${escapeHtml(item.document_path)}</span>` : ""}${!isUnreviewed && item.reviewed_by_name ? `<span>Revisada por: ${escapeHtml(item.reviewed_by_name)}</span>` : ""}</div>
         ${!isUnreviewed && item.review_note ? `<div class="rule-review-note"><strong>ÚLTIMA ANÁLISE</strong>${escapeHtml(item.review_note)}</div>` : ""}
         ${item.sources.length ? `<div class="rule-source-links">${item.sources.slice(0, 3).map(sourceItem => sourceItem.url ? `<a href="${escapeHtml(sourceItem.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(sourceItem.label || sourceItem.url)} ↗</a>` : "").join("")}</div>` : ""}
         <button class="primary-button compact-button" type="button" data-rule-review="${item.id}">${isUnreviewed ? "Iniciar revisão" : "Continuar análise"}</button>
@@ -1121,9 +1122,9 @@ function openRuleReview(id) {
   $("#ruleReviewError").classList.add("hidden");
   $("#ruleReviewId").value = item.id;
   $("#ruleReviewTitle").textContent = item.status === "unreviewed"
-    ? `Primeira revisão da proposta #${item.id}`
-    : `Analisar proposta #${item.id}`;
-  $("#ruleReviewContext").innerHTML = `<strong>${escapeHtml(item.question)}</strong><p>${escapeHtml(item.proposed_answer || "Sem proposta de resposta.")}</p><small>${escapeHtml(item.status_label || sourceKindLabel(item.source_kind))} · ${item.occurrence_count} ocorrência(s)</small>`;
+    ? `Primeira revisão da proposta ${item.document_id || `#${item.id}`}`
+    : `Analisar proposta ${item.document_id || `#${item.id}`}`;
+  $("#ruleReviewContext").innerHTML = `<strong>${escapeHtml(item.question)}</strong><p>${escapeHtml(item.proposed_answer || "Sem proposta de resposta.")}</p><small>${escapeHtml(item.status_label || sourceKindLabel(item.source_kind))} · ${item.occurrence_count} ocorrência(s)${item.document_path ? ` · ${escapeHtml(item.document_path)}` : ""}</small>`;
   $("#ruleReviewStatus").value = item.status === "unreviewed" ? "pending_approval" : item.status;
   $("#ruleCode").value = item.rule_code || `RG-PORTAL-${String(item.id).padStart(3, "0")}`;
   $("#approvedRuleText").value = item.approved_rule_text || item.proposed_answer || "";

@@ -629,6 +629,8 @@ class ConsolidatedStorageTests(unittest.TestCase):
             try:
                 with patch.object(server, "LEGACY_DB_PATHS", legacy), patch.object(
                     server, "LEARNING_GRAPH_PATH", legacy_graph
+                ), patch.object(
+                    server, "RULES_CATALOG_PATH", root / "catalogo-inexistente.json"
                 ):
                     server.initialize_portal_storage()
                     server.initialize_portal_storage()
@@ -757,6 +759,69 @@ class RuleCandidateStorageTests(unittest.TestCase):
         "display_name": "Supervisor",
         "role": "supervisor",
     }
+
+    def test_local_catalog_is_imported_idempotently_and_preserves_portal_review(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            database = root / "rules.db"
+            catalog = root / "catalogo_regras.json"
+            payload = {
+                "schema_version": 1,
+                "updated_at": "2026-07-29T12:00:00-03:00",
+                "items": [
+                    {
+                        "document_id": "PR-001",
+                        "title": "Proposta documental",
+                        "status": "aguardando_aprovacao",
+                        "summary": "Texto recebido do documento local.",
+                        "document_path": "Regras/Propostas/PR-001.md",
+                        "authority": "Diretoria",
+                        "source_reference": "Proposta PR-001",
+                        "scope": "Operação",
+                        "review_note": "Aguardando decisão.",
+                    },
+                    {
+                        "document_id": "PR-099",
+                        "title": "Regra documental",
+                        "status": "aprovada",
+                        "published_rule_id": "RG-001",
+                        "summary": "Resumo da regra.",
+                        "approved_rule_text": "Texto oficial aprovado.",
+                        "document_path": "Regras/regras_aprovadas.md",
+                        "authority": "Escola SAFE",
+                        "source_reference": "RG-001",
+                        "scope": "Operação",
+                    },
+                ],
+            }
+            catalog.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            with patch.object(server, "RULES_DB_PATH", database), patch.object(
+                server, "RULES_CATALOG_PATH", catalog
+            ):
+                server.initialize_rules_db()
+                with server.rules_connection() as connection:
+                    self.assertEqual(server.synchronize_rules_catalog(connection), 2)
+                    self.assertEqual(server.synchronize_rules_catalog(connection), 0)
+
+                pending = server.list_rule_candidates("pending_approval")
+                self.assertEqual(pending[0]["document_id"], "PR-001")
+                approved = server.list_rule_candidates("approved")
+                self.assertEqual(approved[0]["rule_code"], "RG-001")
+
+                reviewed = server.review_rule_candidate(pending[0]["id"], {
+                    "status": "pending_approval",
+                    "review_note": "Revisão humana preservada.",
+                    "approved_rule_text": "Texto ajustado no Portal.",
+                }, self.supervisor)
+                self.assertFalse(reviewed["catalog_managed"])
+
+                payload["items"][0]["summary"] = "Texto alterado no catálogo."
+                catalog.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+                with server.rules_connection() as connection:
+                    self.assertEqual(server.synchronize_rules_catalog(connection), 0)
+                preserved = server.list_rule_candidates("pending_approval")[0]
+                self.assertEqual(preserved["proposed_answer"], "Texto recebido do documento local.")
+                self.assertEqual(preserved["review_note"], "Revisão humana preservada.")
 
     def test_repeated_question_is_deduplicated_and_prioritized(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(
