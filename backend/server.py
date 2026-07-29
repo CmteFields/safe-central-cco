@@ -22,20 +22,42 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+try:
+    from backend.knowledge_bundle import install_knowledge_bundle
+except ModuleNotFoundError:  # Execução direta de backend/server.py.
+    from knowledge_bundle import install_knowledge_bundle
+
 
 PORTAL_ROOT = Path(__file__).resolve().parents[1]
+DATA_DIR = Path(os.environ.get("SAFE_CCO_DATA_DIR", PORTAL_ROOT / "data")).resolve()
 DEFAULT_KNOWLEDGE_ROOT = PORTAL_ROOT.parent
-KNOWLEDGE_ROOT = Path(os.environ.get("SAFE_KNOWLEDGE_ROOT", DEFAULT_KNOWLEDGE_ROOT)).resolve()
+CONFIGURED_KNOWLEDGE_ROOT = os.environ.get("SAFE_KNOWLEDGE_ROOT", "").strip()
+PRIVATE_BUNDLE_PATH = DATA_DIR / "knowledge-bundle.zip"
+PRIVATE_KNOWLEDGE_ROOT = DATA_DIR / "private-knowledge"
+BUNDLED_KNOWLEDGE_ACTIVE = not CONFIGURED_KNOWLEDGE_ROOT and PRIVATE_BUNDLE_PATH.is_file()
+if BUNDLED_KNOWLEDGE_ACTIVE:
+    install_knowledge_bundle(
+        PRIVATE_BUNDLE_PATH,
+        PRIVATE_KNOWLEDGE_ROOT,
+        DATA_DIR / ".knowledge-bundle.sha256",
+    )
+KNOWLEDGE_ROOT = Path(
+    CONFIGURED_KNOWLEDGE_ROOT
+    or (PRIVATE_KNOWLEDGE_ROOT if BUNDLED_KNOWLEDGE_ACTIVE else DEFAULT_KNOWLEDGE_ROOT)
+).resolve()
 CLAIMS_PATH = KNOWLEDGE_ROOT / "Knowledge" / "claims_curated.json"
 GRAPH_PATH = KNOWLEDGE_ROOT / "graphify-out" / "graph.json"
-DATA_DIR = Path(os.environ.get("SAFE_CCO_DATA_DIR", PORTAL_ROOT / "data")).resolve()
 PUBLIC_KNOWLEDGE_INDEX_PATH = PORTAL_ROOT / "data" / "public-knowledge-index.js"
 # Arquivo legado: passa a ser importado para o banco central na primeira execução.
 LEARNING_GRAPH_PATH = Path(
-    os.environ.get("SAFE_LEARNING_GRAPH_PATH", KNOWLEDGE_ROOT / "Knowledge" / "query_graph.json")
+    KNOWLEDGE_ROOT / "Knowledge" / "query_graph.json"
+    if BUNDLED_KNOWLEDGE_ACTIVE
+    else os.environ.get("SAFE_LEARNING_GRAPH_PATH", KNOWLEDGE_ROOT / "Knowledge" / "query_graph.json")
 ).resolve()
 RULES_CATALOG_PATH = Path(
-    os.environ.get("SAFE_RULES_CATALOG_PATH", KNOWLEDGE_ROOT / "Regras" / "catalogo_regras.json")
+    KNOWLEDGE_ROOT / "Regras" / "catalogo_regras.json"
+    if BUNDLED_KNOWLEDGE_ACTIVE
+    else os.environ.get("SAFE_RULES_CATALOG_PATH", KNOWLEDGE_ROOT / "Regras" / "catalogo_regras.json")
 ).resolve()
 MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite")
 HOST = os.environ.get("SAFE_CCO_HOST", "0.0.0.0" if os.environ.get("RENDER") else "127.0.0.1")
