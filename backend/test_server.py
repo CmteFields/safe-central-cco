@@ -322,6 +322,7 @@ class WSGITests(unittest.TestCase):
         self.assertIn(b"`${window.location.origin}/api/reports", body)
         self.assertNotIn(b"http://127.0.0.1:8765/api/ask", body)
         self.assertIn("Modo de contingência".encode(), body)
+        self.assertIn(b'item.fleet_status === "Ativa" && item.status !== "Operacional"', body)
 
     def test_static_portal_contains_reports_section(self):
         status, _, body = self.request("/")
@@ -333,6 +334,8 @@ class WSGITests(unittest.TestCase):
         self.assertIn(b'id="ruleManagementView"', body)
         self.assertIn(b'id="accountFormError"', body)
         self.assertIn(b'id="handoverFormError"', body)
+        self.assertIn(b'id="aircraftFleetFilter"', body)
+        self.assertIn(b'id="aircraftFleetStatus"', body)
 
     def test_temporary_password_and_first_writes_through_wsgi(self):
         with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
@@ -403,6 +406,7 @@ class WSGITests(unittest.TestCase):
                 }),
                 ("/api/aircraft", {
                     "model": "Aeronave Teste", "registration": "PT-TST", "base": "SJK",
+                    "fleet_status": "Inativa",
                     "status": "Operacional", "operation_type": "VFR",
                     "active_restrictions": "Nenhuma",
                     "temporary_restrictions": "Nenhuma", "restriction_date": "",
@@ -411,6 +415,8 @@ class WSGITests(unittest.TestCase):
             for path, payload in first_records:
                 status, _, body = self.request(path, "POST", payload, authenticated_headers)
                 self.assertEqual(status, "201 Created", f"{path}: {body.decode('utf-8')}")
+                if path == "/api/aircraft":
+                    self.assertEqual(json.loads(body)["fleet_status"], "Inativa")
 
     def test_secure_initial_setup_through_wsgi(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(
@@ -438,6 +444,44 @@ class WSGITests(unittest.TestCase):
 
 
 class OperationalStorageTests(unittest.TestCase):
+    def test_existing_aircraft_table_adds_fleet_status_without_losing_data(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "aircraft.db"
+            connection = sqlite3.connect(path)
+            try:
+                connection.execute("""CREATE TABLE aircraft (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    model TEXT NOT NULL,
+                    registration TEXT NOT NULL COLLATE NOCASE UNIQUE,
+                    base TEXT NOT NULL,
+                    operational_status TEXT NOT NULL,
+                    operation_type TEXT NOT NULL,
+                    active_restrictions TEXT NOT NULL,
+                    temporary_restrictions TEXT NOT NULL,
+                    restriction_date TEXT,
+                    updated_at TEXT NOT NULL
+                )""")
+                connection.execute(
+                    """INSERT INTO aircraft(
+                       model, registration, base, operational_status, operation_type,
+                       active_restrictions, temporary_restrictions, restriction_date, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        "Aeronave legada", "PT-OLD", "SJK", "Inativa", "VFR",
+                        "Nenhuma", "Nenhuma", None, "2026-01-01T00:00:00+00:00",
+                    ),
+                )
+                connection.commit()
+            finally:
+                connection.close()
+
+            with patch.object(server, "AIRCRAFT_DB_PATH", path):
+                items = server.list_aircraft()
+
+            self.assertEqual(len(items), 1)
+            self.assertEqual(items[0]["fleet_status"], "Inativa")
+            self.assertEqual(items[0]["status"], "Fora de Operação")
+
     def test_search_history_reopens_saved_presentation(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(
             server, "SEARCH_HISTORY_DB_PATH", Path(directory) / "history.db"

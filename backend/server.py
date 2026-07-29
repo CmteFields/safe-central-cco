@@ -135,6 +135,8 @@ HANDOVER_STATUSES = {"Pendente", "Em andamento", "Concluída"}
 REPORT_TYPES = {"discrepancy": "Discrepância", "question": "Indicação de pergunta"}
 REPORT_PRIORITIES = {"Baixa", "Normal", "Alta", "Crítica"}
 REPORT_STATUSES = {"Aberto", "Em análise", "Resolvido", "Descartado"}
+AIRCRAFT_FLEET_STATUSES = {"Ativa", "Inativa"}
+AIRCRAFT_OPERATIONAL_STATUSES = {"Operacional", "Fora de Operação", "Em Manutenção"}
 GENERAL_CMA_RULE_IDS = {
     "claim_rbac61_cma_vencido_impede_prerrogativas",
     "claim_rbac61_tolerancia_habilitacao_nao_prorroga_cma",
@@ -1335,6 +1337,7 @@ def initialize_aircraft_db() -> None:
             model TEXT NOT NULL,
             registration TEXT NOT NULL COLLATE NOCASE UNIQUE,
             base TEXT NOT NULL,
+            fleet_status TEXT NOT NULL DEFAULT 'Ativa',
             operational_status TEXT NOT NULL,
             operation_type TEXT NOT NULL,
             active_restrictions TEXT NOT NULL,
@@ -1342,6 +1345,13 @@ def initialize_aircraft_db() -> None:
             restriction_date TEXT,
             updated_at TEXT NOT NULL
         )""")
+        columns = {
+            row["name"] for row in connection.execute("PRAGMA table_info(aircraft)").fetchall()
+        }
+        if "fleet_status" not in columns:
+            connection.execute(
+                "ALTER TABLE aircraft ADD COLUMN fleet_status TEXT NOT NULL DEFAULT 'Ativa'"
+            )
         migrate_legacy_tables(connection, AIRCRAFT_DB_PATH, LEGACY_DB_PATHS["aircraft"], {
             "aircraft": (
                 "id", "model", "registration", "base", "operational_status",
@@ -1349,8 +1359,14 @@ def initialize_aircraft_db() -> None:
                 "restriction_date", "updated_at",
             ),
         })
-        connection.execute("UPDATE aircraft SET operational_status='Operacional' WHERE operational_status='Ativa'")
-        connection.execute("UPDATE aircraft SET operational_status='Fora de Operação' WHERE operational_status='Inativa'")
+        connection.execute(
+            "UPDATE aircraft SET fleet_status='Ativa', operational_status='Operacional' "
+            "WHERE operational_status='Ativa'"
+        )
+        connection.execute(
+            "UPDATE aircraft SET fleet_status='Inativa', operational_status='Fora de Operação' "
+            "WHERE operational_status='Inativa'"
+        )
         connection.execute("UPDATE aircraft SET operational_status='Em Manutenção' WHERE operational_status='Manutenção'")
         if connection.execute("SELECT COUNT(*) FROM aircraft").fetchone()[0] == 0:
             timestamp = now_iso()
@@ -1365,7 +1381,8 @@ def initialize_aircraft_db() -> None:
 def aircraft_dict(row: sqlite3.Row) -> dict[str, Any]:
     return {
         "id": row["id"], "model": row["model"], "registration": row["registration"],
-        "base": row["base"], "status": row["operational_status"],
+        "base": row["base"], "fleet_status": row["fleet_status"],
+        "status": row["operational_status"],
         "operation_type": row["operation_type"], "active_restrictions": row["active_restrictions"],
         "temporary_restrictions": row["temporary_restrictions"],
         "restriction_date": row["restriction_date"], "updated_at": row["updated_at"],
@@ -1377,15 +1394,23 @@ def validate_aircraft(data: dict[str, Any]) -> tuple[str, ...]:
         str(data.get("model", "")).strip(),
         str(data.get("registration", "")).strip().upper(),
         validate_base_code(str(data.get("base", "")), allow_unassigned=True),
+        str(data.get("fleet_status", "Ativa")).strip(),
         str(data.get("status", "")).strip(),
         str(data.get("operation_type", "")).strip(),
         str(data.get("active_restrictions", "")).strip() or "Nenhuma",
         str(data.get("temporary_restrictions", "")).strip() or "Nenhuma",
         str(data.get("restriction_date") or "").strip(),
     )
-    if any(not value for value in values[:5]) or any(len(value) > 500 for value in values):
-        raise ValueError("Preencha modelo, matrícula, base, status e tipo de operação com valores válidos.")
-    if values[7] and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", values[7]):
+    if any(not value for value in values[:6]) or any(len(value) > 500 for value in values):
+        raise ValueError(
+            "Preencha modelo, matrícula, base, situação da frota, situação operacional "
+            "e tipo de operação com valores válidos."
+        )
+    if values[3] not in AIRCRAFT_FLEET_STATUSES:
+        raise ValueError("Selecione uma situação da frota válida.")
+    if values[4] not in AIRCRAFT_OPERATIONAL_STATUSES:
+        raise ValueError("Selecione uma situação operacional válida.")
+    if values[8] and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", values[8]):
         raise ValueError("Data da restrição inválida.")
     return values
 
@@ -1393,7 +1418,11 @@ def validate_aircraft(data: dict[str, Any]) -> tuple[str, ...]:
 def list_aircraft() -> list[dict[str, Any]]:
     initialize_aircraft_db()
     with aircraft_connection() as connection:
-        rows = connection.execute("SELECT * FROM aircraft ORDER BY operational_status, model, registration").fetchall()
+        rows = connection.execute(
+            """SELECT * FROM aircraft ORDER BY
+               CASE fleet_status WHEN 'Ativa' THEN 0 ELSE 1 END,
+               operational_status, model, registration"""
+        ).fetchall()
     return [aircraft_dict(row) for row in rows]
 
 
@@ -1405,14 +1434,15 @@ def save_aircraft(data: dict[str, Any], aircraft_id: int | None = None) -> dict[
         try:
             if aircraft_id is None:
                 cursor = connection.execute(
-                    """INSERT INTO aircraft(model, registration, base, operational_status, operation_type,
+                    """INSERT INTO aircraft(model, registration, base, fleet_status, operational_status, operation_type,
                        active_restrictions, temporary_restrictions, restriction_date, updated_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), ?)""", (*values, timestamp),
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), ?)""", (*values, timestamp),
                 )
                 aircraft_id = cursor.lastrowid
             else:
                 cursor = connection.execute(
-                    """UPDATE aircraft SET model=?, registration=?, base=?, operational_status=?, operation_type=?,
+                    """UPDATE aircraft SET model=?, registration=?, base=?, fleet_status=?,
+                       operational_status=?, operation_type=?,
                        active_restrictions=?, temporary_restrictions=?, restriction_date=NULLIF(?, ''), updated_at=? WHERE id=?""",
                     (*values, timestamp, aircraft_id),
                 )
