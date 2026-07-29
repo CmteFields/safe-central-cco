@@ -51,6 +51,10 @@ def compact_public_claim(claim):
 def main():
     claims_data = json.loads(CLAIMS_PATH.read_text(encoding="utf-8"))
     graph_data = json.loads(GRAPH_PATH.read_text(encoding="utf-8"))
+    generated_at = datetime.fromtimestamp(
+        max(CLAIMS_PATH.stat().st_mtime, GRAPH_PATH.stat().st_mtime),
+        timezone.utc,
+    ).isoformat()
     claims = [compact_claim(item) for item in claims_data.get("claims", []) if item.get("status") in CONFIRMED_STATUSES]
     claim_ids = {item["id"] for item in claims}
     documents = [
@@ -62,7 +66,7 @@ def main():
     payload = {
         "meta": {
             "schemaVersion": 1,
-            "generatedAt": datetime.now(timezone.utc).isoformat(),
+            "generatedAt": generated_at,
             "confirmedClaims": len(claims),
             "documents": len(documents),
             "graphNodes": len(graph_data.get("nodes", [])),

@@ -79,6 +79,28 @@ Portal importa novos itens e atualizações ainda gerenciadas pelo catálogo. Um
 revisão feita no Portal deixa de ser sobrescrita automaticamente, preservando a
 decisão e sua trilha de auditoria.
 
+### Sincronização automática da base privada
+
+O comando `scripts/sync_pythonanywhere_knowledge.py` empacota o grafo, as regras,
+as consultas aprendidas e suas fontes, envia o pacote pela API oficial do
+PythonAnywhere e recarrega o Portal. O token não é salvo no projeto.
+
+Configure uma única vez no Windows:
+
+```powershell
+setx PYTHONANYWHERE_API_TOKEN "token-gerado-na-aba-API-Token"
+setx SAFE_AUTO_SYNC_PYTHONANYWHERE "true"
+```
+
+Abra um novo terminal depois do `setx`. A partir daí,
+`python Knowledge/update_knowledge.py`, executado na raiz
+`CentrodeConhecimento`, sincroniza o ambiente online somente depois de concluir
+a reconstrução e a validação. Para sincronizar sem reconstruir:
+
+```powershell
+python PortalCCO/scripts/sync_pythonanywhere_knowledge.py
+```
+
 ### Render
 
 O arquivo `render.yaml` prepara um Web Service Python no Render com:
