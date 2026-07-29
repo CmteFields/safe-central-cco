@@ -137,6 +137,12 @@ REPORT_PRIORITIES = {"Baixa", "Normal", "Alta", "Crítica"}
 REPORT_STATUSES = {"Aberto", "Em análise", "Resolvido", "Descartado"}
 AIRCRAFT_FLEET_STATUSES = {"Ativa", "Inativa"}
 AIRCRAFT_OPERATIONAL_STATUSES = {"Operacional", "Fora de Operação", "Em Manutenção"}
+RULE_CANDIDATE_STATUS_LABELS = {
+    "unreviewed": "Não revisada",
+    "pending_approval": "Pendente de aprovação",
+    "approved": "Aprovada",
+    "rejected": "Rejeitada",
+}
 GENERAL_CMA_RULE_IDS = {
     "claim_rbac61_cma_vencido_impede_prerrogativas",
     "claim_rbac61_tolerancia_habilitacao_nao_prorroga_cma",
@@ -626,7 +632,7 @@ def initialize_rules_db() -> None:
             source_kind TEXT NOT NULL,
             sources_json TEXT NOT NULL DEFAULT '[]',
             local_evidence_json TEXT NOT NULL DEFAULT '[]',
-            status TEXT NOT NULL DEFAULT 'pending_review',
+            status TEXT NOT NULL DEFAULT 'unreviewed',
             occurrence_count INTEGER NOT NULL DEFAULT 1,
             first_asked_at TEXT NOT NULL,
             last_asked_at TEXT NOT NULL,
@@ -678,12 +684,21 @@ def initialize_rules_db() -> None:
                 "details", "created_at",
             ),
         })
+        connection.execute(
+            """UPDATE rule_candidates
+               SET status=CASE
+                   WHEN reviewed_at IS NULL THEN 'unreviewed'
+                   ELSE 'pending_approval'
+               END
+               WHERE status='pending_review'"""
+        )
 
 
 def rule_candidate_dict(row: sqlite3.Row) -> dict[str, Any]:
     item = dict(row)
     item["sources"] = json.loads(item.pop("sources_json") or "[]")
     item["local_evidence"] = json.loads(item.pop("local_evidence_json") or "[]")
+    item["status_label"] = RULE_CANDIDATE_STATUS_LABELS.get(item["status"], item["status"])
     return item
 
 
@@ -723,7 +738,7 @@ def upsert_rule_candidate(
         ).fetchone()
         if current:
             candidate_id = int(current["id"])
-            next_status = "pending_review" if current["status"] == "rejected" else current["status"]
+            next_status = "unreviewed" if current["status"] == "rejected" else current["status"]
             connection.execute(
                 """UPDATE rule_candidates
                    SET question=?, proposed_answer=?, confidence=?, source_kind=?, sources_json=?,
@@ -735,14 +750,23 @@ def upsert_rule_candidate(
                     sources_json, evidence_json, next_status, timestamp, timestamp, candidate_id,
                 ),
             )
-            action = "Pergunta repetida"
+            if current["status"] == "rejected":
+                connection.execute(
+                    """UPDATE rule_candidates SET reviewed_by_username='', reviewed_by_name='',
+                       reviewed_at=NULL, review_note='', approved_rule_text='', rule_code='',
+                       authority='', source_reference='', source_url='', scope='',
+                       effective_from=NULL, effective_until=NULL, supersedes=''
+                       WHERE id=?""",
+                    (candidate_id,),
+                )
+            action = "Reaberta após nova consulta" if current["status"] == "rejected" else "Pergunta repetida"
         else:
             cursor = connection.execute(
                 """INSERT INTO rule_candidates(
                    normalized_question, question, proposed_answer, confidence, source_kind,
                    sources_json, local_evidence_json, status, occurrence_count,
                    first_asked_at, last_asked_at, updated_at, created_by_username, created_by_name
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending_review', 1, ?, ?, ?, ?, ?)""",
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, 'unreviewed', 1, ?, ?, ?, ?, ?)""",
                 (
                     normalized_question, clean_question, proposed_answer.strip()[:8000], confidence,
                     source_kind, sources_json, evidence_json, timestamp, timestamp, timestamp,
@@ -764,15 +788,21 @@ def upsert_rule_candidate(
     return rule_candidate_dict(row)
 
 
-def list_rule_candidates(status: str = "pending_review") -> list[dict[str, Any]]:
+def list_rule_candidates(status: str = "unreviewed") -> list[dict[str, Any]]:
     initialize_rules_db()
-    allowed = {"pending_review", "approved", "rejected", "all"}
+    allowed = {"unreviewed", "pending_approval", "approved", "rejected", "pending_review", "all"}
     if status not in allowed:
         raise ValueError("Situação de regra inválida.")
     with rules_connection() as connection:
         if status == "all":
             rows = connection.execute(
                 "SELECT * FROM rule_candidates ORDER BY last_asked_at DESC"
+            ).fetchall()
+        elif status == "pending_review":
+            rows = connection.execute(
+                """SELECT * FROM rule_candidates
+                   WHERE status IN ('unreviewed', 'pending_approval')
+                   ORDER BY occurrence_count DESC, last_asked_at DESC"""
             ).fetchall()
         else:
             rows = connection.execute(
@@ -785,7 +815,9 @@ def list_rule_candidates(status: str = "pending_review") -> list[dict[str, Any]]
 def review_rule_candidate(candidate_id: int, data: dict[str, Any], reviewer: dict[str, Any]) -> dict[str, Any]:
     initialize_rules_db()
     status = str(data.get("status", "")).strip()
-    if status not in {"approved", "rejected", "pending_review"}:
+    if status == "pending_review":
+        status = "pending_approval"
+    if status not in {"approved", "rejected", "pending_approval"}:
         raise ValueError("Selecione uma decisão válida.")
     review_note = str(data.get("review_note", "")).strip()
     approved_rule_text = str(data.get("approved_rule_text", "")).strip()
@@ -2105,7 +2137,7 @@ def answer_question(question: str, actor: dict[str, Any] | None = None) -> dict[
 
     if not local_sufficient:
         response_mode = "unanswered"
-        knowledge_status = "pending_review"
+        knowledge_status = "unreviewed"
         if WEB_GROUNDING_ENABLED:
             try:
                 external_result = call_gemini(question, evidence, grounded=True)
@@ -2249,7 +2281,7 @@ class Handler(BaseHTTPRequestHandler):
             if user["role"] not in {"admin", "supervisor"}:
                 self.send_json(403, {"error": "Somente Supervisor ou Administrador pode revisar regras."}); return
             query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-            status = query.get("status", ["pending_review"])[0]
+            status = query.get("status", ["unreviewed"])[0]
             self.send_json(200, {"items": list_rule_candidates(status)})
             return
         if urllib.parse.urlparse(self.path).path == "/api/instructors":
