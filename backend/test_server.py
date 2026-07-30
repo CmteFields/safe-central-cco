@@ -368,14 +368,16 @@ class WSGITests(unittest.TestCase):
         self.assertEqual(payload["release"], server.RELEASE_ID)
         self.assertIn(payload["knowledge"], {"private_bundle", "configured_root", "public_index"})
         self.assertIn(payload["gemini"], {"configured", "missing"})
+        self.assertEqual(payload["gemini_model"], server.LOCAL_MODEL)
+        self.assertEqual(payload["gemini_fallback_model"], server.FALLBACK_MODEL)
 
     def test_static_portal_through_wsgi(self):
         status, headers, body = self.request("/")
         self.assertEqual(status, "200 OK")
         self.assertIn("text/html", headers["Content-Type"])
         self.assertIn(b"CCO - Central de conhecimento", body)
-        self.assertIn(b"public-knowledge-index.js?v=20260730-4", body)
-        self.assertIn(b"app.js?v=20260730-4", body)
+        self.assertIn(b"public-knowledge-index.js?v=20260730-5", body)
+        self.assertIn(b"app.js?v=20260730-5", body)
 
     def test_browser_uses_same_origin_ai_endpoint(self):
         status, _, body = self.request("/app.js")
@@ -1109,7 +1111,7 @@ class RuleCandidateStorageTests(unittest.TestCase):
         self.assertEqual(result["_search_queries"], ["consulta oficial"])
         self.assertEqual(result["_model"], "gemini-3.1-pro-preview")
 
-    def test_local_gemini_uses_flash_model(self):
+    def test_local_gemini_uses_primary_flash_model(self):
         captured = {}
 
         class FakeResponse:
@@ -1133,11 +1135,11 @@ class RuleCandidateStorageTests(unittest.TestCase):
 
         with patch.object(server, "gemini_key", return_value="test-key"), patch(
             "backend.server.urllib.request.urlopen", side_effect=fake_urlopen
-        ), patch.object(server, "LOCAL_MODEL", "gemini-3.5-flash"):
+        ), patch.object(server, "LOCAL_MODEL", "gemini-3.6-flash"):
             result = server.call_gemini("Pergunta local", [])
 
-        self.assertIn("gemini-3.5-flash:generateContent", captured["url"])
-        self.assertEqual(result["_model"], "gemini-3.5-flash")
+        self.assertIn("gemini-3.6-flash:generateContent", captured["url"])
+        self.assertEqual(result["_model"], "gemini-3.6-flash")
 
     def test_grounded_gemini_rejects_non_anac_citations(self):
         class FakeResponse:
@@ -1217,11 +1219,57 @@ class RuleCandidateStorageTests(unittest.TestCase):
         ), patch.object(
             server, "call_gemini",
             side_effect=[server.GeminiTemporaryError("503"), expected],
-        ) as mocked_call, patch.object(server.time, "sleep"):
+        ) as mocked_call, patch.object(
+            server.random, "uniform", return_value=0.0
+        ), patch.object(server.time, "sleep") as mocked_sleep:
             result = server.call_gemini_with_retry("Pergunta", [])
 
         self.assertEqual(result, expected)
         self.assertEqual(mocked_call.call_count, 2)
+        mocked_sleep.assert_called_once_with(1.0)
+
+    def test_primary_outage_uses_fallback_and_reports_error_only_to_supervision(self):
+        evidence = [{
+            "id": "claim_1",
+            "kind": "confirmed_claim",
+            "label": "Regra confirmada",
+            "operator_answer": "",
+            "code": "SAFE",
+            "source": "Documento SAFE",
+            "location": "Linha 1",
+            "score": 10,
+            "excerpt": "Trecho confirmado.",
+        }]
+        fallback_result = {
+            "answer": "Resposta interpretada pelo modelo de contingência.",
+            "confidence": "high",
+            "used_evidence": [1],
+            "candidate_relations": [],
+            "_model": "gemini-3.5-flash-lite",
+        }
+
+        def run(actor):
+            with patch.object(
+                server, "retrieve", return_value=evidence
+            ), patch.object(
+                server, "call_gemini_with_retry",
+                side_effect=[server.GeminiTemporaryError("HTTP 503"), fallback_result],
+            ) as mocked_gemini, patch.object(
+                server, "record_learning", return_value="query_test"
+            ), patch.object(server, "save_search_history"):
+                result = server.answer_question("Pergunta operacional", actor)
+            self.assertEqual(
+                mocked_gemini.call_args_list[1].kwargs["model"],
+                server.FALLBACK_MODEL,
+            )
+            return result
+
+        supervisor_result = run(self.supervisor)
+        operator_result = run(self.operator)
+
+        self.assertEqual(supervisor_result["model_used"], "gemini-3.5-flash-lite")
+        self.assertIn("HTTP 503", supervisor_result["local_error"])
+        self.assertEqual(operator_result["local_error"], "")
 
 
 if __name__ == "__main__":

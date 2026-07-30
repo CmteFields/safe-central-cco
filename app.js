@@ -360,9 +360,10 @@ function apiResultAnswer(query, result) {
   const sources = result.sources || [];
   const provisional = ["unreviewed", "pending_approval", "pending_review"].includes(result.knowledge_status) || result.provisional;
   const primary = sources[0];
+  const aiDiagnostic = [result.local_error, result.external_error].filter(Boolean).join(" | ");
   return {
     question: query,
-    answer: `${provisional ? `<div class="answer-highlight provisional-answer"><strong>Resposta provisória — ainda não aprovada.</strong><br><small>A pergunta foi registrada automaticamente na Gestão de regras como Não revisada${result.candidate_id ? `, item #${escapeHtml(result.candidate_id)}` : ""}. Não use esta proposta como regra interna definitiva.</small></div>` : ""}<p>${escapeHtml(result.answer).replace(/\n/g, "<br>")}</p><div class="answer-highlight"><strong>${confidenceLabels[result.confidence] || "Confiança não informada"}</strong><br><small>Consulta ${escapeHtml(result.query_id || "")} · ${result.candidate_relations_count || 0} nova(s) relação(ões) candidata(s)</small></div>`,
+    answer: `${provisional ? `<div class="answer-highlight provisional-answer"><strong>Resposta provisória — ainda não aprovada.</strong><br><small>A pergunta foi registrada automaticamente na Gestão de regras como Não revisada${result.candidate_id ? `, item #${escapeHtml(result.candidate_id)}` : ""}. Não use esta proposta como regra interna definitiva.</small></div>` : ""}<p>${escapeHtml(result.answer).replace(/\n/g, "<br>")}</p><div class="answer-highlight"><strong>${confidenceLabels[result.confidence] || "Confiança não informada"}</strong><br><small>Consulta ${escapeHtml(result.query_id || "")} · ${result.candidate_relations_count || 0} nova(s) relação(ões) candidata(s)</small></div>${aiDiagnostic ? `<div class="answer-highlight provisional-answer"><strong>Diagnóstico da IA para supervisão</strong><br><small>${escapeHtml(aiDiagnostic)}</small></div>` : ""}`,
     source: primary?.code || primary?.label || (provisional ? "Pesquisa pendente de aprovação" : "Grafo SAFE + Gemini"),
     detail: primary ? `${primary.location || "Localização não informada"}` : "Nenhuma evidência suficiente localizada",
     sourceUrl: primary?.url || "",
