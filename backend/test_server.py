@@ -354,6 +354,8 @@ class WSGITests(unittest.TestCase):
         self.assertEqual(status, "200 OK")
         self.assertIn("text/html", headers["Content-Type"])
         self.assertIn(b"CCO - Central de conhecimento", body)
+        self.assertIn(b"public-knowledge-index.js?v=20260730-3", body)
+        self.assertIn(b"app.js?v=20260730-3", body)
 
     def test_browser_uses_same_origin_ai_endpoint(self):
         status, _, body = self.request("/app.js")
