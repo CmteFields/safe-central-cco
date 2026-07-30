@@ -12,6 +12,25 @@ from backend import wsgi
 
 
 class RetrievalTests(unittest.TestCase):
+    def test_ppa_sequence_recovers_canonical_complete_answer_from_public_index(self):
+        missing_root = Path("diretorio-privado-ausente")
+        with patch.object(server, "CLAIMS_PATH", missing_root / "claims.json"), patch.object(
+            server, "GRAPH_PATH", missing_root / "graph.json"
+        ):
+            evidence = server.retrieve(
+                "De acordo com o PI da SAFE, qual a sequência de missões de PPA?"
+            )
+        self.assertEqual(evidence[0]["id"], "claim_ppap001k_sequencia_completa_missoes")
+        self.assertIn("PS01", evidence[0]["operator_answer"])
+        self.assertIn("NOT02", evidence[0]["operator_answer"])
+
+    def test_noncanonical_confirmed_evidence_is_not_a_deterministic_answer(self):
+        evidence = [{
+            "kind": "confirmed_claim",
+            "label": "Regra relacionada, mas não conclusiva",
+        }]
+        self.assertIsNone(server.deterministic_local_result(evidence))
+
     def test_public_index_is_used_when_private_knowledge_is_not_deployed(self):
         missing_root = Path("diretorio-privado-ausente")
         with patch.object(server, "CLAIMS_PATH", missing_root / "claims.json"), patch.object(
@@ -348,14 +367,15 @@ class WSGITests(unittest.TestCase):
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["release"], server.RELEASE_ID)
         self.assertIn(payload["knowledge"], {"private_bundle", "configured_root", "public_index"})
+        self.assertIn(payload["gemini"], {"configured", "missing"})
 
     def test_static_portal_through_wsgi(self):
         status, headers, body = self.request("/")
         self.assertEqual(status, "200 OK")
         self.assertIn("text/html", headers["Content-Type"])
         self.assertIn(b"CCO - Central de conhecimento", body)
-        self.assertIn(b"public-knowledge-index.js?v=20260730-3", body)
-        self.assertIn(b"app.js?v=20260730-3", body)
+        self.assertIn(b"public-knowledge-index.js?v=20260730-4", body)
+        self.assertIn(b"app.js?v=20260730-4", body)
 
     def test_browser_uses_same_origin_ai_endpoint(self):
         status, _, body = self.request("/app.js")
@@ -363,7 +383,7 @@ class WSGITests(unittest.TestCase):
         self.assertIn(b"`${window.location.origin}/api/ask`", body)
         self.assertIn(b"`${window.location.origin}/api/reports", body)
         self.assertNotIn(b"http://127.0.0.1:8765/api/ask", body)
-        self.assertIn("Modo de contingência".encode(), body)
+        self.assertIn("Busca local inconclusiva".encode(), body)
         self.assertIn(b'item.fleet_status === "Ativa" && item.status !== "Operacional"', body)
         self.assertIn(b"edit-aircraft-button", body)
         self.assertIn("Somente leitura".encode(), body)
