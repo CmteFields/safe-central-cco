@@ -66,7 +66,7 @@ LOCAL_MODEL = (
     or "gemini-3.5-flash"
 )
 EXTERNAL_MODEL = os.environ.get("GEMINI_EXTERNAL_MODEL", "gemini-3.1-pro-preview")
-RELEASE_ID = os.environ.get("SAFE_CCO_RELEASE", "2026-07-30-cma-contingency-2")
+RELEASE_ID = os.environ.get("SAFE_CCO_RELEASE", "2026-07-30-canonical-first-3")
 HOST = os.environ.get("SAFE_CCO_HOST", "0.0.0.0" if os.environ.get("RENDER") else "127.0.0.1")
 PORT = int(os.environ.get("SAFE_CCO_PORT") or os.environ.get("PORT") or "8765")
 SECURE_COOKIES = os.environ.get("SAFE_CCO_SECURE_COOKIES", "").lower() in {"1", "true", "yes"} or bool(
@@ -2455,20 +2455,24 @@ def record_learning(question: str, evidence: list[dict[str, Any]], result: dict[
 def answer_question(question: str, actor: dict[str, Any] | None = None) -> dict[str, Any]:
     evidence = retrieve(question)
     local_errors = []
-    try:
-        local_result = call_gemini_with_retry(question, evidence)
-    except Exception as error:
-        local_errors.append(str(error))
+    canonical_result = deterministic_local_result(evidence)
+    if canonical_result and any(item.get("operator_answer") for item in evidence):
+        local_result = canonical_result
+    else:
         try:
-            local_result = call_gemini_with_retry(question, evidence, model=EXTERNAL_MODEL)
-        except Exception as fallback_error:
-            local_errors.append(str(fallback_error))
-            local_result = deterministic_local_result(evidence) or {
-                "answer": "",
-                "confidence": "low",
-                "used_evidence": [],
-                "candidate_relations": [],
-            }
+            local_result = call_gemini_with_retry(question, evidence)
+        except Exception as error:
+            local_errors.append(str(error))
+            try:
+                local_result = call_gemini_with_retry(question, evidence, model=EXTERNAL_MODEL)
+            except Exception as fallback_error:
+                local_errors.append(str(fallback_error))
+                local_result = canonical_result or {
+                    "answer": "",
+                    "confidence": "low",
+                    "used_evidence": [],
+                    "candidate_relations": [],
+                }
     used_indices = [int(value) for value in local_result.get("used_evidence", []) if str(value).isdigit()]
     local_sources = [evidence[index - 1] for index in used_indices if 1 <= index <= len(evidence)]
     local_answer_norm = normalize(str(local_result.get("answer", "")))
@@ -2478,7 +2482,6 @@ def answer_question(question: str, actor: dict[str, Any] | None = None) -> dict[
         and not any(term in local_answer_norm for term in ("conflit", "diverg"))
     )
     if not local_sufficient:
-        canonical_result = deterministic_local_result(evidence)
         if canonical_result and any(item.get("operator_answer") for item in evidence):
             local_result = canonical_result
             used_indices = canonical_result["used_evidence"]

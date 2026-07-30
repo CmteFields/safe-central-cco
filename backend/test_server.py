@@ -367,6 +367,8 @@ class WSGITests(unittest.TestCase):
         self.assertIn("Somente leitura".encode(), body)
         self.assertIn(b"rule-candidates?status=unreviewed", body)
         self.assertIn(b"rule-candidates?status=pending_approval", body)
+        self.assertIn(b"operatorAnswer", body)
+        self.assertIn(b"Resposta confirmada pela base SAFE", body)
 
     def test_static_portal_contains_reports_section(self):
         status, _, body = self.request("/")
@@ -1170,13 +1172,12 @@ class RuleCandidateStorageTests(unittest.TestCase):
             server, "LEARNING_GRAPH_PATH", Path(directory) / "learning.json"
         ), patch.object(
             server, "retrieve", return_value=evidence
-        ), patch.object(
-            server, "call_gemini_with_retry", side_effect=server.GeminiTemporaryError("HTTP 503")
-        ):
+        ), patch.object(server, "call_gemini_with_retry") as mocked_gemini:
             result = server.answer_question(
                 "O aluno independente do voo solo pode voar sem CMA valido?", self.operator
             )
 
+        mocked_gemini.assert_not_called()
         self.assertFalse(result["provisional"])
         self.assertEqual(result["response_mode"], "local_contingency")
         self.assertEqual(result["answer"], "Não. O aluno não pode voar sem CMA válido.")

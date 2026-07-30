@@ -197,6 +197,7 @@ function findGraphResults(query) {
   const tokens = tokenize(query);
   if (!tokens.length) return [];
   const medicalIntent = tokens.includes("cma") || normalizeText(query).includes("certificado medico");
+  const medicalOperationIntent = medicalIntent && tokens.some(token => ["voar", "voo", "operar", "operacao", "prerrogativas", "valido", "vencido", "sem"].includes(token));
   return [...graphIndex.claims.map(item => ({ ...item, kind: "Regra confirmada" })), ...graphIndex.documents.map(item => ({ ...item, kind: "Documento relacionado" }))]
     .filter(item => {
       if (!medicalIntent) return true;
@@ -205,8 +206,10 @@ function findGraphResults(query) {
     })
     .map(item => {
       const medicalText = normalizeText(`${item.label || ""} ${item.appliesTo || ""}`);
-      const intentBoost = medicalIntent && medicalText.includes("matricula") ? 8 : 0;
-      return { ...item, score: scoreRecord(item, tokens) + intentBoost };
+      const canonicalBoost = item.operatorAnswer ? 50 : 0;
+      const enrollmentPenalty = medicalOperationIntent && medicalText.includes("matricula") ? -15 : 0;
+      const intentBoost = medicalIntent && !medicalOperationIntent && medicalText.includes("matricula") ? 8 : 0;
+      return { ...item, score: scoreRecord(item, tokens) + canonicalBoost + enrollmentPenalty + intentBoost };
     })
     .filter(item => item.score >= (medicalIntent ? 4 : Math.max(4, tokens.length * 2)))
     .sort((a, b) => b.score - a.score || a.label.localeCompare(b.label, "pt-BR"))
@@ -321,14 +324,33 @@ function selectSuggestion(index) {
 
 function graphResultAnswer(query, results) {
   const confirmed = results.filter(item => item.kind === "Regra confirmada");
-  const primary = confirmed[0] || results[0];
-  const related = results.slice(1).map(item => `<div class="answer-highlight"><strong>${escapeHtml(item.label)}</strong><br><small>${escapeHtml(item.kind)}${item.code ? ` · ${escapeHtml(item.code)}` : ""}${item.location ? ` · ${escapeHtml(item.location)}` : ""}</small></div>`).join("");
+  const canonical = confirmed.find(item => item.operatorAnswer);
+  const primary = canonical || confirmed[0] || results[0];
+  const relatedResults = results.filter(item => item.id !== primary.id);
+  const related = relatedResults.slice(0, 4).map(item => `<div class="answer-highlight"><strong>${escapeHtml(item.label)}</strong><br><small>${escapeHtml(item.kind)}${item.code ? ` · ${escapeHtml(item.code)}` : ""}${item.location ? ` · ${escapeHtml(item.location)}` : ""}</small></div>`).join("");
+  if (canonical) {
+    return {
+      question: query,
+      answer: `<p>${escapeHtml(canonical.operatorAnswer).replace(/\n/g, "<br>")}</p><div class="answer-highlight"><strong>Resposta confirmada pela base SAFE.</strong><br><small>Resposta operacional curada e disponível mesmo durante indisponibilidade da IA.</small></div>`,
+      source: canonical.code || canonical.label,
+      detail: `${canonical.location || "Regra confirmada"} · Índice confirmado local`,
+      relations: [[
+        "REGRA CONFIRMADA",
+        canonical.label,
+        canonical.code || canonical.location || "Base SAFE",
+      ], ...relatedResults.slice(0, 2).map(item => [
+        item.kind.toUpperCase(),
+        item.label,
+        item.code || item.source || "Grafo SAFE",
+      ])],
+    };
+  }
   return {
     question: query,
     answer: `<div class="answer-highlight"><strong>Modo de contingência: a Gemini não respondeu nesta consulta.</strong><br><small>Este é um resultado lexical do índice local. Confirme a conclusão na fonte oficial antes de decidir.</small></div><p>Regra confirmada localizada:</p><div class="answer-highlight"><strong>${escapeHtml(primary.label)}</strong><br><small>${primary.code ? escapeHtml(primary.code) : "Regra SAFE"}${primary.location ? ` · ${escapeHtml(primary.location)}` : ""}</small></div>${related ? `<p><strong>Regras relacionadas:</strong></p>${related}` : ""}`,
     source: primary.code || primary.label,
     detail: `Resultado local sem interpretação de contexto · ${primary.source || "Regra confirmada no grafo SAFE"}${primary.location ? ` · ${primary.location}` : ""}`,
-    relations: results.slice(0, 3).map(item => [item.kind.toUpperCase(), item.label, item.code || item.source || "Grafo SAFE"])
+    relations: [primary, ...relatedResults].slice(0, 3).map(item => [item.kind.toUpperCase(), item.label, item.code || item.source || "Grafo SAFE"])
   };
 }
 
