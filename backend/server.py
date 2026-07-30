@@ -6,6 +6,7 @@ import hashlib
 import json
 import mimetypes
 import os
+import random
 import re
 import secrets
 import sqlite3
@@ -63,10 +64,11 @@ RULES_CATALOG_PATH = Path(
 LOCAL_MODEL = (
     os.environ.get("GEMINI_LOCAL_MODEL")
     or os.environ.get("GEMINI_MODEL")
-    or "gemini-3.5-flash"
+    or "gemini-3.6-flash"
 )
+FALLBACK_MODEL = os.environ.get("GEMINI_FALLBACK_MODEL", "gemini-3.5-flash-lite")
 EXTERNAL_MODEL = os.environ.get("GEMINI_EXTERNAL_MODEL", "gemini-3.1-pro-preview")
-RELEASE_ID = os.environ.get("SAFE_CCO_RELEASE", "2026-07-30-full-knowledge-4")
+RELEASE_ID = os.environ.get("SAFE_CCO_RELEASE", "2026-07-30-gemini-resilience-5")
 HOST = os.environ.get("SAFE_CCO_HOST", "0.0.0.0" if os.environ.get("RENDER") else "127.0.0.1")
 PORT = int(os.environ.get("SAFE_CCO_PORT") or os.environ.get("PORT") or "8765")
 SECURE_COOKIES = os.environ.get("SAFE_CCO_SECURE_COOKIES", "").lower() in {"1", "true", "yes"} or bool(
@@ -97,7 +99,7 @@ LEGACY_DB_PATHS = {
     "aircraft": DATA_DIR / "aircraft.db",
 }
 WEB_GROUNDING_ENABLED = os.environ.get("SAFE_CCO_WEB_GROUNDING", "1").lower() in {"1", "true", "yes"}
-GEMINI_TRANSIENT_RETRIES = max(0, int(os.environ.get("GEMINI_TRANSIENT_RETRIES", "2")))
+GEMINI_TRANSIENT_RETRIES = max(0, int(os.environ.get("GEMINI_TRANSIENT_RETRIES", "3")))
 MAX_QUESTION_LENGTH = 1200
 PORTAL_STORAGE_LOCK = threading.RLock()
 WRITE_LOCK = PORTAL_STORAGE_LOCK
@@ -2224,7 +2226,8 @@ def call_gemini_with_retry(
         except GeminiTemporaryError:
             if attempt >= GEMINI_TRANSIENT_RETRIES:
                 raise
-            time.sleep(0.5 * (attempt + 1))
+            delay = min(8.0, 2.0 ** attempt) + random.uniform(0.0, 0.5)
+            time.sleep(delay)
     raise RuntimeError("Falha inesperada ao repetir a consulta Gemini.")
 
 
@@ -2458,7 +2461,7 @@ def answer_question(question: str, actor: dict[str, Any] | None = None) -> dict[
         except Exception as error:
             local_errors.append(str(error))
             try:
-                local_result = call_gemini_with_retry(question, evidence, model=EXTERNAL_MODEL)
+                local_result = call_gemini_with_retry(question, evidence, model=FALLBACK_MODEL)
             except Exception as fallback_error:
                 local_errors.append(str(fallback_error))
                 local_result = canonical_result or {
@@ -2495,7 +2498,7 @@ def answer_question(question: str, actor: dict[str, Any] | None = None) -> dict[
         knowledge_status = "unreviewed"
         if WEB_GROUNDING_ENABLED:
             try:
-                external_result = call_gemini(question, evidence, grounded=True)
+                external_result = call_gemini_with_retry(question, evidence, grounded=True)
                 external_sources = external_result.get("_web_sources", [])
                 if external_result.get("answer") and external_sources:
                     result = external_result
@@ -2543,8 +2546,16 @@ def answer_question(question: str, actor: dict[str, Any] | None = None) -> dict[
         "model_used": model_used,
         "provisional": knowledge_status != "approved",
         "candidate_id": candidate["id"] if candidate else None,
-        "local_error": " | ".join(local_errors) if not gemini_key() else "",
-        "external_error": external_error if WEB_GROUNDING_ENABLED and not gemini_key() else "",
+        "local_error": (
+            " | ".join(local_errors)
+            if actor and actor.get("role") in {"admin", "supervisor"}
+            else ""
+        ),
+        "external_error": (
+            external_error
+            if actor and actor.get("role") in {"admin", "supervisor"} and WEB_GROUNDING_ENABLED
+            else ""
+        ),
     }
     save_search_history(question, "ai", payload["confidence"], result=payload, record_id=query_id)
     return payload
@@ -2615,6 +2626,8 @@ class Handler(BaseHTTPRequestHandler):
                     "configured_root" if CONFIGURED_KNOWLEDGE_ROOT else "public_index"
                 ),
                 "gemini": "configured" if gemini_key() else "missing",
+                "gemini_model": LOCAL_MODEL,
+                "gemini_fallback_model": FALLBACK_MODEL,
             })
             return
         if self.path == "/api/auth/status":
@@ -2937,6 +2950,7 @@ if __name__ == "__main__":
     initialize_portal_storage()
     print(
         f"SAFE CCO API em http://{HOST}:{PORT} | modelo local={LOCAL_MODEL} "
-        f"| modelo ANAC={EXTERNAL_MODEL} | conhecimento={KNOWLEDGE_ROOT}"
+        f"| contingência={FALLBACK_MODEL} | modelo ANAC={EXTERNAL_MODEL} "
+        f"| conhecimento={KNOWLEDGE_ROOT}"
     )
     ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()

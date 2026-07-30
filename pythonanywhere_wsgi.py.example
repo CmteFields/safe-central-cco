@@ -29,7 +29,13 @@ os.environ["SAFE_CCO_SECURE_COOKIES"] = "true"
 os.environ["SAFE_CCO_REQUIRE_SETUP_TOKEN"] = "true"
 os.environ["SAFE_CCO_SETUP_TOKEN"] = secrets["SAFE_CCO_SETUP_TOKEN"]
 
-if secrets.get("GEMINI_API_KEY"):
-    os.environ["GEMINI_API_KEY"] = secrets["GEMINI_API_KEY"]
+for setting in (
+    "GEMINI_API_KEY",
+    "GEMINI_LOCAL_MODEL",
+    "GEMINI_FALLBACK_MODEL",
+    "GEMINI_EXTERNAL_MODEL",
+):
+    if secrets.get(setting):
+        os.environ[setting] = secrets[setting]
 
 from backend.wsgi import application  # noqa: E402,F401
