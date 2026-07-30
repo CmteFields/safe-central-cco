@@ -66,7 +66,7 @@ LOCAL_MODEL = (
     or "gemini-3.5-flash"
 )
 EXTERNAL_MODEL = os.environ.get("GEMINI_EXTERNAL_MODEL", "gemini-3.1-pro-preview")
-RELEASE_ID = os.environ.get("SAFE_CCO_RELEASE", "2026-07-30-canonical-first-3")
+RELEASE_ID = os.environ.get("SAFE_CCO_RELEASE", "2026-07-30-full-knowledge-4")
 HOST = os.environ.get("SAFE_CCO_HOST", "0.0.0.0" if os.environ.get("RENDER") else "127.0.0.1")
 PORT = int(os.environ.get("SAFE_CCO_PORT") or os.environ.get("PORT") or "8765")
 SECURE_COOKIES = os.environ.get("SAFE_CCO_SECURE_COOKIES", "").lower() in {"1", "true", "yes"} or bool(
@@ -2241,16 +2241,10 @@ def deterministic_local_result(evidence: list[dict[str, Any]]) -> dict[str, Any]
         answer = str(item.get("operator_answer", "")).strip()
         if answer and answer not in canonical_answers:
             canonical_answers.append(answer)
-    if canonical_answers:
-        answer = "\n\n".join(canonical_answers)
-    else:
-        labels = "\n".join(f"- {item['label']}" for _, item in confirmed[:3])
-        answer = (
-            "A interpretação automática está temporariamente indisponível, mas a base contém "
-            f"as seguintes regras confirmadas:\n{labels}"
-        )
+    if not canonical_answers:
+        return None
     return {
-        "answer": answer,
+        "answer": "\n\n".join(canonical_answers),
         "confidence": "medium",
         "used_evidence": [index for index, _ in confirmed[:3]],
         "candidate_relations": [],
@@ -2620,6 +2614,7 @@ class Handler(BaseHTTPRequestHandler):
                 "knowledge": "private_bundle" if BUNDLED_KNOWLEDGE_ACTIVE else (
                     "configured_root" if CONFIGURED_KNOWLEDGE_ROOT else "public_index"
                 ),
+                "gemini": "configured" if gemini_key() else "missing",
             })
             return
         if self.path == "/api/auth/status":

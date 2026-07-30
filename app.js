@@ -347,10 +347,11 @@ function graphResultAnswer(query, results) {
   }
   return {
     question: query,
-    answer: `<div class="answer-highlight"><strong>Modo de contingência: a Gemini não respondeu nesta consulta.</strong><br><small>Este é um resultado lexical do índice local. Confirme a conclusão na fonte oficial antes de decidir.</small></div><p>Regra confirmada localizada:</p><div class="answer-highlight"><strong>${escapeHtml(primary.label)}</strong><br><small>${primary.code ? escapeHtml(primary.code) : "Regra SAFE"}${primary.location ? ` · ${escapeHtml(primary.location)}` : ""}</small></div>${related ? `<p><strong>Regras relacionadas:</strong></p>${related}` : ""}`,
-    source: primary.code || primary.label,
-    detail: `Resultado local sem interpretação de contexto · ${primary.source || "Regra confirmada no grafo SAFE"}${primary.location ? ` · ${primary.location}` : ""}`,
-    relations: [primary, ...relatedResults].slice(0, 3).map(item => [item.kind.toUpperCase(), item.label, item.code || item.source || "Grafo SAFE"])
+    answer: `<div class="answer-highlight provisional-answer"><strong>Busca local inconclusiva.</strong><br><small>A inteligência artificial não respondeu e o índice local encontrou apenas evidências relacionadas. Não as trate como resposta à pergunta.</small></div><p>Evidência relacionada:</p><div class="answer-highlight"><strong>${escapeHtml(primary.label)}</strong><br><small>${primary.code ? escapeHtml(primary.code) : "Documento SAFE"}${primary.location ? ` · ${escapeHtml(primary.location)}` : ""}</small></div>${related ? `<p><strong>Outras evidências relacionadas:</strong></p>${related}` : ""}`,
+    source: "Busca local inconclusiva",
+    detail: `Evidências sem interpretação conclusiva · ${primary.source || "Grafo SAFE"}${primary.location ? ` · ${primary.location}` : ""}`,
+    provisional: true,
+    relations: [primary, ...relatedResults].slice(0, 3).map(item => ["EVIDÊNCIA RELACIONADA", item.label, item.code || item.source || "Grafo SAFE"])
   };
 }
 
