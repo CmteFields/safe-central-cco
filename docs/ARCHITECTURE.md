@@ -34,6 +34,8 @@ CentrodeConhecimento/
 
 Na operação com IA, o portal envia a pergunta ao backend. O backend recupera evidências do grafo SAFE e usa `gemini-3.5-flash` para interpretá-las. Somente quando a evidência confirmada for insuficiente, usa `gemini-3.1-pro-preview` com Google Search para procurar páginas oficiais da ANAC. Citações que não sejam reconhecidas como ANAC são descartadas. Toda resposta externa é provisória, entra em `rule_candidates` como não revisada e nunca altera automaticamente o grafo ou as regras aprovadas. Os modelos são configuráveis por `GEMINI_LOCAL_MODEL` e `GEMINI_EXTERNAL_MODEL`.
 
+Falhas transitórias do Gemini são repetidas. Se o Flash permanecer indisponível, o Pro interpreta as mesmas evidências locais sem pesquisa externa. Se ambos falharem, claims confirmados podem fornecer `operator_answer` curado para contingência determinística. Na falta desse texto, as regras confirmadas localizadas ainda são exibidas sem interpretação. Indisponibilidade do modelo não transforma conhecimento confirmado em pergunta não revisada.
+
 ## Feedback de progresso da consulta
 
 Ao iniciar uma busca, `app.js` exibe um painel acessível com as etapas de recebimento, consulta à base, análise de evidências e preparação da resposta. Como `/api/ask` ainda responde em uma única requisição HTTP, essas etapas representam feedback visual baseado no tempo decorrido, e não eventos transmitidos pelo backend.
