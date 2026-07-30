@@ -10,6 +10,7 @@ import re
 import secrets
 import sqlite3
 import threading
+import time
 import unicodedata
 import urllib.error
 import urllib.request
@@ -95,6 +96,7 @@ LEGACY_DB_PATHS = {
     "aircraft": DATA_DIR / "aircraft.db",
 }
 WEB_GROUNDING_ENABLED = os.environ.get("SAFE_CCO_WEB_GROUNDING", "1").lower() in {"1", "true", "yes"}
+GEMINI_TRANSIENT_RETRIES = max(0, int(os.environ.get("GEMINI_TRANSIENT_RETRIES", "2")))
 MAX_QUESTION_LENGTH = 1200
 PORTAL_STORAGE_LOCK = threading.RLock()
 WRITE_LOCK = PORTAL_STORAGE_LOCK
@@ -1871,6 +1873,7 @@ def retrieve_public_claims(question: str, limit: int = 8) -> list[dict[str, Any]
             "id": claim["id"],
             "kind": "confirmed_claim",
             "label": claim.get("label", ""),
+            "operator_answer": claim.get("operatorAnswer", ""),
             "code": claim.get("code", ""),
             "source": "Índice público de regras confirmadas",
             "location": claim.get("location", ""),
@@ -2001,6 +2004,7 @@ def retrieve(question: str, limit: int = 8) -> list[dict[str, Any]]:
         if score > 0:
             results.append({
                 "id": claim["id"], "kind": "confirmed_claim", "label": claim["label"],
+                "operator_answer": claim.get("operator_answer", ""),
                 "code": claim.get("document_code", ""), "source": claim.get("source_path", ""),
                 "location": claim.get("source_location", ""), "score": score,
                 "excerpt": "",
@@ -2050,6 +2054,10 @@ def gemini_key() -> str:
     return os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or ""
 
 
+class GeminiTemporaryError(RuntimeError):
+    """Falha transitória da API que pode ser repetida sem alterar a consulta."""
+
+
 def is_official_anac_source(url: str, title: str = "") -> bool:
     """Aceita apenas páginas da ANAC, inclusive links de redirecionamento do grounding."""
     parsed = urllib.parse.urlparse(url)
@@ -2072,7 +2080,12 @@ def is_official_anac_source(url: str, title: str = "") -> bool:
     return False
 
 
-def call_gemini(question: str, evidence: list[dict[str, Any]], grounded: bool = False) -> dict[str, Any]:
+def call_gemini(
+    question: str,
+    evidence: list[dict[str, Any]],
+    grounded: bool = False,
+    model: str | None = None,
+) -> dict[str, Any]:
     key = gemini_key()
     if not key:
         raise RuntimeError("GEMINI_API_KEY não configurada no processo do backend.")
@@ -2131,7 +2144,7 @@ PERGUNTA: {question}
     }
     if grounded:
         body["tools"] = [{"google_search": {}}]
-    selected_model = EXTERNAL_MODEL if grounded else LOCAL_MODEL
+    selected_model = model or (EXTERNAL_MODEL if grounded else LOCAL_MODEL)
     request = urllib.request.Request(
         f"https://generativelanguage.googleapis.com/v1beta/models/{selected_model}:generateContent",
         data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
@@ -2142,7 +2155,8 @@ PERGUNTA: {question}
             payload = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as error:
         detail = error.read().decode("utf-8", errors="replace")[:500]
-        raise RuntimeError(f"Gemini respondeu HTTP {error.code}: {detail}") from error
+        error_type = GeminiTemporaryError if error.code in {429, 500, 502, 503, 504} else RuntimeError
+        raise error_type(f"Gemini respondeu HTTP {error.code}: {detail}") from error
     except TimeoutError as error:
         raise RuntimeError("Gemini excedeu o tempo de resposta de 90 segundos.") from error
     candidate = payload["candidates"][0]
@@ -2179,6 +2193,55 @@ PERGUNTA: {question}
         result["_search_queries"] = metadata.get("webSearchQueries", [])
     result["_model"] = selected_model
     return result
+
+
+def call_gemini_with_retry(
+    question: str,
+    evidence: list[dict[str, Any]],
+    grounded: bool = False,
+    model: str | None = None,
+) -> dict[str, Any]:
+    for attempt in range(GEMINI_TRANSIENT_RETRIES + 1):
+        try:
+            if model is None:
+                return call_gemini(question, evidence, grounded=grounded)
+            return call_gemini(question, evidence, grounded=grounded, model=model)
+        except GeminiTemporaryError:
+            if attempt >= GEMINI_TRANSIENT_RETRIES:
+                raise
+            time.sleep(0.5 * (attempt + 1))
+    raise RuntimeError("Falha inesperada ao repetir a consulta Gemini.")
+
+
+def deterministic_local_result(evidence: list[dict[str, Any]]) -> dict[str, Any] | None:
+    confirmed = [
+        (index, item)
+        for index, item in enumerate(evidence, 1)
+        if item.get("kind") == "confirmed_claim"
+    ]
+    if not confirmed:
+        return None
+    canonical_answers = []
+    for _, item in confirmed:
+        answer = str(item.get("operator_answer", "")).strip()
+        if answer and answer not in canonical_answers:
+            canonical_answers.append(answer)
+    if canonical_answers:
+        answer = "\n\n".join(canonical_answers)
+    else:
+        labels = "\n".join(f"- {item['label']}" for _, item in confirmed[:3])
+        answer = (
+            "A interpretação automática está temporariamente indisponível, mas a base contém "
+            f"as seguintes regras confirmadas:\n{labels}"
+        )
+    return {
+        "answer": answer,
+        "confidence": "medium",
+        "used_evidence": [index for index, _ in confirmed[:3]],
+        "candidate_relations": [],
+        "_model": "local-deterministic",
+        "_contingency": True,
+    }
 
 
 def load_learning_graph() -> dict[str, Any]:
@@ -2376,17 +2439,21 @@ def record_learning(question: str, evidence: list[dict[str, Any]], result: dict[
 
 def answer_question(question: str, actor: dict[str, Any] | None = None) -> dict[str, Any]:
     evidence = retrieve(question)
-    local_error = ""
+    local_errors = []
     try:
-        local_result = call_gemini(question, evidence)
+        local_result = call_gemini_with_retry(question, evidence)
     except Exception as error:
-        local_error = str(error)
-        local_result = {
-            "answer": "",
-            "confidence": "low",
-            "used_evidence": [],
-            "candidate_relations": [],
-        }
+        local_errors.append(str(error))
+        try:
+            local_result = call_gemini_with_retry(question, evidence, model=EXTERNAL_MODEL)
+        except Exception as fallback_error:
+            local_errors.append(str(fallback_error))
+            local_result = deterministic_local_result(evidence) or {
+                "answer": "",
+                "confidence": "low",
+                "used_evidence": [],
+                "candidate_relations": [],
+            }
     used_indices = [int(value) for value in local_result.get("used_evidence", []) if str(value).isdigit()]
     local_sources = [evidence[index - 1] for index in used_indices if 1 <= index <= len(evidence)]
     local_answer_norm = normalize(str(local_result.get("answer", "")))
@@ -2395,9 +2462,17 @@ def answer_question(question: str, actor: dict[str, Any] | None = None) -> dict[
         and any(item.get("kind") == "confirmed_claim" for item in local_sources)
         and not any(term in local_answer_norm for term in ("conflit", "diverg"))
     )
+    if not local_sufficient:
+        canonical_result = deterministic_local_result(evidence)
+        if canonical_result and any(item.get("operator_answer") for item in evidence):
+            local_result = canonical_result
+            used_indices = canonical_result["used_evidence"]
+            local_sources = [evidence[index - 1] for index in used_indices]
+            local_answer_norm = normalize(str(local_result["answer"]))
+            local_sufficient = True
     result = local_result
     sources = local_sources
-    response_mode = "local_approved"
+    response_mode = "local_contingency" if local_result.get("_contingency") else "local_approved"
     knowledge_status = "approved"
     model_used = str(local_result.get("_model", LOCAL_MODEL))
     candidate = None
@@ -2456,7 +2531,7 @@ def answer_question(question: str, actor: dict[str, Any] | None = None) -> dict[
         "model_used": model_used,
         "provisional": knowledge_status != "approved",
         "candidate_id": candidate["id"] if candidate else None,
-        "local_error": local_error if not gemini_key() else "",
+        "local_error": " | ".join(local_errors) if not gemini_key() else "",
         "external_error": external_error if WEB_GROUNDING_ENABLED and not gemini_key() else "",
     }
     save_search_history(question, "ai", payload["confidence"], result=payload, record_id=query_id)

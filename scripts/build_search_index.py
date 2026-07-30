@@ -18,6 +18,7 @@ def compact_claim(claim):
     return {
         "id": claim["id"],
         "label": claim["label"],
+        "operatorAnswer": claim.get("operator_answer", ""),
         "code": claim.get("document_code", ""),
         "source": claim.get("source_path", ""),
         "location": claim.get("source_location", ""),
@@ -41,6 +42,7 @@ def compact_public_claim(claim):
     return {
         "id": claim["id"],
         "label": claim["label"],
+        "operatorAnswer": claim.get("operator_answer", ""),
         "code": claim.get("document_code", ""),
         "location": claim.get("source_location", ""),
         "relation": claim.get("relation", ""),

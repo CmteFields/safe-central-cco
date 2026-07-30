@@ -21,6 +21,9 @@ com Google Search. Os modelos podem ser substituídos por
 compatibilidade para o modelo local. A resposta externa é sempre marcada como provisória e
 registrada em **Gestão de regras > Em aprovação**; ela nunca é promovida
 automaticamente. Defina `SAFE_CCO_WEB_GROUNDING=0` para desativar esse fallback.
+Falhas temporárias da API são repetidas; se os modelos permanecerem
+indisponíveis, o Portal preserva as evidências confirmadas e usa respostas
+operacionais curadas quando disponíveis, sem criar uma falsa pendência.
 
 ## Publicar a aplicação completa
 

@@ -1110,6 +1110,56 @@ class RuleCandidateStorageTests(unittest.TestCase):
         self.assertEqual(result["_web_sources"][0]["label"], "ANAC")
         self.assertIn("gov.br/anac", result["_web_sources"][0]["url"])
 
+    def test_confirmed_canonical_answer_survives_gemini_outage(self):
+        evidence = [{
+            "id": "claim_rbac61_cma_vencido_impede_prerrogativas",
+            "kind": "confirmed_claim",
+            "label": "CMA vencido impede o exercício das prerrogativas",
+            "operator_answer": "Não. O aluno não pode voar sem CMA válido.",
+            "code": "RBAC 61",
+            "source": "RBAC 61",
+            "location": "61.17",
+            "score": 50,
+            "excerpt": "",
+        }]
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            server, "SEARCH_HISTORY_DB_PATH", Path(directory) / "history.db"
+        ), patch.object(
+            server, "LEARNING_DB_PATH", Path(directory) / "learning.db"
+        ), patch.object(
+            server, "LEARNING_GRAPH_PATH", Path(directory) / "learning.json"
+        ), patch.object(
+            server, "retrieve", return_value=evidence
+        ), patch.object(
+            server, "call_gemini_with_retry", side_effect=server.GeminiTemporaryError("HTTP 503")
+        ):
+            result = server.answer_question(
+                "O aluno independente do voo solo pode voar sem CMA valido?", self.operator
+            )
+
+        self.assertFalse(result["provisional"])
+        self.assertEqual(result["response_mode"], "local_contingency")
+        self.assertEqual(result["answer"], "Não. O aluno não pode voar sem CMA válido.")
+        self.assertEqual(result["sources"][0]["id"], evidence[0]["id"])
+
+    def test_transient_gemini_error_is_retried(self):
+        expected = {
+            "answer": "Resposta após repetição.",
+            "confidence": "high",
+            "used_evidence": [],
+            "candidate_relations": [],
+        }
+        with patch.object(
+            server, "GEMINI_TRANSIENT_RETRIES", 2
+        ), patch.object(
+            server, "call_gemini",
+            side_effect=[server.GeminiTemporaryError("503"), expected],
+        ) as mocked_call, patch.object(server.time, "sleep"):
+            result = server.call_gemini_with_retry("Pergunta", [])
+
+        self.assertEqual(result, expected)
+        self.assertEqual(mocked_call.call_count, 2)
+
 
 if __name__ == "__main__":
     unittest.main()
