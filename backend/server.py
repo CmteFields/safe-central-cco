@@ -66,6 +66,7 @@ LOCAL_MODEL = (
     or "gemini-3.5-flash"
 )
 EXTERNAL_MODEL = os.environ.get("GEMINI_EXTERNAL_MODEL", "gemini-3.1-pro-preview")
+RELEASE_ID = os.environ.get("SAFE_CCO_RELEASE", "2026-07-30-cma-contingency-2")
 HOST = os.environ.get("SAFE_CCO_HOST", "0.0.0.0" if os.environ.get("RENDER") else "127.0.0.1")
 PORT = int(os.environ.get("SAFE_CCO_PORT") or os.environ.get("PORT") or "8765")
 SECURE_COOKIES = os.environ.get("SAFE_CCO_SECURE_COOKIES", "").lower() in {"1", "true", "yes"} or bool(
@@ -1795,6 +1796,16 @@ def load_public_knowledge_index(path_value: str) -> dict[str, Any]:
     return json.loads(payload.strip().removesuffix(";"))
 
 
+@lru_cache(maxsize=4)
+def load_public_operator_answers(path_value: str) -> dict[str, str]:
+    public_index = load_public_knowledge_index(path_value)
+    return {
+        str(claim.get("id", "")): str(claim.get("operatorAnswer", "")).strip()
+        for claim in public_index.get("claims", [])
+        if claim.get("id") and claim.get("operatorAnswer")
+    }
+
+
 def retrieve_dynamic_rules(question: str) -> list[dict[str, Any]]:
     query_tokens = tokens(question)
     results = []
@@ -1971,6 +1982,7 @@ def retrieve(question: str, limit: int = 8) -> list[dict[str, Any]]:
     )
     claims_data = load_json(CLAIMS_PATH)
     graph_data = load_json(GRAPH_PATH)
+    public_operator_answers = load_public_operator_answers(str(PUBLIC_KNOWLEDGE_INDEX_PATH))
     results: list[dict[str, Any]] = retrieve_dynamic_rules(question)
     claim_ids = set()
     for claim in claims_data.get("claims", []):
@@ -2004,7 +2016,10 @@ def retrieve(question: str, limit: int = 8) -> list[dict[str, Any]]:
         if score > 0:
             results.append({
                 "id": claim["id"], "kind": "confirmed_claim", "label": claim["label"],
-                "operator_answer": claim.get("operator_answer", ""),
+                "operator_answer": (
+                    claim.get("operator_answer", "")
+                    or public_operator_answers.get(claim["id"], "")
+                ),
                 "code": claim.get("document_code", ""), "source": claim.get("source_path", ""),
                 "location": claim.get("source_location", ""), "score": score,
                 "excerpt": "",
@@ -2596,7 +2611,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         if self.path == "/api/health":
-            self.send_json(200, {"ok": True})
+            self.send_json(200, {
+                "ok": True,
+                "release": RELEASE_ID,
+                "knowledge": "private_bundle" if BUNDLED_KNOWLEDGE_ACTIVE else (
+                    "configured_root" if CONFIGURED_KNOWLEDGE_ROOT else "public_index"
+                ),
+            })
             return
         if self.path == "/api/auth/status":
             setup_required = auth_setup_required()

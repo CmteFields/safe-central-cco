@@ -22,6 +22,43 @@ class RetrievalTests(unittest.TestCase):
         self.assertIn("claim_ppap001k_limite_diario_instrucao", evidence_ids)
         self.assertTrue(all(item["source"] == "Índice público de regras confirmadas" for item in evidence))
 
+    def test_public_canonical_answer_overlays_older_private_claim(self):
+        claims = {"claims": [{
+            "id": "claim_rbac61_cma_vencido_impede_prerrogativas",
+            "label": "CMA vencido impede o exercício das prerrogativas",
+            "status": "confirmed",
+            "document_code": "RBAC 61",
+            "source_path": "Regulamentacao_ANAC/RBAC 61.md",
+            "source_location": "61.17",
+            "applies_to": ["alunos_piloto", "cma_vencido"],
+        }]}
+        graph = {"nodes": []}
+        with patch.object(
+            server, "load_json", side_effect=[claims, graph]
+        ), patch.object(
+            server, "load_public_operator_answers",
+            return_value={
+                "claim_rbac61_cma_vencido_impede_prerrogativas":
+                    "Não. O aluno não pode voar sem CMA válido."
+            },
+        ), patch.object(
+            server, "source_excerpt", return_value=""
+        ), patch.object(
+            server, "content_score", return_value=0
+        ), patch.object(
+            server, "CLAIMS_PATH", Path(__file__)
+        ), patch.object(
+            server, "GRAPH_PATH", Path(__file__)
+        ):
+            evidence = server.retrieve(
+                "O aluno independente do voo solo pode voar sem CMA valido?"
+            )
+
+        self.assertEqual(
+            evidence[0]["operator_answer"],
+            "Não. O aluno não pode voar sem CMA válido.",
+        )
+
     def test_cma_intent_excludes_unrelated_solo_rules(self):
         missing_root = Path("diretorio-privado-ausente")
         with patch.object(server, "CLAIMS_PATH", missing_root / "claims.json"), patch.object(
@@ -307,7 +344,10 @@ class WSGITests(unittest.TestCase):
         status, headers, body = self.request("/api/health")
         self.assertEqual(status, "200 OK")
         self.assertEqual(headers["Content-Type"], "application/json; charset=utf-8")
-        self.assertEqual(json.loads(body), {"ok": True})
+        payload = json.loads(body)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["release"], server.RELEASE_ID)
+        self.assertIn(payload["knowledge"], {"private_bundle", "configured_root", "public_index"})
 
     def test_static_portal_through_wsgi(self):
         status, headers, body = self.request("/")

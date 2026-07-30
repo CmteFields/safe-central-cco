@@ -36,6 +36,8 @@ Na operação com IA, o portal envia a pergunta ao backend. O backend recupera e
 
 Falhas transitórias do Gemini são repetidas. Se o Flash permanecer indisponível, o Pro interpreta as mesmas evidências locais sem pesquisa externa. Se ambos falharem, claims confirmados podem fornecer `operator_answer` curado para contingência determinística. Na falta desse texto, as regras confirmadas localizadas ainda são exibidas sem interpretação. Indisponibilidade do modelo não transforma conhecimento confirmado em pergunta não revisada.
 
+Quando o PythonAnywhere usa um pacote privado mais antigo, `operatorAnswer` do índice público versionado complementa o claim privado pelo mesmo ID. Essa sobreposição altera somente a apresentação canônica, não o status, a fonte ou o conteúdo normativo do claim. `/api/health` informa a versão carregada e o modo da base sem expor caminhos ou segredos.
+
 ## Feedback de progresso da consulta
 
 Ao iniciar uma busca, `app.js` exibe um painel acessível com as etapas de recebimento, consulta à base, análise de evidências e preparação da resposta. Como `/api/ask` ainda responde em uma única requisição HTTP, essas etapas representam feedback visual baseado no tempo decorrido, e não eventos transmitidos pelo backend.
