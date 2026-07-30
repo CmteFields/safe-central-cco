@@ -59,7 +59,12 @@ RULES_CATALOG_PATH = Path(
     if BUNDLED_KNOWLEDGE_ACTIVE
     else os.environ.get("SAFE_RULES_CATALOG_PATH", KNOWLEDGE_ROOT / "Regras" / "catalogo_regras.json")
 ).resolve()
-MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite")
+LOCAL_MODEL = (
+    os.environ.get("GEMINI_LOCAL_MODEL")
+    or os.environ.get("GEMINI_MODEL")
+    or "gemini-3.5-flash"
+)
+EXTERNAL_MODEL = os.environ.get("GEMINI_EXTERNAL_MODEL", "gemini-3.1-pro-preview")
 HOST = os.environ.get("SAFE_CCO_HOST", "0.0.0.0" if os.environ.get("RENDER") else "127.0.0.1")
 PORT = int(os.environ.get("SAFE_CCO_PORT") or os.environ.get("PORT") or "8765")
 SECURE_COOKIES = os.environ.get("SAFE_CCO_SECURE_COOKIES", "").lower() in {"1", "true", "yes"} or bool(
@@ -2045,6 +2050,28 @@ def gemini_key() -> str:
     return os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or ""
 
 
+def is_official_anac_source(url: str, title: str = "") -> bool:
+    """Aceita apenas páginas da ANAC, inclusive links de redirecionamento do grounding."""
+    parsed = urllib.parse.urlparse(url)
+    host = (parsed.hostname or "").casefold()
+    path = parsed.path.casefold().rstrip("/")
+    if host == "anac.gov.br" or host.endswith(".anac.gov.br"):
+        return True
+    if (host == "gov.br" or host.endswith(".gov.br")) and (
+        path == "/anac" or path.startswith("/anac/")
+    ):
+        return True
+    # Grounding costuma devolver um redirect do Google e o domínio original no título.
+    if host.endswith(".google.com") or host.endswith(".googleusercontent.com"):
+        title_norm = normalize(title)
+        return (
+            "anac.gov.br" in title_norm
+            or title_norm == "anac"
+            or "agencia nacional de aviacao civil" in title_norm
+        )
+    return False
+
+
 def call_gemini(question: str, evidence: list[dict[str, Any]], grounded: bool = False) -> dict[str, Any]:
     key = gemini_key()
     if not key:
@@ -2057,10 +2084,14 @@ def call_gemini(question: str, evidence: list[dict[str, Any]], grounded: bool = 
     if grounded:
         prompt = f"""Você é o assistente de pesquisa regulatória do CCO da Escola SAFE.
 A base aprovada não foi suficiente para responder à pergunta abaixo.
-Pesquise na web e use somente fontes primárias oficiais, priorizando ANAC, gov.br e legislação brasileira vigente.
-Não trate blogs, fóruns, resumos de terceiros ou resultados sem fonte oficial como regra.
+Pesquise na web exclusivamente em páginas oficiais da Agência Nacional de Aviação Civil:
+- https://www.gov.br/anac/
+- https://www.anac.gov.br/
+Inclua site:gov.br/anac ou site:anac.gov.br em todas as consultas de busca.
+Não use blogs, fóruns, escolas, notícias, resumos de terceiros, outros órgãos ou resultados sem fonte oficial da ANAC.
 Responda de forma direta em português do Brasil e deixe claro quando a fonte não resolver integralmente a dúvida.
 Esta resposta é apenas uma proposta para revisão humana e não é uma regra aprovada da SAFE.
+Uma fonte externa da ANAC nunca substitui uma regra interna SAFE mais restritiva.
 Defina confidence como low quando houver conflito, dúvida de vigência ou ausência de fonte oficial conclusiva.
 used_evidence deve ser uma lista vazia. candidate_relations pode registrar relações conceituais percebidas.
 
@@ -2100,8 +2131,9 @@ PERGUNTA: {question}
     }
     if grounded:
         body["tools"] = [{"google_search": {}}]
+    selected_model = EXTERNAL_MODEL if grounded else LOCAL_MODEL
     request = urllib.request.Request(
-        f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:generateContent",
+        f"https://generativelanguage.googleapis.com/v1beta/models/{selected_model}:generateContent",
         data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
         headers={"Content-Type": "application/json", "x-goog-api-key": key}, method="POST",
     )
@@ -2129,14 +2161,15 @@ PERGUNTA: {question}
         for chunk in metadata.get("groundingChunks", []):
             web = chunk.get("web") or {}
             url = str(web.get("uri", "")).strip()
-            if not url or url in seen_urls:
+            title = str(web.get("title", "")).strip()
+            if not url or url in seen_urls or not is_official_anac_source(url, title):
                 continue
             seen_urls.add(url)
             web_sources.append({
                 "id": f"web_{len(web_sources) + 1}",
                 "kind": "external_source",
-                "label": str(web.get("title", "")).strip() or "Fonte oficial consultada",
-                "code": "Fonte externa",
+                "label": title or "ANAC — fonte oficial consultada",
+                "code": "ANAC · fonte externa",
                 "source": url,
                 "location": url,
                 "url": url,
@@ -2144,6 +2177,7 @@ PERGUNTA: {question}
             })
         result["_web_sources"] = web_sources
         result["_search_queries"] = metadata.get("webSearchQueries", [])
+    result["_model"] = selected_model
     return result
 
 
@@ -2365,6 +2399,7 @@ def answer_question(question: str, actor: dict[str, Any] | None = None) -> dict[
     sources = local_sources
     response_mode = "local_approved"
     knowledge_status = "approved"
+    model_used = str(local_result.get("_model", LOCAL_MODEL))
     candidate = None
     external_error = ""
 
@@ -2379,6 +2414,7 @@ def answer_question(question: str, actor: dict[str, Any] | None = None) -> dict[
                     result = external_result
                     sources = external_sources
                     response_mode = "external_grounded"
+                    model_used = str(external_result.get("_model", EXTERNAL_MODEL))
             except Exception as error:
                 external_error = str(error)
         if response_mode == "unanswered":
@@ -2417,6 +2453,7 @@ def answer_question(question: str, actor: dict[str, Any] | None = None) -> dict[
         "candidate_relations_count": len(result.get("candidate_relations", [])),
         "knowledge_status": knowledge_status,
         "response_mode": response_mode,
+        "model_used": model_used,
         "provisional": knowledge_status != "approved",
         "candidate_id": candidate["id"] if candidate else None,
         "local_error": local_error if not gemini_key() else "",
@@ -2804,5 +2841,8 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     initialize_portal_storage()
-    print(f"SAFE CCO API em http://{HOST}:{PORT} | modelo={MODEL} | conhecimento={KNOWLEDGE_ROOT}")
+    print(
+        f"SAFE CCO API em http://{HOST}:{PORT} | modelo local={LOCAL_MODEL} "
+        f"| modelo ANAC={EXTERNAL_MODEL} | conhecimento={KNOWLEDGE_ROOT}"
+    )
     ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()
