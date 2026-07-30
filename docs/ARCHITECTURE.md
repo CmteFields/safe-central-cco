@@ -32,7 +32,7 @@ CentrodeConhecimento/
 4. `PortalCCO/scripts/build_search_index.py` publica somente o índice necessário à interface.
 5. O navegador consulta o índice local sem acessar diretamente arquivos de curadoria ou documentos sensíveis.
 
-Na operação com IA, o portal envia a pergunta ao backend. O backend recupera evidências, solicita ao Gemini uma resposta estruturada, devolve somente fontes utilizadas e registra a travessia nas tabelas de aprendizagem do banco operacional `portalcco.db`.
+Na operação com IA, o portal envia a pergunta ao backend. O backend recupera evidências do grafo SAFE e usa `gemini-3.5-flash` para interpretá-las. Somente quando a evidência confirmada for insuficiente, usa `gemini-3.1-pro-preview` com Google Search para procurar páginas oficiais da ANAC. Citações que não sejam reconhecidas como ANAC são descartadas. Toda resposta externa é provisória, entra em `rule_candidates` como não revisada e nunca altera automaticamente o grafo ou as regras aprovadas. Os modelos são configuráveis por `GEMINI_LOCAL_MODEL` e `GEMINI_EXTERNAL_MODEL`.
 
 ## Feedback de progresso da consulta
 
@@ -56,6 +56,7 @@ Se a requisição falhar, a interface muda para o estado real `fallback`, inform
 - Em produção, `SAFE_PORTAL_DB_PATH` aponta o banco SQLite para o volume persistente. O Blueprint do Render usa `/var/data/portalcco.db`, HTTPS, cookie `Secure` e uma única instância, preservando a consistência do SQLite.
 - Os bancos SQLite antigos são importados automaticamente para o banco único. A tabela `storage_migrations` torna o processo idempotente, e os arquivos legados permanecem intactos como backup.
 - Respostas conclusivas devem priorizar regras com estado `confirmed`. Documentos relacionados podem auxiliar a busca, mas não devem ser apresentados como regra confirmada.
+- A ordem da resposta é: regra SAFE confirmada e vigente; demais evidências locais rastreáveis; fonte externa oficial da ANAC; ausência de resposta. A consulta externa não substitui uma regra SAFE mais restritiva e não possui validade interna até revisão humana.
 - Perguntas e relações inferidas ficam no grafo de aprendizagem. Relações inferidas usam `pending_review` e nunca entram automaticamente no conjunto de regras oficiais.
 
 ## Evolução prevista

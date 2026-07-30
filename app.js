@@ -350,7 +350,7 @@ function apiResultAnswer(query, result) {
 
 async function askApi(query) {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 50000);
+  const timeout = setTimeout(() => controller.abort(), 150000);
   try {
     const response = await apiFetch(API_URL, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ question: query }), signal: controller.signal });
     const data = await response.json();

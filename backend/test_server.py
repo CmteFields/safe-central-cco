@@ -1030,17 +1030,85 @@ class RuleCandidateStorageTests(unittest.TestCase):
 
         def fake_urlopen(request, timeout):
             captured["body"] = json.loads(request.data.decode("utf-8"))
+            captured["url"] = request.full_url
             captured["timeout"] = timeout
             return FakeResponse()
 
         with patch.object(server, "gemini_key", return_value="test-key"), patch(
             "backend.server.urllib.request.urlopen", side_effect=fake_urlopen
-        ):
+        ), patch.object(server, "EXTERNAL_MODEL", "gemini-3.1-pro-preview"):
             result = server.call_gemini("Pergunta regulatória", [], grounded=True)
 
         self.assertEqual(captured["body"]["tools"], [{"google_search": {}}])
+        self.assertIn("gemini-3.1-pro-preview:generateContent", captured["url"])
         self.assertEqual(result["_web_sources"][0]["label"], "ANAC")
         self.assertEqual(result["_search_queries"], ["consulta oficial"])
+        self.assertEqual(result["_model"], "gemini-3.1-pro-preview")
+
+    def test_local_gemini_uses_flash_model(self):
+        captured = {}
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self):
+                return json.dumps({"candidates": [{"content": {"parts": [{"text": json.dumps({
+                    "answer": "Resposta local.",
+                    "confidence": "high",
+                    "used_evidence": [],
+                    "candidate_relations": [],
+                })}]}}]}).encode("utf-8")
+
+        def fake_urlopen(request, timeout):
+            captured["url"] = request.full_url
+            return FakeResponse()
+
+        with patch.object(server, "gemini_key", return_value="test-key"), patch(
+            "backend.server.urllib.request.urlopen", side_effect=fake_urlopen
+        ), patch.object(server, "LOCAL_MODEL", "gemini-3.5-flash"):
+            result = server.call_gemini("Pergunta local", [])
+
+        self.assertIn("gemini-3.5-flash:generateContent", captured["url"])
+        self.assertEqual(result["_model"], "gemini-3.5-flash")
+
+    def test_grounded_gemini_rejects_non_anac_citations(self):
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self):
+                return json.dumps({
+                    "candidates": [{
+                        "content": {"parts": [{"text": json.dumps({
+                            "answer": "Resposta sem fonte ANAC.",
+                            "confidence": "high",
+                            "used_evidence": [],
+                            "candidate_relations": [],
+                        })}]},
+                        "groundingMetadata": {
+                            "groundingChunks": [
+                                {"web": {"title": "Blog aeronáutico", "uri": "https://example.com/regra"}},
+                                {"web": {"title": "ANAC", "uri": "https://www.gov.br/anac/pt-br/assuntos"}},
+                            ],
+                        },
+                    }],
+                }).encode("utf-8")
+
+        with patch.object(server, "gemini_key", return_value="test-key"), patch(
+            "backend.server.urllib.request.urlopen", return_value=FakeResponse()
+        ):
+            result = server.call_gemini("Pergunta regulatória", [], grounded=True)
+
+        self.assertEqual(len(result["_web_sources"]), 1)
+        self.assertEqual(result["_web_sources"][0]["label"], "ANAC")
+        self.assertIn("gov.br/anac", result["_web_sources"][0]["url"])
 
 
 if __name__ == "__main__":
