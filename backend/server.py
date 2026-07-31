@@ -70,7 +70,7 @@ LOCAL_MODEL = (
 )
 FALLBACK_MODEL = os.environ.get("GEMINI_FALLBACK_MODEL", "gemini-3.5-flash-lite")
 EXTERNAL_MODEL = os.environ.get("GEMINI_EXTERNAL_MODEL", "gemini-3.1-pro-preview")
-RELEASE_ID = os.environ.get("SAFE_CCO_RELEASE", "2026-07-31-knowledge-gaps-1")
+RELEASE_ID = os.environ.get("SAFE_CCO_RELEASE", "2026-07-31-inva-allocation-2")
 HOST = os.environ.get("SAFE_CCO_HOST", "0.0.0.0" if os.environ.get("RENDER") else "127.0.0.1")
 PORT = int(os.environ.get("SAFE_CCO_PORT") or os.environ.get("PORT") or "8765")
 SECURE_COOKIES = os.environ.get("SAFE_CCO_SECURE_COOKIES", "").lower() in {"1", "true", "yes"} or bool(
@@ -194,6 +194,7 @@ GENERAL_CMA_RULE_IDS = {
     "claim_rbac61_cma_vencido_impede_prerrogativas",
     "claim_rbac61_tolerancia_habilitacao_nao_prorroga_cma",
 }
+INSTRUCTOR_ALLOCATION_RULE_ID = "claim_mip_substituicao_instrutor_solicitada_administracao"
 ROLES = {"admin", "supervisor", "operator", "viewer"}
 ROLE_LABELS = {"admin": "Administrador", "supervisor": "Supervisor", "operator": "Operador", "viewer": "Consulta"}
 SESSION_HOURS = 12
@@ -1952,7 +1953,25 @@ def tokens(value: str) -> list[str]:
     course = requested_course(normalized)
     if course and any(term in normalized for term in ("slot", "slots", "hora", "horas", "dia", "diaria", "diarias")):
         expansions.extend([course, "instrucao", "diari", "limite"])
+    if instructor_allocation_intent(normalized):
+        expansions.extend([
+            "inva", "instrutor", "cco", "escolha", "preferencia", "substituicao",
+            "escala", "agendamento",
+        ])
     return list(dict.fromkeys(items + expansions))
+
+
+def instructor_allocation_intent(value: str) -> bool:
+    normalized = normalize(value)
+    mentions_instructor = any(term in normalized for term in (
+        "inva", "instrutor", "professor de voo", "quem vai voar comigo",
+    ))
+    asks_allocation = any(term in normalized for term in (
+        "escolh", "prefer", "troc", "substitu", "especific", "combina", "confirm",
+        "agend", "marc", "defin", "escal", "nao gostei", "outro instrutor",
+        "mesmo instrutor", "voar com", "solicitar",
+    ))
+    return mentions_instructor and asks_allocation
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -2025,6 +2044,7 @@ def retrieve_public_claims(question: str, limit: int = 8) -> list[dict[str, Any]
     daily_limit_intent = bool(course) and any(
         term in question_norm for term in ("slot", "slots", "hora", "horas", "dia", "diaria", "diarias")
     )
+    instructor_intent = instructor_allocation_intent(question_norm)
     results = retrieve_dynamic_rules(question)
     public_index = load_public_knowledge_index(str(PUBLIC_KNOWLEDGE_INDEX_PATH))
     for claim in public_index.get("claims", []):
@@ -2050,6 +2070,8 @@ def retrieve_public_claims(question: str, limit: int = 8) -> list[dict[str, Any]
                 score -= 15
         if daily_limit_intent and "limite_diario_instrucao" in claim.get("id", ""):
             score += 20
+        if instructor_intent and claim.get("id") == INSTRUCTOR_ALLOCATION_RULE_ID:
+            score += 60
         if score <= 0:
             continue
         results.append({
@@ -2152,6 +2174,7 @@ def retrieve(question: str, limit: int = 8) -> list[dict[str, Any]]:
     daily_limit_intent = bool(course) and any(
         term in question_norm for term in ("slot", "slots", "hora", "horas", "dia", "diaria", "diarias")
     )
+    instructor_intent = instructor_allocation_intent(question_norm)
     claims_data = load_json(CLAIMS_PATH)
     graph_data = load_json(GRAPH_PATH)
     public_operator_answers = load_public_operator_answers(str(PUBLIC_KNOWLEDGE_INDEX_PATH))
@@ -2185,6 +2208,8 @@ def retrieve(question: str, limit: int = 8) -> list[dict[str, Any]]:
             "limite_diario_instrucao" in claim["id"] or "limite_instrucao_local" in claim["id"]
         ):
             score += 20
+        if instructor_intent and claim.get("id") == INSTRUCTOR_ALLOCATION_RULE_ID:
+            score += 60
         if score > 0:
             results.append({
                 "id": claim["id"], "kind": "confirmed_claim", "label": claim["label"],
@@ -2354,7 +2379,13 @@ PERGUNTA: {question}
     )
     if text.startswith("```"):
         text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.IGNORECASE)
-    result = json.loads(text)
+    try:
+        result = json.loads(text)
+    except json.JSONDecodeError as error:
+        raise RuntimeError(
+            "A Gemini devolveu uma resposta estruturada inválida; "
+            "a consulta foi encaminhada ao modo de contingência."
+        ) from error
     if grounded:
         metadata = candidate.get("groundingMetadata", {})
         web_sources = []
@@ -2409,21 +2440,18 @@ def deterministic_local_result(evidence: list[dict[str, Any]]) -> dict[str, Any]
     ]
     if not confirmed:
         return None
-    canonical_answers = []
-    for _, item in confirmed:
+    for index, item in confirmed:
         answer = str(item.get("operator_answer", "")).strip()
-        if answer and answer not in canonical_answers:
-            canonical_answers.append(answer)
-    if not canonical_answers:
-        return None
-    return {
-        "answer": "\n\n".join(canonical_answers),
-        "confidence": "medium",
-        "used_evidence": [index for index, _ in confirmed[:3]],
-        "candidate_relations": [],
-        "_model": "local-deterministic",
-        "_contingency": True,
-    }
+        if answer:
+            return {
+                "answer": answer,
+                "confidence": "medium",
+                "used_evidence": [index],
+                "candidate_relations": [],
+                "_model": "local-deterministic",
+                "_contingency": True,
+            }
+    return None
 
 
 def load_learning_graph() -> dict[str, Any]:
