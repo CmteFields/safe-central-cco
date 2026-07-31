@@ -10,7 +10,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css?v=20260724-7">
-  <link rel="stylesheet" href="instrutores.css?v=20260729-16">
+  <link rel="stylesheet" href="instrutores.css?v=20260731-17">
   <link rel="stylesheet" href="topbar.css?v=20260724-13">
   <link rel="stylesheet" href="auth.css?v=20260724-16">
 </head>
@@ -230,6 +230,8 @@
           <div><small>NÃO REVISADAS</small><strong id="unreviewedRuleCount">0</strong></div>
           <div><small>PENDENTES DE APROVAÇÃO</small><strong id="pendingApprovalRuleCount">0</strong></div>
           <div><small>REGRAS APROVADAS</small><strong id="approvedRuleCount">0</strong></div>
+          <div><small>GRUPOS RECORRENTES</small><strong id="recurringRuleCount">0</strong></div>
+          <div><small>PERGUNTAS REGISTRADAS</small><strong id="ruleOccurrenceCount">0</strong></div>
           <div class="rule-governance-note"><span>i</span><p>Uma pergunta nova começa como não revisada. Mesmo após a análise, ela só responde consultas quando for aprovada.</p></div>
         </div>
         <div class="rule-toolbar">
@@ -238,7 +240,15 @@
             <button id="pendingApprovalRulesTab" type="button">Pendentes de aprovação</button>
             <button id="approvedRulesTab" type="button">Regras aprovadas</button>
           </div>
-          <label class="table-search"><span>⌕</span><input id="ruleSearch" type="search" placeholder="Buscar pergunta, regra ou fonte…"></label>
+          <label class="table-search"><span>⌕</span><input id="ruleSearch" type="search" placeholder="Buscar pergunta, usuário, regra ou fonte…"></label>
+        </div>
+        <div class="knowledge-gap-filters">
+          <label>De<input id="ruleDateFrom" type="date"></label>
+          <label>Até<input id="ruleDateTo" type="date"></label>
+          <label>Ocorrências mínimas<select id="ruleMinOccurrences"><option value="1">Todas</option><option value="2">2 ou mais</option><option value="3">3 ou mais</option><option value="5">5 ou mais</option></select></label>
+          <span></span>
+          <button class="secondary-button compact-export" id="exportKnowledgeGaps" type="button">Exportar CSV</button>
+          <button class="secondary-button compact-export" id="printKnowledgeGaps" type="button">Imprimir / PDF</button>
         </div>
         <div class="rule-review-list" id="ruleReviewList"><div class="table-message">Carregando regras…</div></div>
       </section>
@@ -347,7 +357,7 @@
       <div class="rule-review-context" id="ruleReviewContext"></div>
       <div class="form-grid">
         <label>Decisão<select id="ruleReviewStatus" required><option value="pending_approval">Encaminhar / manter pendente de aprovação</option><option value="approved">Aprovar regra</option><option value="rejected">Rejeitar proposta</option></select></label>
-        <label>Código da regra<input id="ruleCode" maxlength="100" placeholder="Ex.: RG-PORTAL-001"></label>
+        <label>Código da regra<input id="ruleCode" maxlength="100" placeholder="Ex.: RG-009"></label>
         <label class="wide">Texto aprovado da regra<textarea id="approvedRuleText" maxlength="8000" rows="5" placeholder="Redação exata que poderá ser usada nas próximas respostas."></textarea></label>
         <label>Autoridade responsável<input id="ruleAuthority" maxlength="120" placeholder="Ex.: Coordenação Operacional"></label>
         <label>Data de início<input id="ruleEffectiveFrom" type="date"></label>
@@ -404,6 +414,6 @@
   <div class="toast" id="toast" role="status"></div>
   <script src="data/public-knowledge-index.js?v=20260730-5"></script>
   <script src="data/knowledge-index.js"></script>
-  <script src="app.js?v=20260730-5"></script>
+  <script src="app.js?v=20260731-6"></script>
 </body>
 </html>
