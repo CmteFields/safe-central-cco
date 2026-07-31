@@ -38,3 +38,4 @@ data/rules.db
 data/rules.db-*
 data/portalcco.db
 data/portalcco.db-*
+data/approved-rules-export.json

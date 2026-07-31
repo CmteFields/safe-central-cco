@@ -65,6 +65,24 @@ Se a requisição falhar, a interface muda para o estado real `fallback`, inform
 - A ordem da resposta é: regra SAFE confirmada e vigente; demais evidências locais rastreáveis; fonte externa oficial da ANAC; ausência de resposta. A consulta externa não substitui uma regra SAFE mais restritiva e não possui validade interna até revisão humana.
 - Perguntas e relações inferidas ficam no grafo de aprendizagem. Relações inferidas usam `pending_review` e nunca entram automaticamente no conjunto de regras oficiais.
 
+## Lacunas de conhecimento e retorno ao grafo
+
+Toda consulta sem cobertura conclusiva cria ou atualiza um item em `rule_candidates`. A
+contagem aumenta somente quando um usuário repete a pergunta; o botão de reprocessamento
+consulta novamente a base e a ANAC sem inflar essa contagem. `/api/knowledge-gaps` entrega
+o relatório consolidado, com autoria, datas, recorrência e agrupamentos lexicais apenas
+para triagem. Os agrupamentos não fundem registros e não aprovam conhecimento.
+
+Supervisor e Administrador podem exportar o relatório em CSV e imprimir a página em PDF.
+Quando uma regra é aprovada, ela passa a responder imediatamente no Portal e o backend
+regenera `approved-rules-export.json` no armazenamento privado. O utilitário
+`scripts/sync_portal_approved_rules.py` baixa esse pacote para
+`Regras/Entradas/portal_regras_aprovadas.json`. Essa entrada continua sem autoridade
+documental automática: a publicação no grafo exige consolidar a regra em
+`regras_aprovadas.md` e `catalogo_regras.json`, criar ou revisar a claim rastreável e
+executar `Knowledge/update_knowledge.py`. Assim, a sincronização é auditável e nenhuma
+resposta provisória é promovida sem decisão humana.
+
 ## Evolução prevista
 
 Quando houver múltiplos operadores e dados em tempo real, a interface continuará em `PortalCCO`, mas o índice estático será substituído por uma API. O contrato deve preservar: texto da resposta, fonte, localização, vigência, confiança e relações utilizadas.

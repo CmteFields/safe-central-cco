@@ -377,7 +377,7 @@ class WSGITests(unittest.TestCase):
         self.assertIn("text/html", headers["Content-Type"])
         self.assertIn(b"CCO - Central de conhecimento", body)
         self.assertIn(b"public-knowledge-index.js?v=20260730-5", body)
-        self.assertIn(b"app.js?v=20260730-5", body)
+        self.assertIn(b"app.js?v=20260731-6", body)
 
     def test_browser_uses_same_origin_ai_endpoint(self):
         status, _, body = self.request("/app.js")
@@ -389,8 +389,8 @@ class WSGITests(unittest.TestCase):
         self.assertIn(b'item.fleet_status === "Ativa" && item.status !== "Operacional"', body)
         self.assertIn(b"edit-aircraft-button", body)
         self.assertIn("Somente leitura".encode(), body)
-        self.assertIn(b"rule-candidates?status=unreviewed", body)
-        self.assertIn(b"rule-candidates?status=pending_approval", body)
+        self.assertIn(b"knowledge-gaps?status=open", body)
+        self.assertIn(b"rule-candidates/${id}/reprocess", body)
         self.assertIn(b"operatorAnswer", body)
         self.assertIn(b"Resposta confirmada pela base SAFE", body)
 
@@ -999,15 +999,73 @@ class RuleCandidateStorageTests(unittest.TestCase):
                 "status": "approved",
                 "review_note": "Validado pela Coordenação.",
                 "approved_rule_text": "O limite especial do teste é de duas operações.",
-                "rule_code": "RG-TESTE-001",
+                "rule_code": "RG-099",
                 "authority": "Coordenação Operacional",
                 "source_reference": "Documento oficial, seção 3",
                 "scope": "Operações de teste",
             }, self.supervisor)
             self.assertEqual(approved["status"], "approved")
             evidence = server.retrieve_dynamic_rules("Qual é o limite especial do teste?")
-            self.assertEqual(evidence[0]["code"], "RG-TESTE-001")
+            self.assertEqual(evidence[0]["code"], "RG-099")
             self.assertIn("duas operações", evidence[0]["label"])
+
+    def test_knowledge_gap_report_groups_similar_questions_and_exports_csv(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            server, "RULES_DB_PATH", Path(directory) / "rules.db"
+        ):
+            server.upsert_rule_candidate(
+                "Aluno pode voar sem CMA válido?", "Sem resposta", "low", "unanswered",
+                [], [], self.operator,
+            )
+            server.upsert_rule_candidate(
+                "O aluno pode realizar voo com CMA vencido?", "Sem resposta", "low",
+                "unanswered", [], [], self.operator,
+            )
+            report = server.knowledge_gap_report({"status": ["open"]})
+
+            self.assertEqual(report["summary"]["items"], 2)
+            self.assertEqual(report["summary"]["total_occurrences"], 2)
+            self.assertGreaterEqual(report["summary"]["recurring_groups"], 1)
+            self.assertEqual(report["items"][0]["similar_group_size"], 2)
+            exported = server.knowledge_gap_csv(report).decode("utf-8-sig")
+            self.assertIn("Pergunta;Ocorrências", exported)
+            self.assertIn("CMA", exported)
+
+    def test_reprocess_does_not_increase_occurrence_count(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            server, "RULES_DB_PATH", Path(directory) / "rules.db"
+        ), patch.object(server, "answer_question", return_value={
+            "answer": "Nova resposta provisória.", "confidence": "medium", "sources": [],
+            "response_mode": "unanswered", "knowledge_status": "unreviewed",
+        }), patch.object(server, "retrieve", return_value=[]):
+            candidate = server.upsert_rule_candidate(
+                "Pergunta para reprocessar", "Resposta anterior", "low", "unanswered",
+                [], [], self.operator,
+            )
+            result = server.reprocess_rule_candidate(candidate["id"], self.supervisor)
+
+            self.assertEqual(result["item"]["occurrence_count"], 1)
+            self.assertEqual(result["item"]["proposed_answer"], "Nova resposta provisória.")
+
+    def test_approval_writes_auditable_export(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            server, "RULES_DB_PATH", Path(directory) / "rules.db"
+        ), patch.object(
+            server, "APPROVED_RULES_EXPORT_PATH", Path(directory) / "approved-export.json"
+        ):
+            candidate = server.upsert_rule_candidate(
+                "Pergunta aprovada", "Proposta", "medium", "operator_report", [], [],
+                self.operator,
+            )
+            server.review_rule_candidate(candidate["id"], {
+                "status": "approved", "review_note": "Aprovação formal registrada.",
+                "approved_rule_text": "Esta é a regra aprovada.", "rule_code": "RG-099",
+                "authority": "Coordenação Operacional", "source_reference": "Ata 10",
+            }, self.supervisor)
+
+            payload = json.loads(server.APPROVED_RULES_EXPORT_PATH.read_text(encoding="utf-8"))
+            self.assertEqual(payload["schema_version"], 1)
+            self.assertEqual(payload["rules"][0]["rule_code"], "RG-099")
 
     def test_approval_requires_rule_authority_source_and_note(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(

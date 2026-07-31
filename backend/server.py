@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+import csv
+import io
 import json
 import mimetypes
 import os
@@ -68,7 +70,7 @@ LOCAL_MODEL = (
 )
 FALLBACK_MODEL = os.environ.get("GEMINI_FALLBACK_MODEL", "gemini-3.5-flash-lite")
 EXTERNAL_MODEL = os.environ.get("GEMINI_EXTERNAL_MODEL", "gemini-3.1-pro-preview")
-RELEASE_ID = os.environ.get("SAFE_CCO_RELEASE", "2026-07-30-gemini-resilience-5")
+RELEASE_ID = os.environ.get("SAFE_CCO_RELEASE", "2026-07-31-knowledge-gaps-1")
 HOST = os.environ.get("SAFE_CCO_HOST", "0.0.0.0" if os.environ.get("RENDER") else "127.0.0.1")
 PORT = int(os.environ.get("SAFE_CCO_PORT") or os.environ.get("PORT") or "8765")
 SECURE_COOKIES = os.environ.get("SAFE_CCO_SECURE_COOKIES", "").lower() in {"1", "true", "yes"} or bool(
@@ -87,6 +89,9 @@ REPORTS_DB_PATH = Path(os.environ.get("SAFE_REPORTS_DB_PATH", PORTAL_DB_PATH)).r
 SEARCH_HISTORY_DB_PATH = Path(os.environ.get("SAFE_SEARCH_HISTORY_DB_PATH", PORTAL_DB_PATH)).resolve()
 AUTH_DB_PATH = Path(os.environ.get("SAFE_AUTH_DB_PATH", PORTAL_DB_PATH)).resolve()
 RULES_DB_PATH = Path(os.environ.get("SAFE_RULES_DB_PATH", PORTAL_DB_PATH)).resolve()
+APPROVED_RULES_EXPORT_PATH = Path(
+    os.environ.get("SAFE_APPROVED_RULES_EXPORT_PATH", DATA_DIR / "approved-rules-export.json")
+).resolve()
 LEARNING_DB_PATH = Path(os.environ.get("SAFE_LEARNING_DB_PATH", PORTAL_DB_PATH)).resolve()
 LEGACY_DB_PATHS = {
     "auth": DATA_DIR / "auth.db",
@@ -1006,6 +1011,162 @@ def list_rule_candidates(status: str = "unreviewed") -> list[dict[str, Any]]:
     return [rule_candidate_dict(row) for row in rows]
 
 
+def _question_terms(question: str) -> set[str]:
+    return {
+        term for term in normalize(question).split()
+        if term not in STOPWORDS and len(term) >= 3
+    }
+
+
+def group_similar_rule_candidates(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Agrupa variações lexicais para triagem, sem fundir registros nem aprovar regras."""
+    if not items:
+        return []
+    parents = list(range(len(items)))
+    term_sets = [_question_terms(str(item.get("question", ""))) for item in items]
+
+    def find(index: int) -> int:
+        while parents[index] != index:
+            parents[index] = parents[parents[index]]
+            index = parents[index]
+        return index
+
+    def union(left: int, right: int) -> None:
+        left_root, right_root = find(left), find(right)
+        if left_root != right_root:
+            parents[right_root] = left_root
+
+    for left in range(len(items)):
+        for right in range(left + 1, len(items)):
+            shared = term_sets[left] & term_sets[right]
+            union_terms = term_sets[left] | term_sets[right]
+            smallest = min(len(term_sets[left]), len(term_sets[right]))
+            if (
+                len(shared) >= 2 and union_terms and smallest
+                and (len(shared) / len(union_terms) >= 0.5 or len(shared) / smallest >= 0.4)
+            ):
+                union(left, right)
+
+    groups: dict[int, list[int]] = {}
+    for index in range(len(items)):
+        groups.setdefault(find(index), []).append(index)
+    enriched = []
+    for index, item in enumerate(items):
+        members = groups[find(index)]
+        group_occurrences = sum(int(items[position].get("occurrence_count", 0)) for position in members)
+        enriched.append({
+            **item,
+            "similar_group_id": f"gap-group-{min(int(items[position]['id']) for position in members)}",
+            "similar_group_size": len(members),
+            "group_occurrence_count": group_occurrences,
+            "similar_questions": [
+                {"id": items[position]["id"], "question": items[position]["question"]}
+                for position in members if position != index
+            ],
+        })
+    return enriched
+
+
+def knowledge_gap_report(query: dict[str, list[str]] | None = None) -> dict[str, Any]:
+    query = query or {}
+    status = query.get("status", ["open"])[0]
+    allowed_statuses = {"open", "unreviewed", "pending_approval", "approved", "rejected", "all"}
+    if status not in allowed_statuses:
+        raise ValueError("Situação de lacuna inválida.")
+    search = normalize(query.get("search", [""])[0])
+    date_from = query.get("from", [""])[0].strip()
+    date_to = query.get("to", [""])[0].strip()
+    for value in (date_from, date_to):
+        if value:
+            datetime.strptime(value, "%Y-%m-%d")
+    try:
+        min_occurrences = max(1, int(query.get("min_occurrences", ["1"])[0]))
+    except ValueError as error:
+        raise ValueError("Ocorrência mínima inválida.") from error
+
+    source_status = "pending_review" if status == "open" else status
+    items = list_rule_candidates(source_status)
+    filtered = []
+    for item in items:
+        haystack = normalize(" ".join(str(item.get(field, "")) for field in (
+            "question", "proposed_answer", "approved_rule_text", "source_reference",
+            "authority", "created_by_name", "created_by_username",
+        )))
+        asked_date = str(item.get("last_asked_at", ""))[:10]
+        if search and search not in haystack:
+            continue
+        if date_from and asked_date < date_from:
+            continue
+        if date_to and asked_date > date_to:
+            continue
+        if int(item.get("occurrence_count", 0)) < min_occurrences:
+            continue
+        filtered.append(item)
+    grouped = group_similar_rule_candidates(filtered)
+    recurring_groups = {
+        item["similar_group_id"] for item in grouped
+        if item["group_occurrence_count"] > 1
+    }
+    summary = {
+        "items": len(grouped),
+        "total_occurrences": sum(int(item.get("occurrence_count", 0)) for item in grouped),
+        "unreviewed": sum(item.get("status") == "unreviewed" for item in grouped),
+        "pending_approval": sum(item.get("status") == "pending_approval" for item in grouped),
+        "recurring_groups": len(recurring_groups),
+    }
+    return {"summary": summary, "items": grouped, "filters": {
+        "status": status, "search": query.get("search", [""])[0], "from": date_from,
+        "to": date_to, "min_occurrences": min_occurrences,
+    }}
+
+
+def knowledge_gap_csv(report: dict[str, Any]) -> bytes:
+    stream = io.StringIO(newline="")
+    writer = csv.writer(stream, delimiter=";")
+    writer.writerow([
+        "ID", "Situação", "Pergunta", "Ocorrências", "Ocorrências do grupo",
+        "Primeira pergunta", "Última pergunta", "Usuário de origem", "Nome de origem",
+        "Origem", "Confiança", "Resposta provisória", "Quantidade de fontes",
+    ])
+    for item in report["items"]:
+        writer.writerow([
+            item["id"], item["status_label"], item["question"], item["occurrence_count"],
+            item["group_occurrence_count"], item["first_asked_at"], item["last_asked_at"],
+            item["created_by_username"], item["created_by_name"], item["source_kind"],
+            item["confidence"], item["proposed_answer"], len(item["sources"]),
+        ])
+    return ("\ufeff" + stream.getvalue()).encode("utf-8")
+
+
+def write_approved_rules_export(connection: sqlite3.Connection | None = None) -> dict[str, Any]:
+    owns_connection = connection is None
+    if owns_connection:
+        initialize_rules_db()
+        connection = open_database(RULES_DB_PATH)
+    try:
+        rows = connection.execute(
+            "SELECT * FROM rule_candidates WHERE status='approved' ORDER BY rule_code, id"
+        ).fetchall()
+        rules = []
+        for row in rows:
+            item = rule_candidate_dict(row)
+            rules.append({key: item.get(key) for key in (
+                "id", "question", "approved_rule_text", "rule_code", "authority",
+                "source_reference", "source_url", "scope", "effective_from",
+                "effective_until", "supersedes", "review_note", "reviewed_by_username",
+                "reviewed_by_name", "reviewed_at", "updated_at",
+            )})
+        payload = {"schema_version": 1, "exported_at": now_iso(), "rules": rules}
+        APPROVED_RULES_EXPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
+        temporary = APPROVED_RULES_EXPORT_PATH.with_suffix(".tmp")
+        temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        temporary.replace(APPROVED_RULES_EXPORT_PATH)
+        return payload
+    finally:
+        if owns_connection and connection is not None:
+            connection.close()
+
+
 def review_rule_candidate(candidate_id: int, data: dict[str, Any], reviewer: dict[str, Any]) -> dict[str, Any]:
     initialize_rules_db()
     status = str(data.get("status", "")).strip()
@@ -1027,6 +1188,9 @@ def review_rule_candidate(candidate_id: int, data: dict[str, Any], reviewer: dic
         raise ValueError("Registre a justificativa da decisão.")
     if status == "approved" and (not approved_rule_text or not source_reference or not authority):
         raise ValueError("Para aprovar, informe a regra, a autoridade e a referência da fonte.")
+    if status == "approved" and not re.fullmatch(r"RG-\d{3}", rule_code.upper()):
+        raise ValueError("Para aprovar, use um código oficial no formato RG-###.")
+    rule_code = rule_code.upper()
     if source_url and not source_url.startswith(("https://", "http://")):
         raise ValueError("A URL da fonte deve começar com http:// ou https://.")
     if any(len(value or "") > limit for value, limit in (
@@ -1042,6 +1206,11 @@ def review_rule_candidate(candidate_id: int, data: dict[str, Any], reviewer: dic
         ).fetchone()
         if not current:
             raise LookupError("Regra em aprovação não encontrada.")
+        if status == "approved" and connection.execute(
+            "SELECT 1 FROM rule_candidates WHERE UPPER(rule_code)=? AND id<>? LIMIT 1",
+            (rule_code, candidate_id),
+        ).fetchone():
+            raise ValueError("Já existe uma regra aprovada com esse código.")
         connection.execute(
             """UPDATE rule_candidates SET status=?, review_note=?, approved_rule_text=?,
                rule_code=?, authority=?, source_reference=?, source_url=?, scope=?,
@@ -1063,6 +1232,7 @@ def review_rule_candidate(candidate_id: int, data: dict[str, Any], reviewer: dic
             ),
         )
         row = connection.execute("SELECT * FROM rule_candidates WHERE id=?", (candidate_id,)).fetchone()
+        write_approved_rules_export(connection)
     return rule_candidate_dict(row)
 
 
@@ -2449,7 +2619,13 @@ def record_learning(question: str, evidence: list[dict[str, Any]], result: dict[
     return query_id
 
 
-def answer_question(question: str, actor: dict[str, Any] | None = None) -> dict[str, Any]:
+def answer_question(
+    question: str,
+    actor: dict[str, Any] | None = None,
+    *,
+    capture_candidate: bool = True,
+    save_history: bool = True,
+) -> dict[str, Any]:
     evidence = retrieve(question)
     local_errors = []
     canonical_result = deterministic_local_result(evidence)
@@ -2522,15 +2698,16 @@ def answer_question(question: str, actor: dict[str, Any] | None = None) -> dict[
             else "external_grounded" if response_mode == "external_grounded"
             else "unanswered"
         )
-        candidate = upsert_rule_candidate(
-            question=question,
-            proposed_answer=str(result.get("answer", "")),
-            confidence=str(result.get("confidence", "low")),
-            source_kind=source_kind,
-            sources=sources,
-            local_evidence=evidence,
-            actor=actor,
-        )
+        if capture_candidate:
+            candidate = upsert_rule_candidate(
+                question=question,
+                proposed_answer=str(result.get("answer", "")),
+                confidence=str(result.get("confidence", "low")),
+                source_kind=source_kind,
+                sources=sources,
+                local_evidence=evidence,
+                actor=actor,
+            )
 
     try:
         query_id = record_learning(question, evidence, result)
@@ -2557,8 +2734,59 @@ def answer_question(question: str, actor: dict[str, Any] | None = None) -> dict[
             else ""
         ),
     }
-    save_search_history(question, "ai", payload["confidence"], result=payload, record_id=query_id)
+    if save_history:
+        save_search_history(question, "ai", payload["confidence"], result=payload, record_id=query_id)
     return payload
+
+
+def reprocess_rule_candidate(candidate_id: int, actor: dict[str, Any]) -> dict[str, Any]:
+    initialize_rules_db()
+    with rules_connection() as connection:
+        current = connection.execute(
+            "SELECT * FROM rule_candidates WHERE id=?", (candidate_id,)
+        ).fetchone()
+    if not current:
+        raise LookupError("Regra em aprovação não encontrada.")
+    if current["status"] not in {"unreviewed", "pending_approval"}:
+        raise ValueError("Somente lacunas abertas podem ser reprocessadas.")
+
+    result = answer_question(
+        str(current["question"]), actor, capture_candidate=False, save_history=False
+    )
+    source_kind = {
+        "external_grounded": "external_grounded",
+        "local_approved": "local_document",
+        "local_contingency": "local_document",
+    }.get(str(result.get("response_mode", "")), "unanswered")
+    sources = result.get("sources") if isinstance(result.get("sources"), list) else []
+    evidence = retrieve(str(current["question"]))
+    timestamp = now_iso()
+    with RULES_LOCK, rules_connection() as connection:
+        connection.execute(
+            """UPDATE rule_candidates SET proposed_answer=?, confidence=?, source_kind=?,
+               sources_json=?, local_evidence_json=?, updated_at=? WHERE id=?""",
+            (
+                str(result.get("answer", ""))[:8000], str(result.get("confidence", "low")),
+                source_kind, json.dumps(compact_rule_evidence(sources), ensure_ascii=False),
+                json.dumps(compact_rule_evidence(evidence), ensure_ascii=False), timestamp,
+                candidate_id,
+            ),
+        )
+        connection.execute(
+            """INSERT INTO rule_events(candidate_id, action, actor_username, actor_name, details, created_at)
+               VALUES (?, 'Reprocessada', ?, ?, ?, ?)""",
+            (
+                candidate_id, actor["username"], actor["display_name"],
+                json.dumps({
+                    "response_mode": result.get("response_mode"),
+                    "confidence": result.get("confidence"),
+                    "knowledge_status": result.get("knowledge_status"),
+                }, ensure_ascii=False),
+                timestamp,
+            ),
+        )
+        row = connection.execute("SELECT * FROM rule_candidates WHERE id=?", (candidate_id,)).fetchone()
+    return {"item": rule_candidate_dict(row), "result": result}
 
 
 def initialize_portal_storage() -> None:
@@ -2573,6 +2801,7 @@ def initialize_portal_storage() -> None:
     initialize_rules_db()
     with RULES_LOCK, rules_connection() as connection:
         synchronize_rules_catalog(connection)
+        write_approved_rules_export(connection)
     initialize_learning_db()
 
 
@@ -2592,6 +2821,18 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
         for name, value in (extra_headers or {}).items():
             self.send_header(name, value)
+        self.end_headers()
+        self.wfile.write(body)
+
+    def send_bytes(
+        self, status: int, body: bytes, content_type: str, filename: str | None = None
+    ) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        if filename:
+            self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
         self.end_headers()
         self.wfile.write(body)
 
@@ -2662,6 +2903,24 @@ class Handler(BaseHTTPRequestHandler):
             query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             status = query.get("status", ["unreviewed"])[0]
             self.send_json(200, {"items": list_rule_candidates(status)})
+            return
+        if urllib.parse.urlparse(self.path).path in {
+            "/api/knowledge-gaps", "/api/knowledge-gaps/export.csv"
+        }:
+            if user["role"] not in {"admin", "supervisor"}:
+                self.send_json(403, {"error": "Somente Supervisor ou Administrador pode consultar lacunas."}); return
+            try:
+                query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                report = knowledge_gap_report(query)
+                if urllib.parse.urlparse(self.path).path.endswith("export.csv"):
+                    self.send_bytes(
+                        200, knowledge_gap_csv(report), "text/csv; charset=utf-8",
+                        f"lacunas-conhecimento-{datetime.now().date().isoformat()}.csv",
+                    )
+                else:
+                    self.send_json(200, report)
+            except ValueError as error:
+                self.send_json(400, {"error": str(error)})
             return
         if urllib.parse.urlparse(self.path).path == "/api/instructors":
             self.send_json(200, {"items": list_instructors()})
@@ -2788,6 +3047,12 @@ class Handler(BaseHTTPRequestHandler):
                     presentation=data.get("presentation") if isinstance(data.get("presentation"), dict) else None,
                 )
                 self.send_json(201, {"id": record_id})
+                return
+            reprocess_match = re.fullmatch(r"/api/rule-candidates/(\d+)/reprocess", self.path)
+            if reprocess_match:
+                if user["role"] not in {"admin", "supervisor"}:
+                    self.send_json(403, {"error": "Somente Supervisor ou Administrador pode reprocessar lacunas."}); return
+                self.send_json(200, reprocess_rule_candidate(int(reprocess_match.group(1)), user))
                 return
             if self.path != "/api/ask":
                 self.send_json(404, {"error": "Rota não encontrada."}); return

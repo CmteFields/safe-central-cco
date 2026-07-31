@@ -100,6 +100,7 @@ let reportsLoaded = false;
 let unreviewedRules = [];
 let pendingApprovalRules = [];
 let approvedRules = [];
+let knowledgeGapItems = [];
 let rulesLoaded = false;
 let activeRulesTab = "unreviewed";
 let currentSourceUrl = "";
@@ -1066,10 +1067,30 @@ function sourceKindLabel(value) {
 function renderRules() {
   const list = $("#ruleReviewList");
   const search = normalizeText($("#ruleSearch").value);
+  const dateFrom = $("#ruleDateFrom").value;
+  const dateTo = $("#ruleDateTo").value;
+  const minOccurrences = Number($("#ruleMinOccurrences").value || 1);
   const openCount = unreviewedRules.length + pendingApprovalRules.length;
   $("#unreviewedRuleCount").textContent = unreviewedRules.length;
   $("#pendingApprovalRuleCount").textContent = pendingApprovalRules.length;
   $("#approvedRuleCount").textContent = approvedRules.length;
+  const visibleOpen = knowledgeGapItems.filter(item => {
+    const lastDate = String(item.last_asked_at || "").slice(0, 10);
+    const haystack = normalizeText([
+      item.question, item.proposed_answer, item.source_reference, item.authority,
+      item.created_by_name, item.created_by_username,
+    ].join(" "));
+    return (!search || haystack.includes(search))
+      && (!dateFrom || lastDate >= dateFrom)
+      && (!dateTo || lastDate <= dateTo)
+      && Number(item.occurrence_count || 0) >= minOccurrences;
+  });
+  $("#recurringRuleCount").textContent = new Set(visibleOpen
+    .filter(item => item.group_occurrence_count > 1)
+    .map(item => item.similar_group_id)).size;
+  $("#ruleOccurrenceCount").textContent = visibleOpen.reduce(
+    (total, item) => total + Number(item.occurrence_count || 0), 0
+  );
   $("#ruleCandidateNavCount").textContent = openCount;
   $("#ruleCandidateNavCount").classList.toggle("hidden", !openCount);
   $("#unreviewedRulesTab").classList.toggle("active", activeRulesTab === "unreviewed");
@@ -1080,8 +1101,12 @@ function renderRules() {
     : activeRulesTab === "pending_approval" ? pendingApprovalRules : approvedRules;
   const filtered = source.filter(item => normalizeText([
     item.question, item.proposed_answer, item.approved_rule_text, item.rule_code,
-    item.source_reference, item.authority,
-  ].join(" ")).includes(search));
+    item.source_reference, item.authority, item.created_by_name, item.created_by_username,
+  ].join(" ")).includes(search)).filter(item => activeRulesTab === "approved" || (
+    (!dateFrom || String(item.last_asked_at || "").slice(0, 10) >= dateFrom)
+    && (!dateTo || String(item.last_asked_at || "").slice(0, 10) <= dateTo)
+    && Number(item.occurrence_count || 0) >= minOccurrences
+  ));
   if (!filtered.length) {
     const emptyMessages = {
       unreviewed: "Nenhuma regra aguardando a primeira revisão.",
@@ -1099,13 +1124,15 @@ function renderRules() {
           <div><span class="rule-kind ${isUnreviewed ? "unreviewed" : "pending-approval"}">${isUnreviewed ? "NÃO REVISADA" : "PENDENTE DE APROVAÇÃO"}</span><strong>${escapeHtml(item.document_id || `#${item.id}`)} · ${escapeHtml(item.question)}</strong></div>
           <span class="rule-occurrences">${item.occurrence_count} ocorrência${item.occurrence_count === 1 ? "" : "s"}</span>
         </div>
+        ${item.similar_group_size > 1 ? `<div class="similar-gap-note"><strong>${item.similar_group_size} perguntas semelhantes</strong><span>${item.group_occurrence_count} consultas no grupo</span></div>` : ""}
         <p>${escapeHtml(item.proposed_answer || "Nenhuma proposta de resposta foi localizada.")}</p>
-        <div class="rule-meta"><span>Origem: ${escapeHtml(sourceKindLabel(item.source_kind))}</span><span>Confiança: ${escapeHtml(item.confidence)}</span><span>${item.source_kind === "local_document" ? "Catálogo atualizado" : "Última consulta"}: ${formatInstructorDate(item.last_asked_at)}</span><span>${item.sources.length} fonte(s)</span>${item.document_path ? `<span>Documento: ${escapeHtml(item.document_path)}</span>` : ""}${!isUnreviewed && item.reviewed_by_name ? `<span>Revisada por: ${escapeHtml(item.reviewed_by_name)}</span>` : ""}</div>
+        <div class="rule-meta"><span>Origem: ${escapeHtml(sourceKindLabel(item.source_kind))}</span><span>Confiança: ${escapeHtml(item.confidence)}</span><span>Primeira: ${formatInstructorDate(item.first_asked_at)}</span><span>Última: ${formatInstructorDate(item.last_asked_at)}</span><span>${item.sources.length} fonte(s)</span>${item.created_by_name || item.created_by_username ? `<span>Registrada por: ${escapeHtml(item.created_by_name || item.created_by_username)}</span>` : ""}${item.document_path ? `<span>Documento: ${escapeHtml(item.document_path)}</span>` : ""}${!isUnreviewed && item.reviewed_by_name ? `<span>Revisada por: ${escapeHtml(item.reviewed_by_name)}</span>` : ""}</div>
         ${!isUnreviewed && item.review_note ? `<div class="rule-review-note"><strong>ÚLTIMA ANÁLISE</strong>${escapeHtml(item.review_note)}</div>` : ""}
         ${item.sources.length ? `<div class="rule-source-links">${item.sources.slice(0, 3).map(sourceItem => sourceItem.url ? `<a href="${escapeHtml(sourceItem.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(sourceItem.label || sourceItem.url)} ↗</a>` : "").join("")}</div>` : ""}
-        <button class="primary-button compact-button" type="button" data-rule-review="${item.id}">${isUnreviewed ? "Iniciar revisão" : "Continuar análise"}</button>
+        <div class="rule-card-actions"><button class="primary-button compact-button" type="button" data-rule-review="${item.id}">${isUnreviewed ? "Iniciar revisão" : "Continuar análise"}</button><button class="secondary-button compact-button" type="button" data-rule-reprocess="${item.id}">Reprocessar</button></div>
       </article>`).join("");
     list.querySelectorAll("[data-rule-review]").forEach(button => button.addEventListener("click", () => openRuleReview(Number(button.dataset.ruleReview))));
+    list.querySelectorAll("[data-rule-reprocess]").forEach(button => button.addEventListener("click", () => reprocessRule(Number(button.dataset.ruleReprocess), button)));
     return;
   }
   list.innerHTML = filtered.map(item => `
@@ -1121,13 +1148,13 @@ function renderRules() {
 
 async function loadRules() {
   try {
-    const [unreviewed, pendingApproval, approved] = await Promise.all([
-      ruleRequest("rule-candidates?status=unreviewed"),
-      ruleRequest("rule-candidates?status=pending_approval"),
+    const [gaps, approved] = await Promise.all([
+      ruleRequest("knowledge-gaps?status=open"),
       ruleRequest("approved-rules"),
     ]);
-    unreviewedRules = unreviewed.items;
-    pendingApprovalRules = pendingApproval.items;
+    knowledgeGapItems = gaps.items;
+    unreviewedRules = gaps.items.filter(item => item.status === "unreviewed");
+    pendingApprovalRules = gaps.items.filter(item => item.status === "pending_approval");
     approvedRules = approved.items;
     rulesLoaded = true;
     renderRules();
@@ -1135,6 +1162,31 @@ async function loadRules() {
     $("#ruleReviewList").innerHTML = `<div class="table-message">${escapeHtml(error.message)}</div>`;
     toast(error.message);
   }
+}
+
+async function reprocessRule(id, button) {
+  button.disabled = true;
+  const original = button.textContent;
+  button.textContent = "Reprocessando…";
+  try {
+    await ruleRequest(`rule-candidates/${id}/reprocess`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    await loadRules();
+    toast("Lacuna reprocessada sem alterar sua contagem de ocorrências.");
+  } catch (error) {
+    toast(error.message);
+  } finally {
+    button.disabled = false;
+    button.textContent = original;
+  }
+}
+
+function nextRuleCode() {
+  const numbers = approvedRules.map(item => /^RG-(\d{3})$/.exec(item.rule_code || ""))
+    .filter(Boolean).map(match => Number(match[1]));
+  return `RG-${String((numbers.length ? Math.max(...numbers) : 0) + 1).padStart(3, "0")}`;
 }
 
 function openRuleReview(id) {
@@ -1150,7 +1202,7 @@ function openRuleReview(id) {
     : `Analisar proposta ${item.document_id || `#${item.id}`}`;
   $("#ruleReviewContext").innerHTML = `<strong>${escapeHtml(item.question)}</strong><p>${escapeHtml(item.proposed_answer || "Sem proposta de resposta.")}</p><small>${escapeHtml(item.status_label || sourceKindLabel(item.source_kind))} · ${item.occurrence_count} ocorrência(s)${item.document_path ? ` · ${escapeHtml(item.document_path)}` : ""}</small>`;
   $("#ruleReviewStatus").value = item.status === "unreviewed" ? "pending_approval" : item.status;
-  $("#ruleCode").value = item.rule_code || `RG-PORTAL-${String(item.id).padStart(3, "0")}`;
+  $("#ruleCode").value = item.rule_code || nextRuleCode();
   $("#approvedRuleText").value = item.approved_rule_text || item.proposed_answer || "";
   $("#ruleAuthority").value = item.authority || "";
   $("#ruleSourceReference").value = item.source_reference || item.sources[0]?.label || "";
@@ -1527,6 +1579,18 @@ $("#unreviewedRulesTab").addEventListener("click", () => { activeRulesTab = "unr
 $("#pendingApprovalRulesTab").addEventListener("click", () => { activeRulesTab = "pending_approval"; renderRules(); });
 $("#approvedRulesTab").addEventListener("click", () => { activeRulesTab = "approved"; renderRules(); });
 $("#ruleSearch").addEventListener("input", renderRules);
+$("#ruleDateFrom").addEventListener("change", renderRules);
+$("#ruleDateTo").addEventListener("change", renderRules);
+$("#ruleMinOccurrences").addEventListener("change", renderRules);
+$("#exportKnowledgeGaps").addEventListener("click", () => {
+  const params = new URLSearchParams({ status: "open" });
+  if ($("#ruleSearch").value) params.set("search", $("#ruleSearch").value);
+  if ($("#ruleDateFrom").value) params.set("from", $("#ruleDateFrom").value);
+  if ($("#ruleDateTo").value) params.set("to", $("#ruleDateTo").value);
+  params.set("min_occurrences", $("#ruleMinOccurrences").value || "1");
+  window.location.assign(`${window.location.origin}/api/knowledge-gaps/export.csv?${params}`);
+});
+$("#printKnowledgeGaps").addEventListener("click", () => window.print());
 $("#ruleReviewForm").addEventListener("submit", saveRuleReview);
 $("#reportAnswerIssue").addEventListener("click", () => {
   const question = $("#answerQuestion").textContent.trim();
