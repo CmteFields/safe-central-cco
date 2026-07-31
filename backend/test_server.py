@@ -192,6 +192,45 @@ class RetrievalTests(unittest.TestCase):
         self.assertIn("claim_mgso_dgr_exige_relprev_imediato", evidence_ids)
         self.assertIn("claim_mgso_dgr_dso_contem_risco", evidence_ids)
 
+    def test_instructor_choice_variants_recover_canonical_cco_answer(self):
+        variants = [
+            "Posso escolher o INVA para voar?",
+            "Posso pedir para voar com um instrutor específico?",
+            "Combinei o voo diretamente com o INVA. Já está confirmado?",
+            "Não gostei do meu instrutor. Posso trocar?",
+            "Quem define o instrutor da minha missão?",
+            "Posso solicitar ao CCO preferência por outro INVA?",
+        ]
+        for question in variants:
+            with self.subTest(question=question):
+                evidence = server.retrieve(question)
+                self.assertEqual(evidence[0]["id"], server.INSTRUCTOR_ALLOCATION_RULE_ID)
+                with patch.object(server, "call_gemini_with_retry") as gemini, patch.object(
+                    server, "record_learning", return_value="query_instructor_allocation"
+                ):
+                    result = server.answer_question(
+                        question, capture_candidate=False, save_history=False
+                    )
+                gemini.assert_not_called()
+                self.assertIn("exclusivamente pelo CCO", result["answer"])
+                self.assertIn("não garante a escolha", result["answer"])
+                self.assertEqual(result["knowledge_status"], "approved")
+                self.assertEqual(result["model_used"], "local-deterministic")
+
+    def test_deterministic_answer_uses_only_highest_ranked_canonical_rule(self):
+        result = server.deterministic_local_result([
+            {
+                "kind": "confirmed_claim",
+                "operator_answer": "Resposta canônica principal.",
+            },
+            {
+                "kind": "confirmed_claim",
+                "operator_answer": "Resposta canônica de outro assunto.",
+            },
+        ])
+        self.assertEqual(result["answer"], "Resposta canônica principal.")
+        self.assertEqual(result["used_evidence"], [1])
+
     def test_recognizes_all_supported_course_tokens(self):
         self.assertEqual(server.requested_course("curso PP"), "pp")
         self.assertEqual(server.requested_course("curso PC"), "pc")
@@ -376,7 +415,7 @@ class WSGITests(unittest.TestCase):
         self.assertEqual(status, "200 OK")
         self.assertIn("text/html", headers["Content-Type"])
         self.assertIn(b"CCO - Central de conhecimento", body)
-        self.assertIn(b"public-knowledge-index.js?v=20260730-5", body)
+        self.assertIn(b"public-knowledge-index.js?v=20260731-6", body)
         self.assertIn(b"app.js?v=20260731-6", body)
 
     def test_browser_uses_same_origin_ai_endpoint(self):
