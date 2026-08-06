@@ -318,6 +318,41 @@ class RetrievalTests(unittest.TestCase):
         self.assertEqual(result["answer"], "Resposta canônica localizada semanticamente.")
         self.assertEqual(result["knowledge_status"], "approved")
 
+    def test_semantic_selector_infers_intent_and_accepts_only_catalog_ids(self):
+        captured = {}
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self):
+                return json.dumps({"candidates": [{"content": {"parts": [{"text": json.dumps({
+                    "selected_ids": ["approved_rule_9", "invented_rule"],
+                })}]}}]}).encode("utf-8")
+
+        def fake_urlopen(request, timeout):
+            captured["prompt"] = json.loads(request.data.decode("utf-8"))["contents"][0]["parts"][0]["text"]
+            return FakeResponse()
+
+        catalog = [{
+            "id": "approved_rule_9", "label": "Uso do alojamento",
+            "operator_answer": "Solicitar disponibilidade à área Comercial.",
+            "code": "RG-007", "scope": "alojamento SAFE",
+        }]
+        with patch.object(server, "gemini_key", return_value="test-key"), patch(
+            "backend.server.urllib.request.urlopen", side_effect=fake_urlopen
+        ):
+            selected = server.call_gemini_claim_selector(
+                "Existe lugar para pernoite?", catalog
+            )
+
+        self.assertEqual(selected, ["approved_rule_9"])
+        self.assertIn("linguagem coloquial", captured["prompt"])
+        self.assertIn("CONFIRA NOVAMENTE A INTENÇÃO", captured["prompt"])
+
     def test_recognizes_all_supported_course_tokens(self):
         self.assertEqual(server.requested_course("curso PP"), "pp")
         self.assertEqual(server.requested_course("curso PC"), "pc")

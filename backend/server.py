@@ -2429,14 +2429,19 @@ def call_gemini_claim_selector(question: str, catalog: list[dict[str, Any]]) -> 
         for item in catalog
     )
     prompt = f"""Você seleciona evidências confirmadas da Escola SAFE.
-Não responda à pergunta e não invente regras. Escolha até 8 IDs que tratem diretamente da intenção,
-inclusive sequências, exceções, proibições, pré-requisitos e sinônimos. Retorne lista vazia se nenhuma
-regra for realmente pertinente. Priorize regras que contenham todos os códigos operacionais citados.
+Não responda à pergunta e não invente regras. Interprete primeiro a intenção real da pergunta, fazendo
+equivalência semântica entre linguagem coloquial e os termos técnicos ou administrativos do catálogo;
+não exija repetição das mesmas palavras. Escolha de 1 a 8 IDs que cubram essa intenção, incluindo
+sequências, exceções, proibições e pré-requisitos. Se houver uma regra plausivelmente aplicável, inclua
+a melhor. Retorne lista vazia somente quando nenhuma regra cobrir o assunto ou a ação perguntada.
+Priorize regras que contenham todos os códigos operacionais citados.
 
 PERGUNTA: {question}
 
 CATÁLOGO CONFIRMADO:
 {compact_catalog}
+
+CONFIRA NOVAMENTE A INTENÇÃO DA PERGUNTA: {question}
 """
     schema = {
         "type": "object",
