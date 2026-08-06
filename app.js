@@ -396,7 +396,21 @@ async function saveLocalSearchRecord(question, presentation) {
   }
 }
 
+function clearKnowledgeSearch() {
+  input.value = "";
+  searchBox.classList.remove("has-value");
+  closeSearchSuggestions();
+}
+
+function startNewSearch() {
+  archivedQuestion = "";
+  clearKnowledgeSearch();
+  showView(homeView, "Regras e procedimentos");
+  window.requestAnimationFrame(() => input.focus());
+}
+
 function showAnswer(item, originalQuestion, options = {}) {
+  clearKnowledgeSearch();
   $("#answerQuestion").textContent = originalQuestion || item.question;
   $("#answerBody").innerHTML = item.answer;
   $("#sourceTitle").textContent = item.source;
@@ -1546,6 +1560,7 @@ document.querySelectorAll("[data-faq]").forEach(button => button.addEventListene
 document.querySelectorAll(".nav-item").forEach(button => button.addEventListener("click", () => { document.querySelectorAll(".nav-item").forEach(item => item.classList.remove("active")); button.classList.add("active"); openModule(button.dataset.view); }));
 document.querySelectorAll(".module-card").forEach(card => card.addEventListener("click", () => openModule(card.dataset.target)));
 $("#backButton").addEventListener("click", () => showView(homeView, "Regras e procedimentos"));
+$("#newSearchButton").addEventListener("click", startNewSearch);
 $("#moduleBack").addEventListener("click", () => showView(homeView, "Regras e procedimentos"));
 $("#returnHome").addEventListener("click", () => showView(homeView, "Regras e procedimentos"));
 $("#menuButton").addEventListener("click", () => $("#sidebar").classList.toggle("open"));
