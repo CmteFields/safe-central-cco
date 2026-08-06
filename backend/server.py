@@ -70,7 +70,7 @@ LOCAL_MODEL = (
 )
 FALLBACK_MODEL = os.environ.get("GEMINI_FALLBACK_MODEL", "gemini-3.5-flash-lite")
 EXTERNAL_MODEL = os.environ.get("GEMINI_EXTERNAL_MODEL", "gemini-3.1-pro-preview")
-RELEASE_ID = os.environ.get("SAFE_CCO_RELEASE", "2026-08-06-semantic-retrieval-3")
+RELEASE_ID = os.environ.get("SAFE_CCO_RELEASE", "2026-08-06-two-stage-semantic-4")
 HOST = os.environ.get("SAFE_CCO_HOST", "0.0.0.0" if os.environ.get("RENDER") else "127.0.0.1")
 PORT = int(os.environ.get("SAFE_CCO_PORT") or os.environ.get("PORT") or "8765")
 SECURE_COOKIES = os.environ.get("SAFE_CCO_SECURE_COOKIES", "").lower() in {"1", "true", "yes"} or bool(
@@ -2433,7 +2433,8 @@ Não responda à pergunta e não invente regras. Interprete primeiro a intençã
 equivalência semântica entre linguagem coloquial e os termos técnicos ou administrativos do catálogo;
 não exija repetição das mesmas palavras. Escolha de 1 a 8 IDs que cubram essa intenção, incluindo
 sequências, exceções, proibições e pré-requisitos. Se houver uma regra plausivelmente aplicável, inclua
-a melhor. Retorne lista vazia somente quando nenhuma regra cobrir o assunto ou a ação perguntada.
+a melhor. É obrigatório retornar ao menos um item. Se nenhuma regra cobrir o assunto ou a ação
+perguntada, retorne exclusivamente o marcador NO_CONFIRMED_MATCH.
 Priorize regras que contenham todos os códigos operacionais citados.
 
 PERGUNTA: {question}
@@ -2446,7 +2447,10 @@ CONFIRA NOVAMENTE A INTENÇÃO DA PERGUNTA: {question}
     schema = {
         "type": "object",
         "properties": {
-            "selected_ids": {"type": "array", "items": {"type": "string"}},
+            "selected_ids": {
+                "type": "array", "items": {"type": "string"},
+                "minItems": 1, "maxItems": 8,
+            },
         },
         "required": ["selected_ids"],
     }
@@ -2497,7 +2501,10 @@ PERGUNTA: {question}
     schema = {
         "type": "object",
         "properties": {
-            "search_terms": {"type": "array", "items": {"type": "string"}},
+            "search_terms": {
+                "type": "array", "items": {"type": "string"},
+                "minItems": 5, "maxItems": 15,
+            },
         },
         "required": ["search_terms"],
     }

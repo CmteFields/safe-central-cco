@@ -334,7 +334,8 @@ class RetrievalTests(unittest.TestCase):
                 })}]}}]}).encode("utf-8")
 
         def fake_urlopen(request, timeout):
-            captured["prompt"] = json.loads(request.data.decode("utf-8"))["contents"][0]["parts"][0]["text"]
+            captured["body"] = json.loads(request.data.decode("utf-8"))
+            captured["prompt"] = captured["body"]["contents"][0]["parts"][0]["text"]
             return FakeResponse()
 
         catalog = [{
@@ -352,6 +353,33 @@ class RetrievalTests(unittest.TestCase):
         self.assertEqual(selected, ["approved_rule_9"])
         self.assertIn("linguagem coloquial", captured["prompt"])
         self.assertIn("CONFIRA NOVAMENTE A INTENÇÃO", captured["prompt"])
+        self.assertIn("NO_CONFIRMED_MATCH", captured["prompt"])
+        self.assertEqual(
+            captured["body"]["generationConfig"]["responseSchema"]["properties"]
+            ["selected_ids"]["minItems"], 1
+        )
+
+    def test_semantic_selector_no_match_marker_does_not_become_evidence(self):
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self):
+                return json.dumps({"candidates": [{"content": {"parts": [{"text": json.dumps({
+                    "selected_ids": ["NO_CONFIRMED_MATCH"],
+                })}]}}]}).encode("utf-8")
+
+        with patch.object(server, "gemini_key", return_value="test-key"), patch(
+            "backend.server.urllib.request.urlopen", return_value=FakeResponse()
+        ):
+            selected = server.call_gemini_claim_selector(
+                "Assunto inexistente", [{"id": "known", "label": "Outra regra"}]
+            )
+
+        self.assertEqual(selected, [])
 
     def test_semantic_query_expansion_reduces_catalog_before_selection(self):
         class FakeResponse:
