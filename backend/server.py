@@ -2482,11 +2482,93 @@ CONFIRA NOVAMENTE A INTENÇÃO DA PERGUNTA: {question}
     return [str(item_id) for item_id in selected if str(item_id) in valid_ids][:8]
 
 
+def call_gemini_query_expander(question: str) -> list[str]:
+    """Traduz linguagem natural em termos de busca, sem responder nem criar regras."""
+    key = gemini_key()
+    if not key:
+        return []
+    prompt = f"""Converta a pergunta abaixo em 5 a 15 termos curtos para pesquisar um catálogo
+operacional e administrativo de uma escola de aviação. Inclua sinônimos técnicos, administrativos e
+coloquiais, substantivos da intenção e a ação solicitada. Preserve siglas e códigos. Não responda à
+pergunta, não conclua uma regra e não acrescente fatos; retorne somente termos equivalentes.
+
+PERGUNTA: {question}
+"""
+    schema = {
+        "type": "object",
+        "properties": {
+            "search_terms": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["search_terms"],
+    }
+    body = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "maxOutputTokens": 300,
+            "responseMimeType": "application/json",
+            "responseSchema": schema,
+        },
+    }
+    request = urllib.request.Request(
+        f"https://generativelanguage.googleapis.com/v1beta/models/{LOCAL_MODEL}:generateContent",
+        data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+        headers={"Content-Type": "application/json", "x-goog-api-key": key}, method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=90) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        detail = error.read().decode("utf-8", errors="replace")[:500]
+        error_type = GeminiTemporaryError if error.code in {429, 500, 502, 503, 504} else RuntimeError
+        raise error_type(f"Gemini respondeu HTTP {error.code}: {detail}") from error
+    text = next(
+        str(part["text"]).strip()
+        for part in payload["candidates"][0]["content"]["parts"]
+        if part.get("text")
+    )
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.IGNORECASE)
+    try:
+        raw_terms = json.loads(text).get("search_terms", [])
+    except json.JSONDecodeError as error:
+        raise RuntimeError("A Gemini devolveu uma expansão de consulta inválida.") from error
+    terms, seen = [], set()
+    for value in raw_terms:
+        term = str(value).strip()[:100]
+        normalized = normalize(term)
+        if not term or not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        terms.append(term)
+    return terms[:15]
+
+
+def semantic_catalog_shortlist(
+    question: str, expanded_terms: list[str], catalog: list[dict[str, Any]], limit: int = 48
+) -> list[dict[str, Any]]:
+    """Reduz o catálogo por termos equivalentes antes da decisão semântica final."""
+    query_tokens = tokens(f"{question} {' '.join(expanded_terms)}")
+
+    def rank(item: dict[str, Any]) -> tuple[int, int, str]:
+        searchable = (
+            f"{item.get('label', '')} {item.get('operator_answer', '')} "
+            f"{item.get('scope', '')}"
+        )
+        score = score_text(query_tokens, searchable, f"{item.get('code', '')} {item.get('source', '')}")
+        score += reference_code_boost(question, searchable)
+        approved_priority = 1 if str(item.get("id", "")).startswith("approved_rule_") else 0
+        return score, approved_priority, str(item.get("id", ""))
+
+    return sorted(catalog, key=rank, reverse=True)[:limit]
+
+
 def semantic_retrieve_with_retry(question: str, limit: int = 8) -> list[dict[str, Any]]:
     catalog = semantic_claim_catalog()
     for attempt in range(GEMINI_TRANSIENT_RETRIES + 1):
         try:
-            selected_ids = call_gemini_claim_selector(question, catalog)
+            expanded_terms = call_gemini_query_expander(question)
+            shortlist = semantic_catalog_shortlist(question, expanded_terms, catalog)
+            selected_ids = call_gemini_claim_selector(question, shortlist)
             by_id = {item["id"]: item for item in catalog}
             return [
                 {**by_id[item_id], "score": 240 - index}
