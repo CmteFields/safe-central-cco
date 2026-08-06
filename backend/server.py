@@ -70,7 +70,7 @@ LOCAL_MODEL = (
 )
 FALLBACK_MODEL = os.environ.get("GEMINI_FALLBACK_MODEL", "gemini-3.5-flash-lite")
 EXTERNAL_MODEL = os.environ.get("GEMINI_EXTERNAL_MODEL", "gemini-3.1-pro-preview")
-RELEASE_ID = os.environ.get("SAFE_CCO_RELEASE", "2026-08-06-two-stage-semantic-4")
+RELEASE_ID = os.environ.get("SAFE_CCO_RELEASE", "2026-08-06-grounding-fallback-5")
 HOST = os.environ.get("SAFE_CCO_HOST", "0.0.0.0" if os.environ.get("RENDER") else "127.0.0.1")
 PORT = int(os.environ.get("SAFE_CCO_PORT") or os.environ.get("PORT") or "8765")
 SECURE_COOKIES = os.environ.get("SAFE_CCO_SECURE_COOKIES", "").lower() in {"1", "true", "yes"} or bool(
@@ -2371,6 +2371,10 @@ class GeminiTemporaryError(RuntimeError):
     """Falha transitória da API que pode ser repetida sem alterar a consulta."""
 
 
+class GeminiModelQuotaUnavailableError(RuntimeError):
+    """O modelo não possui cota disponível e deve ser substituído imediatamente."""
+
+
 def semantic_claim_catalog() -> list[dict[str, Any]]:
     """Catálogo compacto e confirmado usado somente para seleção semântica de evidências."""
     entries: list[dict[str, Any]] = []
@@ -2675,7 +2679,7 @@ PERGUNTA: {question}
     }
     body = {
         "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"maxOutputTokens": 1000, "responseMimeType": "application/json", "responseSchema": schema},
+        "generationConfig": {"maxOutputTokens": 4000, "responseMimeType": "application/json", "responseSchema": schema},
     }
     if grounded:
         body["tools"] = [{"google_search": {}}]
@@ -2690,6 +2694,11 @@ PERGUNTA: {question}
             payload = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as error:
         detail = error.read().decode("utf-8", errors="replace")[:500]
+        error.close()
+        if error.code == 429 and "limit: 0" in detail.casefold():
+            raise GeminiModelQuotaUnavailableError(
+                f"O modelo {selected_model} não possui cota disponível para esta chave."
+            ) from error
         error_type = GeminiTemporaryError if error.code in {429, 500, 502, 503, 504} else RuntimeError
         raise error_type(f"Gemini respondeu HTTP {error.code}: {detail}") from error
     except TimeoutError as error:
@@ -2753,6 +2762,25 @@ def call_gemini_with_retry(
             delay = min(8.0, 2.0 ** attempt) + random.uniform(0.0, 0.5)
             time.sleep(delay)
     raise RuntimeError("Falha inesperada ao repetir a consulta Gemini.")
+
+
+def call_grounded_gemini_with_fallback(
+    question: str, evidence: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """Pesquisa fontes oficiais usando o Pro e, se indisponível, modelos Flash compatíveis."""
+    errors = []
+    models = list(dict.fromkeys((EXTERNAL_MODEL, LOCAL_MODEL, FALLBACK_MODEL)))
+    for selected_model in models:
+        try:
+            return call_gemini_with_retry(
+                question, evidence, grounded=True, model=selected_model
+            )
+        except Exception as error:
+            errors.append(f"{selected_model}: {type(error).__name__}")
+    raise RuntimeError(
+        "A pesquisa oficial externa está temporariamente indisponível nos modelos configurados "
+        f"({', '.join(errors)})."
+    )
 
 
 def deterministic_local_result(evidence: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -3036,7 +3064,7 @@ def answer_question(
         knowledge_status = "unreviewed"
         if WEB_GROUNDING_ENABLED:
             try:
-                external_result = call_gemini_with_retry(question, evidence, grounded=True)
+                external_result = call_grounded_gemini_with_fallback(question, evidence)
                 external_sources = external_result.get("_web_sources", [])
                 if external_result.get("answer") and external_sources:
                     result = external_result

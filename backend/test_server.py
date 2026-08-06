@@ -292,6 +292,31 @@ class RetrievalTests(unittest.TestCase):
             self.assertEqual(result["sources"][0]["id"], "claim_ppap001k_sequencia_completa_missoes")
             self.assertIn("NAV01 → NAV02 → NAV03", result["answer"])
 
+    def test_cavok_access_variants_use_confirmed_answer_without_gemini_or_new_gap(self):
+        variants = [
+            "Como faço para acessar o CAVOK?",
+            "Onde entro no sistema CAVOK?",
+            "Não recebi meu acesso ao CAVOK, o que faço?",
+        ]
+        for question in variants:
+            with self.subTest(question=question), patch.object(
+                server, "call_gemini_with_retry"
+            ) as answer_gemini, patch.object(
+                server, "semantic_retrieve_with_retry"
+            ) as semantic_selector, patch.object(
+                server, "record_learning", return_value="query_cavok_access"
+            ), patch.object(server, "upsert_rule_candidate") as create_gap:
+                result = server.answer_question(
+                    question, capture_candidate=True, save_history=False
+                )
+            answer_gemini.assert_not_called()
+            semantic_selector.assert_not_called()
+            create_gap.assert_not_called()
+            self.assertEqual(result["knowledge_status"], "approved")
+            self.assertEqual(result["response_mode"], "local_contingency")
+            self.assertEqual(result["sources"][0]["id"], "claim_cavok_acesso_pessoal_aluno")
+            self.assertIn("pessoal, exclusivo e intransferível", result["answer"])
+
     def test_semantic_selector_can_recover_confirmed_rule_before_answer_generation(self):
         semantic_evidence = [{
             "id": "claim_semantic", "kind": "confirmed_claim",
@@ -1329,7 +1354,7 @@ class RuleCandidateStorageTests(unittest.TestCase):
             "id": "claim_local", "kind": "confirmed_claim", "label": "Regra insuficiente",
             "code": "MGOP", "source": "MGOP", "location": "Seção 1", "score": 1, "excerpt": "",
         }]), patch.object(server, "WEB_GROUNDING_ENABLED", True):
-            def fake_gemini(question, evidence, grounded=False):
+            def fake_gemini(question, evidence, grounded=False, model=None):
                 if not grounded:
                     return {
                         "answer": "A base não é conclusiva.", "confidence": "low",
@@ -1520,6 +1545,41 @@ class RuleCandidateStorageTests(unittest.TestCase):
         self.assertEqual(result, expected)
         self.assertEqual(mocked_call.call_count, 2)
         mocked_sleep.assert_called_once_with(1.0)
+
+    def test_zero_model_quota_skips_retry_and_grounding_uses_flash_fallback(self):
+        quota_error = server.urllib.error.HTTPError(
+            "https://generativelanguage.googleapis.com", 429, "Too Many Requests", {},
+            BytesIO(b'{"error":{"message":"Quota exceeded, limit: 0"}}'),
+        )
+        with patch.object(server, "gemini_key", return_value="test-key"), patch(
+            "backend.server.urllib.request.urlopen", side_effect=quota_error
+        ):
+            with self.assertRaises(server.GeminiModelQuotaUnavailableError):
+                server.call_gemini("Pergunta", [], grounded=True, model="gemini-3.1-pro")
+
+        fallback_result = {
+            "answer": "Resposta oficial de contingência.",
+            "confidence": "medium",
+            "used_evidence": [],
+            "candidate_relations": [],
+            "_model": "gemini-3.6-flash",
+        }
+        with patch.object(
+            server, "EXTERNAL_MODEL", "gemini-3.1-pro"
+        ), patch.object(
+            server, "LOCAL_MODEL", "gemini-3.6-flash"
+        ), patch.object(
+            server, "FALLBACK_MODEL", "gemini-3.5-flash-lite"
+        ), patch.object(
+            server, "call_gemini_with_retry",
+            side_effect=[server.GeminiModelQuotaUnavailableError("sem cota"), fallback_result],
+        ) as mocked_call:
+            result = server.call_grounded_gemini_with_fallback("Pergunta", [])
+
+        self.assertEqual(result, fallback_result)
+        self.assertEqual(mocked_call.call_count, 2)
+        self.assertEqual(mocked_call.call_args_list[0].kwargs["model"], "gemini-3.1-pro")
+        self.assertEqual(mocked_call.call_args_list[1].kwargs["model"], "gemini-3.6-flash")
 
     def test_primary_outage_uses_fallback_and_reports_error_only_to_supervision(self):
         evidence = [{
