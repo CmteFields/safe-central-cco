@@ -70,7 +70,7 @@ LOCAL_MODEL = (
 )
 FALLBACK_MODEL = os.environ.get("GEMINI_FALLBACK_MODEL", "gemini-3.5-flash-lite")
 EXTERNAL_MODEL = os.environ.get("GEMINI_EXTERNAL_MODEL", "gemini-3.1-pro-preview")
-RELEASE_ID = os.environ.get("SAFE_CCO_RELEASE", "2026-08-06-approved-rules-retrieval-2")
+RELEASE_ID = os.environ.get("SAFE_CCO_RELEASE", "2026-08-06-semantic-retrieval-3")
 HOST = os.environ.get("SAFE_CCO_HOST", "0.0.0.0" if os.environ.get("RENDER") else "127.0.0.1")
 PORT = int(os.environ.get("SAFE_CCO_PORT") or os.environ.get("PORT") or "8765")
 SECURE_COOKIES = os.environ.get("SAFE_CCO_SECURE_COOKIES", "").lower() in {"1", "true", "yes"} or bool(
@@ -1918,6 +1918,25 @@ def contains_token(value: str, token: str) -> bool:
     return contains_normalized_token(normalize(value), token)
 
 
+def reference_codes(value: str) -> set[str]:
+    """Extrai códigos operacionais citados literalmente, como NAV03, PS12 e RG-006."""
+    return set(re.findall(r"\b[a-z]{2,10}[-]?\d{1,4}[a-z0-9-]*\b", normalize(value)))
+
+
+def reference_code_boost(question: str, searchable: str) -> int:
+    requested = reference_codes(question)
+    if not requested:
+        return 0
+    available = reference_codes(searchable)
+    matched = requested & available
+    if not matched:
+        return 0
+    boost = 18 * len(matched)
+    if len(requested) >= 2 and requested <= available:
+        boost += 55
+    return boost
+
+
 def requested_course(value: str) -> str:
     normalized = normalize(value)
     if re.search(r"\bpcifr\b", normalized) or "piloto comercial e voo por instrumentos" in normalized:
@@ -2095,7 +2114,9 @@ def retrieve_public_claims(question: str, limit: int = 8) -> list[dict[str, Any]
     public_index = load_public_knowledge_index(str(PUBLIC_KNOWLEDGE_INDEX_PATH))
     for claim in public_index.get("claims", []):
         metadata = f"{claim.get('code', '')} {claim.get('appliesTo', '')} {claim.get('relation', '')}"
-        medical_text = normalize(f"{claim.get('label', '')} {metadata}")
+        operator_answer = str(claim.get("operatorAnswer", ""))
+        searchable = f"{claim.get('label', '')} {operator_answer}"
+        medical_text = normalize(f"{searchable} {metadata}")
         if medical_intent and "cma" not in medical_text and "certificado medico" not in medical_text:
             continue
         if (
@@ -2106,7 +2127,17 @@ def retrieve_public_claims(question: str, limit: int = 8) -> list[dict[str, Any]
             continue
         if not course_compatible(course, claim.get("label", ""), metadata):
             continue
+        # O título continua sendo o sinal lexical principal. A resposta canônica
+        # amplia a cobertura sem permitir que textos longos e genéricos dominem
+        # uma regra cujo título corresponde diretamente à pergunta.
         score = score_text(query_tokens, claim.get("label", ""), metadata)
+        score += reference_code_boost(question, searchable)
+        if operator_answer:
+            canonical_matches = sum(
+                1 for token in query_tokens
+                if contains_semantic_token(normalize(operator_answer), token)
+            )
+            score += min(18, canonical_matches * 3)
         if medical_enrollment_intent and "matricula" in medical_text:
             score += 20
         if medical_validity_intent or medical_operation_intent:
@@ -2114,6 +2145,11 @@ def retrieve_public_claims(question: str, limit: int = 8) -> list[dict[str, Any]
                 score += 35
             elif "matricula" in medical_text:
                 score -= 15
+        if medical_validity_intent and any(
+            term in normalize(claim.get("label", ""))
+            for term in ("30 dias", "tolerancia", "nao prorroga")
+        ):
+            score += 10
         if daily_limit_intent and "limite_diario_instrucao" in claim.get("id", ""):
             score += 20
         if instructor_intent and claim.get("id") == INSTRUCTOR_ALLOCATION_RULE_ID:
@@ -2124,7 +2160,7 @@ def retrieve_public_claims(question: str, limit: int = 8) -> list[dict[str, Any]
             "id": claim["id"],
             "kind": "confirmed_claim",
             "label": claim.get("label", ""),
-            "operator_answer": claim.get("operatorAnswer", ""),
+            "operator_answer": operator_answer,
             "code": claim.get("code", ""),
             "source": "Índice público de regras confirmadas",
             "location": claim.get("location", ""),
@@ -2231,7 +2267,12 @@ def retrieve(question: str, limit: int = 8) -> list[dict[str, Any]]:
             continue
         claim_ids.add(claim["id"])
         metadata = f"{claim.get('document_code', '')} {claim.get('source_path', '')} {' '.join(claim.get('applies_to', []))}"
-        medical_text = normalize(f"{claim.get('label', '')} {metadata}")
+        operator_answer = (
+            claim.get("operator_answer", "")
+            or public_operator_answers.get(claim["id"], "")
+        )
+        searchable = f"{claim.get('label', '')} {operator_answer}"
+        medical_text = normalize(f"{searchable} {metadata}")
         if medical_intent and "cma" not in medical_text and "certificado medico" not in medical_text:
             continue
         if (
@@ -2242,7 +2283,17 @@ def retrieve(question: str, limit: int = 8) -> list[dict[str, Any]]:
             continue
         if not course_compatible(course, claim.get("label", ""), metadata):
             continue
+        # O título continua sendo o sinal lexical principal. A resposta canônica
+        # amplia a cobertura sem permitir que textos longos e genéricos dominem
+        # uma regra cujo título corresponde diretamente à pergunta.
         score = score_text(query_tokens, claim.get("label", ""), metadata)
+        score += reference_code_boost(question, searchable)
+        if operator_answer:
+            canonical_matches = sum(
+                1 for token in query_tokens
+                if contains_semantic_token(normalize(operator_answer), token)
+            )
+            score += min(18, canonical_matches * 3)
         if medical_enrollment_intent and "matricula" in medical_text:
             score += 20
         if medical_validity_intent or medical_operation_intent:
@@ -2250,6 +2301,11 @@ def retrieve(question: str, limit: int = 8) -> list[dict[str, Any]]:
                 score += 35
             elif "matricula" in medical_text:
                 score -= 15
+        if medical_validity_intent and any(
+            term in normalize(claim.get("label", ""))
+            for term in ("30 dias", "tolerancia", "nao prorroga")
+        ):
+            score += 10
         if daily_limit_intent and (
             "limite_diario_instrucao" in claim["id"] or "limite_instrucao_local" in claim["id"]
         ):
@@ -2259,10 +2315,7 @@ def retrieve(question: str, limit: int = 8) -> list[dict[str, Any]]:
         if score > 0:
             results.append({
                 "id": claim["id"], "kind": "confirmed_claim", "label": claim["label"],
-                "operator_answer": (
-                    claim.get("operator_answer", "")
-                    or public_operator_answers.get(claim["id"], "")
-                ),
+                "operator_answer": operator_answer,
                 "code": claim.get("document_code", ""), "source": claim.get("source_path", ""),
                 "location": claim.get("source_location", ""), "score": score,
                 "excerpt": "",
@@ -2290,7 +2343,9 @@ def retrieve(question: str, limit: int = 8) -> list[dict[str, Any]]:
         item["score"] += content_score(query_tokens, item.get("source", ""))
     results.sort(key=lambda item: (-item["score"], item["kind"] != "confirmed_claim", item["label"].casefold()))
     selected, source_counts = [], {}
-    kind_limits = {"confirmed_claim": 4, "graph_node": 4}
+    # Regras confirmadas têm precedência sobre nós documentais brutos. O limite
+    # anterior de quatro podia excluir exatamente a regra canônica procurada.
+    kind_limits = {"confirmed_claim": limit, "graph_node": 4}
     kind_counts = {"confirmed_claim": 0, "graph_node": 0}
     for item in results:
         source_key = item.get("source") or item["id"]
@@ -2314,6 +2369,131 @@ def gemini_key() -> str:
 
 class GeminiTemporaryError(RuntimeError):
     """Falha transitória da API que pode ser repetida sem alterar a consulta."""
+
+
+def semantic_claim_catalog() -> list[dict[str, Any]]:
+    """Catálogo compacto e confirmado usado somente para seleção semântica de evidências."""
+    entries: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for rule in approved_dynamic_rules():
+        entry_id = f"approved_rule_{rule['id']}"
+        seen.add(entry_id)
+        label = str(rule.get("approved_rule_text", ""))
+        entries.append({
+            "id": entry_id, "kind": "confirmed_claim", "label": label,
+            "operator_answer": label, "code": rule.get("rule_code", ""),
+            "source": rule.get("source_reference", ""),
+            "location": rule.get("scope", "") or rule.get("source_reference", ""),
+            "url": rule.get("source_url", ""), "excerpt": label,
+            "scope": f"{rule.get('question', '')} {rule.get('proposed_answer', '')} {rule.get('scope', '')}",
+        })
+    if CLAIMS_PATH.is_file():
+        public_answers = load_public_operator_answers(str(PUBLIC_KNOWLEDGE_INDEX_PATH))
+        for claim in load_json(CLAIMS_PATH).get("claims", []):
+            if claim.get("status") not in {"confirmed", "confirmed_temporary_override"}:
+                continue
+            entry_id = str(claim.get("id", ""))
+            if not entry_id or entry_id in seen:
+                continue
+            seen.add(entry_id)
+            entries.append({
+                "id": entry_id, "kind": "confirmed_claim", "label": claim.get("label", ""),
+                "operator_answer": claim.get("operator_answer", "") or public_answers.get(entry_id, ""),
+                "code": claim.get("document_code", ""), "source": claim.get("source_path", ""),
+                "location": claim.get("source_location", ""), "url": "", "excerpt": claim.get("label", ""),
+                "scope": " ".join(claim.get("applies_to", [])),
+            })
+    else:
+        for claim in load_public_knowledge_index(str(PUBLIC_KNOWLEDGE_INDEX_PATH)).get("claims", []):
+            entry_id = str(claim.get("id", ""))
+            if not entry_id or entry_id in seen:
+                continue
+            seen.add(entry_id)
+            entries.append({
+                "id": entry_id, "kind": "confirmed_claim", "label": claim.get("label", ""),
+                "operator_answer": claim.get("operatorAnswer", ""), "code": claim.get("code", ""),
+                "source": "Índice público de regras confirmadas", "location": claim.get("location", ""),
+                "url": "", "excerpt": claim.get("label", ""), "scope": claim.get("appliesTo", ""),
+            })
+    return entries
+
+
+def call_gemini_claim_selector(question: str, catalog: list[dict[str, Any]]) -> list[str]:
+    """Seleciona semanticamente regras existentes; nunca cria nem redige uma regra."""
+    key = gemini_key()
+    if not key:
+        return []
+    compact_catalog = "\n".join(
+        f"{item['id']} | {item.get('code', '')} | {item.get('label', '')} | "
+        f"{item.get('scope', '')} | {str(item.get('operator_answer', ''))[:1200]}"
+        for item in catalog
+    )
+    prompt = f"""Você seleciona evidências confirmadas da Escola SAFE.
+Não responda à pergunta e não invente regras. Escolha até 8 IDs que tratem diretamente da intenção,
+inclusive sequências, exceções, proibições, pré-requisitos e sinônimos. Retorne lista vazia se nenhuma
+regra for realmente pertinente. Priorize regras que contenham todos os códigos operacionais citados.
+
+PERGUNTA: {question}
+
+CATÁLOGO CONFIRMADO:
+{compact_catalog}
+"""
+    schema = {
+        "type": "object",
+        "properties": {
+            "selected_ids": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["selected_ids"],
+    }
+    body = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "maxOutputTokens": 400,
+            "responseMimeType": "application/json",
+            "responseSchema": schema,
+        },
+    }
+    request = urllib.request.Request(
+        f"https://generativelanguage.googleapis.com/v1beta/models/{LOCAL_MODEL}:generateContent",
+        data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+        headers={"Content-Type": "application/json", "x-goog-api-key": key}, method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=90) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        detail = error.read().decode("utf-8", errors="replace")[:500]
+        error_type = GeminiTemporaryError if error.code in {429, 500, 502, 503, 504} else RuntimeError
+        raise error_type(f"Gemini respondeu HTTP {error.code}: {detail}") from error
+    candidate = payload["candidates"][0]
+    text = next(str(part["text"]).strip() for part in candidate["content"]["parts"] if part.get("text"))
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.IGNORECASE)
+    try:
+        selected = json.loads(text).get("selected_ids", [])
+    except json.JSONDecodeError as error:
+        raise RuntimeError("A Gemini devolveu uma seleção semântica inválida.") from error
+    valid_ids = {item["id"] for item in catalog}
+    return [str(item_id) for item_id in selected if str(item_id) in valid_ids][:8]
+
+
+def semantic_retrieve_with_retry(question: str, limit: int = 8) -> list[dict[str, Any]]:
+    catalog = semantic_claim_catalog()
+    for attempt in range(GEMINI_TRANSIENT_RETRIES + 1):
+        try:
+            selected_ids = call_gemini_claim_selector(question, catalog)
+            by_id = {item["id"]: item for item in catalog}
+            return [
+                {**by_id[item_id], "score": 240 - index}
+                for index, item_id in enumerate(selected_ids)
+                if item_id in by_id
+            ][:limit]
+        except GeminiTemporaryError:
+            if attempt >= GEMINI_TRANSIENT_RETRIES:
+                raise
+            delay = min(8.0, 2.0 ** attempt) + random.uniform(0.0, 0.5)
+            time.sleep(delay)
+    return []
 
 
 def is_official_anac_source(url: str, title: str = "") -> bool:
@@ -2700,9 +2880,20 @@ def answer_question(
     capture_candidate: bool = True,
     save_history: bool = True,
 ) -> dict[str, Any]:
-    evidence = retrieve(question)
     local_errors = []
+    evidence = retrieve(question)
     canonical_result = deterministic_local_result(evidence)
+    if not canonical_result and gemini_key():
+        try:
+            semantic_evidence = semantic_retrieve_with_retry(question)
+            if semantic_evidence:
+                semantic_ids = {item["id"] for item in semantic_evidence}
+                evidence = (semantic_evidence + [
+                    item for item in evidence if item["id"] not in semantic_ids
+                ])[:8]
+                canonical_result = deterministic_local_result(evidence)
+        except Exception as error:
+            local_errors.append(f"Seleção semântica: {error}")
     if canonical_result and any(item.get("operator_answer") for item in evidence):
         local_result = canonical_result
     else:

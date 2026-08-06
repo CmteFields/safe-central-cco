@@ -268,6 +268,56 @@ class RetrievalTests(unittest.TestCase):
                     evidence[0]["operator_answer"], rule["approved_rule_text"]
                 )
 
+    def test_mission_order_questions_search_canonical_answers_without_gemini(self):
+        variants = [
+            "Aluno pode fazer NAV03 antes da NAV02?",
+            "Pode realizar AP05 antes da AP04 no PPA?",
+            "O NOT02 pode acontecer antes do NOT01?",
+        ]
+        for question in variants:
+            with self.subTest(question=question), patch.object(
+                server, "call_gemini_with_retry"
+            ) as gemini, patch.object(
+                server, "semantic_retrieve_with_retry"
+            ) as semantic_selector, patch.object(
+                server, "record_learning", return_value="query_mission_order"
+            ), patch.object(server, "upsert_rule_candidate") as create_gap:
+                result = server.answer_question(
+                    question, capture_candidate=True, save_history=False
+                )
+            gemini.assert_not_called()
+            semantic_selector.assert_not_called()
+            create_gap.assert_not_called()
+            self.assertEqual(result["knowledge_status"], "approved")
+            self.assertEqual(result["sources"][0]["id"], "claim_ppap001k_sequencia_completa_missoes")
+            self.assertIn("NAV01 → NAV02 → NAV03", result["answer"])
+
+    def test_semantic_selector_can_recover_confirmed_rule_before_answer_generation(self):
+        semantic_evidence = [{
+            "id": "claim_semantic", "kind": "confirmed_claim",
+            "label": "Regra semanticamente relacionada",
+            "operator_answer": "Resposta canônica localizada semanticamente.",
+            "code": "RG-100", "source": "Fonte", "location": "Seção",
+            "url": "", "excerpt": "Regra", "score": 240,
+        }]
+        with patch.object(server, "retrieve", return_value=[]), patch.object(
+            server, "gemini_key", return_value="configured"
+        ), patch.object(
+            server, "semantic_retrieve_with_retry", return_value=semantic_evidence
+        ) as semantic_selector, patch.object(
+            server, "call_gemini_with_retry"
+        ) as answer_gemini, patch.object(
+            server, "record_learning", return_value="query_semantic"
+        ), patch.object(server, "upsert_rule_candidate") as create_gap:
+            result = server.answer_question(
+                "Pergunta formulada com sinônimos", capture_candidate=True, save_history=False
+            )
+        semantic_selector.assert_called_once()
+        answer_gemini.assert_not_called()
+        create_gap.assert_not_called()
+        self.assertEqual(result["answer"], "Resposta canônica localizada semanticamente.")
+        self.assertEqual(result["knowledge_status"], "approved")
+
     def test_recognizes_all_supported_course_tokens(self):
         self.assertEqual(server.requested_course("curso PP"), "pp")
         self.assertEqual(server.requested_course("curso PC"), "pc")
