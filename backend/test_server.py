@@ -353,6 +353,35 @@ class RetrievalTests(unittest.TestCase):
         self.assertIn("linguagem coloquial", captured["prompt"])
         self.assertIn("CONFIRA NOVAMENTE A INTENÇÃO", captured["prompt"])
 
+    def test_semantic_query_expansion_reduces_catalog_before_selection(self):
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self):
+                return json.dumps({"candidates": [{"content": {"parts": [{"text": json.dumps({
+                    "search_terms": ["pernoite", "hospedagem", "alojamento", "reserva"],
+                })}]}}]}).encode("utf-8")
+
+        with patch.object(server, "gemini_key", return_value="test-key"), patch(
+            "backend.server.urllib.request.urlopen", return_value=FakeResponse()
+        ):
+            terms = server.call_gemini_query_expander("Existe lugar para dormir na escola?")
+
+        catalog = [
+            {"id": "irrelevant", "label": "Limite diário de instrução", "operator_answer": "", "scope": "voo"},
+            {"id": "approved_rule_9", "label": "Uso do alojamento", "operator_answer": "Solicitar hospedagem ao Comercial", "scope": "alojamento SAFE"},
+        ]
+        shortlist = server.semantic_catalog_shortlist(
+            "Existe lugar para dormir na escola?", terms, catalog
+        )
+
+        self.assertEqual(terms, ["pernoite", "hospedagem", "alojamento", "reserva"])
+        self.assertEqual(shortlist[0]["id"], "approved_rule_9")
+
     def test_recognizes_all_supported_course_tokens(self):
         self.assertEqual(server.requested_course("curso PP"), "pp")
         self.assertEqual(server.requested_course("curso PC"), "pc")
