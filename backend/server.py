@@ -70,7 +70,7 @@ LOCAL_MODEL = (
 )
 FALLBACK_MODEL = os.environ.get("GEMINI_FALLBACK_MODEL", "gemini-3.5-flash-lite")
 EXTERNAL_MODEL = os.environ.get("GEMINI_EXTERNAL_MODEL", "gemini-3.1-pro-preview")
-RELEASE_ID = os.environ.get("SAFE_CCO_RELEASE", "2026-08-06-new-search-1")
+RELEASE_ID = os.environ.get("SAFE_CCO_RELEASE", "2026-08-06-approved-rules-retrieval-2")
 HOST = os.environ.get("SAFE_CCO_HOST", "0.0.0.0" if os.environ.get("RENDER") else "127.0.0.1")
 PORT = int(os.environ.get("SAFE_CCO_PORT") or os.environ.get("PORT") or "8765")
 SECURE_COOKIES = os.environ.get("SAFE_CCO_SECURE_COOKIES", "").lower() in {"1", "true", "yes"} or bool(
@@ -119,6 +119,9 @@ RULES_LOCK = PORTAL_STORAGE_LOCK
 DATABASE_CONFIGURATION_LOCK = threading.Lock()
 CONFIGURED_DATABASES: set[Path] = set()
 STOPWORDS = {"a", "as", "o", "os", "de", "da", "das", "do", "dos", "e", "em", "na", "no", "para", "por", "com", "um", "uma", "que", "pode", "como", "safe", "fazer", "concluir", "quantos"}
+DYNAMIC_GENERIC_STEMS = {
+    "aluno", "base", "curso", "instrucao", "operacao", "regra", "safe", "voa", "voo",
+}
 
 INSTRUCTOR_SEED = [
     ("KEVIN WAJIMA", "SJK", "INVA", ["Liberado MC01", "Liberado C150", "Liberado P-Mentor VFR/IFR SIC", "Liberado IFR Avião"]),
@@ -1887,6 +1890,30 @@ def contains_normalized_token(normalized: str, token: str) -> bool:
     return token in normalized
 
 
+def light_portuguese_stem(token: str) -> str:
+    """Normaliza flexões simples sem transformar a recuperação em busca aproximada ampla."""
+    value = normalize(token)
+    if len(value) > 5 and value.endswith("oes"):
+        value = value[:-3] + "ao"
+    elif len(value) > 4 and value.endswith("s") and not value.endswith(("ss", "us")):
+        value = value[:-1]
+    if len(value) > 4 and value.endswith("m"):
+        value = value[:-1]
+    if len(value) > 4 and value.endswith("r"):
+        value = value[:-1]
+    return value
+
+
+def contains_semantic_token(normalized: str, token: str) -> bool:
+    if contains_normalized_token(normalized, token):
+        return True
+    token_stem = light_portuguese_stem(token)
+    if len(token_stem) < 4:
+        return False
+    words = re.split(r"[^a-z0-9-]+", normalized)
+    return any(light_portuguese_stem(word) == token_stem for word in words if word)
+
+
 def contains_token(value: str, token: str) -> bool:
     return contains_normalized_token(normalize(value), token)
 
@@ -1958,6 +1985,14 @@ def tokens(value: str) -> list[str]:
             "inva", "instrutor", "cco", "escolha", "preferencia", "substituicao",
             "escala", "agendamento",
         ])
+    base_context = (
+        "base" in normalized
+        or bool(re.search(r"\b(?:sjk|cpq)\b", normalized))
+        or "sao jose" in normalized
+        or "campinas" in normalized
+    )
+    if base_context and any(term in normalized for term in ("troc", "mud", "transfer", "alter", "migr")):
+        expansions.extend(["troca", "base", "aluno"])
     return list(dict.fromkeys(items + expansions))
 
 
@@ -2003,18 +2038,28 @@ def retrieve_dynamic_rules(question: str) -> list[dict[str, Any]]:
     for rule in approved_dynamic_rules():
         label = rule.get("approved_rule_text", "")
         metadata = " ".join(str(rule.get(field, "")) for field in (
-            "rule_code", "authority", "source_reference", "scope", "supersedes"
+            "question", "proposed_answer", "rule_code", "authority", "source_reference",
+            "scope", "supersedes", "document_id",
         ))
         searchable = normalize(f"{label} {metadata}")
         matched_tokens = {
-            token for token in query_tokens if contains_normalized_token(searchable, token)
+            token for token in query_tokens if contains_semantic_token(searchable, token)
         }
-        score = score_text(query_tokens, label, metadata) + 6
+        informative_matches = {
+            token for token in matched_tokens
+            if light_portuguese_stem(token) not in DYNAMIC_GENERIC_STEMS
+        }
         # Termos genéricos como "voo", "aluno" e "instrução" não bastam para
         # inserir uma regra interna aprovada em uma resposta de outro assunto.
         coverage = len(matched_tokens) / max(1, len(query_tokens))
-        if len(matched_tokens) < 2 or coverage < 0.45:
+        if len(matched_tokens) < 2 or coverage < 0.45 or not informative_matches:
             continue
+        score = (
+            score_text(query_tokens, label, metadata)
+            + 6
+            + round(30 * coverage)
+            + min(20, 8 * len(informative_matches))
+        )
         results.append({
             "id": f"approved_rule_{rule['id']}",
             "kind": "confirmed_claim",
@@ -2025,6 +2070,7 @@ def retrieve_dynamic_rules(question: str) -> list[dict[str, Any]]:
             "url": rule.get("source_url", ""),
             "score": score,
             "excerpt": label,
+            "operator_answer": label,
         })
     return results
 
@@ -2092,8 +2138,8 @@ def retrieve_public_claims(question: str, limit: int = 8) -> list[dict[str, Any]
 def score_text(query_tokens: list[str], label: str, metadata: str = "") -> int:
     label_norm, metadata_norm = normalize(label), normalize(metadata)
     return sum(
-        (5 if contains_normalized_token(label_norm, token) else 0)
-        + (1 if contains_normalized_token(metadata_norm, token) else 0)
+        (5 if contains_semantic_token(label_norm, token) else 0)
+        + (1 if contains_semantic_token(metadata_norm, token) else 0)
         for token in query_tokens
     )
 
