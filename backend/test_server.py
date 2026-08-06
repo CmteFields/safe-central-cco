@@ -358,6 +358,9 @@ class RetrievalTests(unittest.TestCase):
             captured["body"]["generationConfig"]["responseSchema"]["properties"]
             ["selected_ids"]["minItems"], 1
         )
+        self.assertGreaterEqual(
+            captured["body"]["generationConfig"]["maxOutputTokens"], 1200
+        )
 
     def test_semantic_selector_no_match_marker_does_not_become_evidence(self):
         class FakeResponse:
@@ -382,6 +385,8 @@ class RetrievalTests(unittest.TestCase):
         self.assertEqual(selected, [])
 
     def test_semantic_query_expansion_reduces_catalog_before_selection(self):
+        captured = {}
+
         class FakeResponse:
             def __enter__(self):
                 return self
@@ -394,8 +399,12 @@ class RetrievalTests(unittest.TestCase):
                     "search_terms": ["pernoite", "hospedagem", "alojamento", "reserva"],
                 })}]}}]}).encode("utf-8")
 
+        def fake_urlopen(request, timeout):
+            captured["body"] = json.loads(request.data.decode("utf-8"))
+            return FakeResponse()
+
         with patch.object(server, "gemini_key", return_value="test-key"), patch(
-            "backend.server.urllib.request.urlopen", return_value=FakeResponse()
+            "backend.server.urllib.request.urlopen", side_effect=fake_urlopen
         ):
             terms = server.call_gemini_query_expander("Existe lugar para dormir na escola?")
 
@@ -409,6 +418,9 @@ class RetrievalTests(unittest.TestCase):
 
         self.assertEqual(terms, ["pernoite", "hospedagem", "alojamento", "reserva"])
         self.assertEqual(shortlist[0]["id"], "approved_rule_9")
+        self.assertGreaterEqual(
+            captured["body"]["generationConfig"]["maxOutputTokens"], 1200
+        )
 
     def test_recognizes_all_supported_course_tokens(self):
         self.assertEqual(server.requested_course("curso PP"), "pp")

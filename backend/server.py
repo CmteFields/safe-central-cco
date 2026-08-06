@@ -2457,7 +2457,9 @@ CONFIRA NOVAMENTE A INTENÇÃO DA PERGUNTA: {question}
     body = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {
-            "maxOutputTokens": 400,
+            # O Gemini 3.6 Flash contabiliza tokens de raciocínio interno neste
+            # limite. Valores baixos podem encerrar em MAX_TOKENS antes do JSON.
+            "maxOutputTokens": 1600,
             "responseMimeType": "application/json",
             "responseSchema": schema,
         },
@@ -2511,7 +2513,8 @@ PERGUNTA: {question}
     body = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {
-            "maxOutputTokens": 300,
+            # O Gemini 3.6 Flash usa parte do limite para raciocínio interno.
+            "maxOutputTokens": 1200,
             "responseMimeType": "application/json",
             "responseSchema": schema,
         },
