@@ -38,6 +38,8 @@ Falhas transitórias do Gemini são repetidas. Se o modelo principal permanecer 
 
 Um claim recuperado com `operator_answer` responde antes de qualquer chamada ao Gemini. O mesmo campo é consumido pelo fallback do navegador; portanto, uma indisponibilidade de `/api/ask` não rebaixa a resposta canônica para uma lista lexical. Em perguntas sobre validade operacional do CMA, regras de matrícula não recebem prioridade sobre o claim geral aplicável ao exercício das prerrogativas.
 
+A recuperação pesquisa título, escopo e conteúdo integral de `operator_answer`. Códigos operacionais citados em conjunto, como `NAV02` e `NAV03`, recebem prioridade quando aparecem na mesma regra. Se a etapa determinística não localizar resposta canônica, o modelo local executa uma seleção semântica restrita aos IDs do catálogo confirmado; somente depois as evidências escolhidas são usadas para responder. O seletor não cria regras e sua saída é validada contra IDs existentes.
+
 Quando o PythonAnywhere usa um pacote privado mais antigo, `operatorAnswer` do índice público versionado complementa o claim privado pelo mesmo ID. Essa sobreposição altera somente a apresentação canônica, não o status, a fonte ou o conteúdo normativo do claim. A operação completa exige o pacote privado instalado e `/api/health` com `knowledge` igual a `private_bundle` ou `configured_root`; `public_index` é apenas contingência resumida. O endpoint informa se a Gemini está configurada e os nomes dos modelos ativos, sem expor a chave, os caminhos ou outros segredos. Falhas reais das chamadas são devolvidas somente a Supervisor e Administrador na própria resposta da consulta.
 
 ## Feedback de progresso da consulta
