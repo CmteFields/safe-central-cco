@@ -231,6 +231,43 @@ class RetrievalTests(unittest.TestCase):
         self.assertEqual(result["answer"], "Resposta canônica principal.")
         self.assertEqual(result["used_evidence"], [1])
 
+    def test_base_transfer_variants_use_approved_rg006_without_gemini_or_new_gap(self):
+        variants = [
+            "aluno pode trocar de base?",
+            "É permitido mudar a base do aluno?",
+            "Posso transferir meu curso para outra base?",
+            "Aluno PP pode mudar de SJK para CPQ?",
+        ]
+        for question in variants:
+            with self.subTest(question=question), patch.object(
+                server, "call_gemini_with_retry"
+            ) as gemini, patch.object(
+                server, "record_learning", return_value="query_base_transfer"
+            ), patch.object(server, "upsert_rule_candidate") as create_gap:
+                result = server.answer_question(
+                    question, capture_candidate=True, save_history=False
+                )
+            gemini.assert_not_called()
+            create_gap.assert_not_called()
+            self.assertEqual(result["knowledge_status"], "approved")
+            self.assertEqual(result["model_used"], "local-deterministic")
+            self.assertEqual(result["candidate_id"], None)
+            self.assertEqual(result["sources"][0]["code"], "RG-006")
+            self.assertIn("não podem realizar troca de base", result["answer"])
+
+    def test_every_approved_dynamic_rule_title_exposes_its_canonical_answer(self):
+        rules = server.approved_dynamic_rules()
+        self.assertGreaterEqual(len(rules), 9)
+        for rule in rules:
+            question = f"Qual é a regra sobre {rule['question']}?"
+            with self.subTest(rule=rule["rule_code"], question=question):
+                evidence = server.retrieve_dynamic_rules(question)
+                self.assertTrue(evidence)
+                self.assertEqual(evidence[0]["code"], rule["rule_code"])
+                self.assertEqual(
+                    evidence[0]["operator_answer"], rule["approved_rule_text"]
+                )
+
     def test_recognizes_all_supported_course_tokens(self):
         self.assertEqual(server.requested_course("curso PP"), "pp")
         self.assertEqual(server.requested_course("curso PC"), "pc")
