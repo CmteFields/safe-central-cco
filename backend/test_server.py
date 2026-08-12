@@ -253,7 +253,7 @@ class RetrievalTests(unittest.TestCase):
             self.assertEqual(result["model_used"], "local-deterministic")
             self.assertEqual(result["candidate_id"], None)
             self.assertEqual(result["sources"][0]["code"], "RG-006")
-            self.assertIn("não podem realizar troca de base", result["answer"])
+            self.assertIn("não podem trocar de base", result["answer"])
 
     def test_every_approved_dynamic_rule_title_exposes_its_canonical_answer(self):
         rules = server.approved_dynamic_rules()
@@ -268,9 +268,26 @@ class RetrievalTests(unittest.TestCase):
                     evidence[0]["operator_answer"], rule["approved_rule_text"]
                 )
 
-    def test_mission_order_questions_search_canonical_answers_without_gemini(self):
+    def test_nav03_can_precede_nav02_without_gemini(self):
+        question = "Aluno pode fazer NAV03 antes da NAV02?"
+        with patch.object(server, "call_gemini_with_retry") as gemini, patch.object(
+            server, "semantic_retrieve_with_retry"
+        ) as semantic_selector, patch.object(
+            server, "record_learning", return_value="query_mission_order"
+        ), patch.object(server, "upsert_rule_candidate") as create_gap:
+            result = server.answer_question(
+                question, capture_candidate=True, save_history=False
+            )
+        gemini.assert_not_called()
+        semantic_selector.assert_not_called()
+        create_gap.assert_not_called()
+        self.assertEqual(result["knowledge_status"], "approved")
+        self.assertEqual(result["sources"][0]["id"], "claim_ppap001k_nav03_pode_anteceder_nav02")
+        self.assertIn("Sim.", result["answer"])
+        self.assertIn("requisitos e liberações para voo solo", result["answer"])
+
+    def test_other_mission_order_questions_use_complete_ppa_sequence(self):
         variants = [
-            "Aluno pode fazer NAV03 antes da NAV02?",
             "Pode realizar AP05 antes da AP04 no PPA?",
             "O NOT02 pode acontecer antes do NOT01?",
         ]
@@ -315,7 +332,8 @@ class RetrievalTests(unittest.TestCase):
             self.assertEqual(result["knowledge_status"], "approved")
             self.assertEqual(result["response_mode"], "local_contingency")
             self.assertEqual(result["sources"][0]["id"], "claim_cavok_acesso_pessoal_aluno")
-            self.assertIn("pessoal, exclusivo e intransferível", result["answer"])
+            self.assertIn("https://portaldoaluno.voesafe.com.br/", result["answer"])
+            self.assertIn("https://voesafe.cavok.in/", result["answer"])
 
     def test_pp_solo_passenger_variants_use_confirmed_answer_without_new_gap(self):
         variants = [
@@ -341,6 +359,79 @@ class RetrievalTests(unittest.TestCase):
             self.assertEqual(result["response_mode"], "local_contingency")
             self.assertEqual(result["sources"][0]["id"], "claim_mip_acompanhante_proibido_solo_pp")
             self.assertIn("não pode levar a mãe", result["answer"].casefold())
+
+    def test_family_may_watch_first_solo_from_ground_without_boarding(self):
+        variants = [
+            "Minha família pode acompanhar o primeiro voo solo?",
+            "Minha mãe pode assistir ao meu primeiro voo solo?",
+            "Familiares podem presenciar o evento do solo no pátio?",
+        ]
+        for question in variants:
+            with self.subTest(question=question), patch.object(
+                server, "call_gemini_with_retry"
+            ) as answer_gemini, patch.object(
+                server, "semantic_retrieve_with_retry"
+            ) as semantic_selector, patch.object(
+                server, "record_learning", return_value="query_solo_family"
+            ), patch.object(server, "upsert_rule_candidate") as create_gap:
+                result = server.answer_question(
+                    question, capture_candidate=True, save_history=False
+                )
+            answer_gemini.assert_not_called()
+            semantic_selector.assert_not_called()
+            create_gap.assert_not_called()
+            self.assertEqual(result["sources"][0]["id"], "claim_mip_familia_pode_acompanhar_evento_solo_em_terra")
+            self.assertIn("em terra", result["answer"])
+            self.assertIn("não pode embarcar", result["answer"])
+
+    def test_reviewed_operational_topics_route_to_their_approved_answers(self):
+        cases = [
+            (
+                "A primeira barra tem prioridade sobre os cheques da segunda barra?",
+                "claim_rg010_prioridade_barras_missoes_criticas",
+                "alunos com restrição de INVA",
+            ),
+            (
+                "Aluno de PP pode fazer a monitoria de NAV durante a fase AP?",
+                "claim_mgop_monitoria_nav_durante_fase_ap",
+                "antes do primeiro voo da fase de navegação",
+            ),
+            (
+                "Faz 31 dias desde meu último solo na AP05. Posso solar?",
+                "claim_bops054_sem_solo_30_dias_novo_endosso",
+                "duplo comando",
+            ),
+        ]
+        for question, rule_id, excerpt in cases:
+            with self.subTest(question=question), patch.object(
+                server, "call_gemini_with_retry"
+            ) as answer_gemini, patch.object(
+                server, "semantic_retrieve_with_retry"
+            ) as semantic_selector, patch.object(
+                server, "record_learning", return_value="query_reviewed_topic"
+            ), patch.object(server, "upsert_rule_candidate") as create_gap:
+                result = server.answer_question(
+                    question, capture_candidate=True, save_history=False
+                )
+            answer_gemini.assert_not_called()
+            semantic_selector.assert_not_called()
+            create_gap.assert_not_called()
+            self.assertEqual(result["sources"][0]["id"], rule_id)
+            self.assertIn(excerpt, result["answer"])
+
+    def test_unrelated_canonical_match_is_not_used_as_final_answer(self):
+        evidence = [{
+            "id": server.INSTRUCTOR_ALLOCATION_RULE_ID,
+            "kind": "confirmed_claim",
+            "label": "Aluno pode solicitar substituição de INVA ao CCO",
+            "operator_answer": "Resposta de outro assunto.",
+            "score": 40,
+        }]
+        self.assertIsNone(
+            server.deterministic_local_result(
+                evidence, "Qual é a prioridade da primeira barra?"
+            )
+        )
 
     def test_semantic_selector_can_recover_confirmed_rule_before_answer_generation(self):
         semantic_evidence = [{
