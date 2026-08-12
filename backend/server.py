@@ -22,7 +22,7 @@ import urllib.request
 import urllib.parse
 from contextlib import contextmanager
 from functools import lru_cache
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -72,7 +72,7 @@ LOCAL_MODEL = (
 )
 FALLBACK_MODEL = os.environ.get("GEMINI_FALLBACK_MODEL", "gemini-3.5-flash-lite")
 EXTERNAL_MODEL = os.environ.get("GEMINI_EXTERNAL_MODEL", "gemini-3.1-pro-preview")
-RELEASE_ID = os.environ.get("SAFE_CCO_RELEASE", "2026-08-12-remove-instructors-8")
+RELEASE_ID = os.environ.get("SAFE_CCO_RELEASE", "2026-08-12-portal-activity-9")
 PORTAL_UPDATED_AT = os.environ.get("SAFE_CCO_UPDATED_AT", "").strip() or datetime.fromtimestamp(
     max(
         path.stat().st_mtime
@@ -244,6 +244,7 @@ READAPTATION_RULE_ID = "claim_bops054_readaptacao_90_dias"
 ROLES = {"admin", "supervisor", "operator", "viewer"}
 ROLE_LABELS = {"admin": "Administrador", "supervisor": "Supervisor", "operator": "Operador", "viewer": "Consulta"}
 SESSION_HOURS = 12
+ACTIVITY_ONLINE_MINUTES = 5
 PASSWORD_ITERATIONS = 310_000
 
 
@@ -360,6 +361,9 @@ def initialize_auth_db() -> None:
             role TEXT NOT NULL,
             active INTEGER NOT NULL DEFAULT 1,
             must_change_password INTEGER NOT NULL DEFAULT 0,
+            last_login_at TEXT,
+            last_activity_at TEXT,
+            last_activity_area TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         )""")
@@ -368,6 +372,8 @@ def initialize_auth_db() -> None:
             user_id INTEGER NOT NULL,
             csrf_token TEXT NOT NULL,
             expires_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL DEFAULT '',
+            last_activity_area TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL,
             FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
         )""")
@@ -379,6 +385,22 @@ def initialize_auth_db() -> None:
             created_at TEXT NOT NULL
         )""")
         connection.execute("CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id)")
+        user_columns = {row["name"] for row in connection.execute("PRAGMA table_info(users)").fetchall()}
+        for column, declaration in {
+            "last_login_at": "TEXT",
+            "last_activity_at": "TEXT",
+            "last_activity_area": "TEXT NOT NULL DEFAULT ''",
+        }.items():
+            if column not in user_columns:
+                connection.execute(f"ALTER TABLE users ADD COLUMN {column} {declaration}")
+        session_columns = {row["name"] for row in connection.execute("PRAGMA table_info(sessions)").fetchall()}
+        for column, declaration in {
+            "last_seen_at": "TEXT NOT NULL DEFAULT ''",
+            "last_activity_area": "TEXT NOT NULL DEFAULT ''",
+        }.items():
+            if column not in session_columns:
+                connection.execute(f"ALTER TABLE sessions ADD COLUMN {column} {declaration}")
+        connection.execute("UPDATE sessions SET last_seen_at=created_at WHERE last_seen_at='' OR last_seen_at IS NULL")
         migrate_legacy_tables(connection, AUTH_DB_PATH, LEGACY_DB_PATHS["auth"], {
             "users": (
                 "id", "username", "display_name", "password_hash", "password_salt", "role",
@@ -471,8 +493,13 @@ def authenticate(username: str, password: str) -> tuple[dict[str, Any], str, str
         expires_iso = datetime.fromtimestamp(expires, timezone.utc).isoformat()
         connection.execute("DELETE FROM sessions WHERE expires_at < ?", (created.isoformat(),))
         connection.execute(
-            "INSERT INTO sessions(token_hash, user_id, csrf_token, expires_at, created_at) VALUES (?, ?, ?, ?, ?)",
-            (token_hash, row["id"], csrf, expires_iso, created.isoformat()),
+            """INSERT INTO sessions(token_hash, user_id, csrf_token, expires_at,
+               last_seen_at, last_activity_area, created_at) VALUES (?, ?, ?, ?, ?, 'Login', ?)""",
+            (token_hash, row["id"], csrf, expires_iso, created.isoformat(), created.isoformat()),
+        )
+        connection.execute(
+            "UPDATE users SET last_login_at=?, last_activity_at=?, last_activity_area='Login' WHERE id=?",
+            (created.isoformat(), created.isoformat(), row["id"]),
         )
     return public_user(row), raw_token, csrf
 
@@ -506,6 +533,73 @@ def list_users() -> list[dict[str, Any]]:
     with auth_connection() as connection:
         rows = connection.execute("SELECT * FROM users ORDER BY display_name").fetchall()
     return [public_user(row) for row in rows]
+
+
+ACTIVITY_AREAS = {
+    "Regras e procedimentos", "Aeronaves", "Passagem de turno", "Reports",
+    "Gestão de regras", "Usuários e permissões", "Atividade do portal",
+    "Minha conta", "Login", "Saiu do portal",
+}
+
+
+def record_portal_activity(user_id: int, token_hash: str, area: str | None = None) -> None:
+    timestamp = now_iso()
+    with AUTH_LOCK, auth_connection() as connection:
+        if area in ACTIVITY_AREAS:
+            connection.execute(
+                "UPDATE sessions SET last_seen_at=?, last_activity_area=? WHERE token_hash=?",
+                (timestamp, area, token_hash),
+            )
+            connection.execute(
+                "UPDATE users SET last_activity_at=?, last_activity_area=? WHERE id=?",
+                (timestamp, area, user_id),
+            )
+        else:
+            connection.execute(
+                "UPDATE sessions SET last_seen_at=? WHERE token_hash=?", (timestamp, token_hash)
+            )
+            connection.execute(
+                "UPDATE users SET last_activity_at=? WHERE id=?", (timestamp, user_id)
+            )
+
+
+def list_portal_activity() -> dict[str, Any]:
+    initialize_auth_db()
+    now = datetime.now(timezone.utc)
+    online_cutoff = (now - timedelta(minutes=ACTIVITY_ONLINE_MINUTES)).isoformat()
+    recent_cutoff = (now - timedelta(minutes=30)).isoformat()
+    day_cutoff = (now - timedelta(hours=24)).isoformat()
+    with auth_connection() as connection:
+        rows = connection.execute(
+            """SELECT u.id, u.username, u.display_name, u.role, u.active,
+                      u.last_login_at, u.last_activity_at, u.last_activity_area,
+                      MAX(s.last_seen_at) AS session_last_seen,
+                      COUNT(s.token_hash) AS session_count
+               FROM users u
+               LEFT JOIN sessions s ON s.user_id=u.id AND s.expires_at>?
+               WHERE u.active=1
+               GROUP BY u.id
+               ORDER BY COALESCE(MAX(s.last_seen_at), u.last_activity_at, '') DESC,
+                        u.display_name COLLATE NOCASE""",
+            (now.isoformat(),),
+        ).fetchall()
+    items = []
+    for row in rows:
+        item = dict(row)
+        item["role_label"] = ROLE_LABELS.get(item["role"], item["role"])
+        item["online"] = bool(item["session_last_seen"] and item["session_last_seen"] >= online_cutoff)
+        item["active_recently"] = bool(item["last_activity_at"] and item["last_activity_at"] >= recent_cutoff)
+        item["accessed_24h"] = bool(item["last_activity_at"] and item["last_activity_at"] >= day_cutoff)
+        items.append(item)
+    return {
+        "items": items,
+        "online_count": sum(item["online"] for item in items),
+        "recent_count": sum(item["active_recently"] for item in items),
+        "accessed_24h_count": sum(item["accessed_24h"] for item in items),
+        "active_user_count": len(items),
+        "online_window_minutes": ACTIVITY_ONLINE_MINUTES,
+        "generated_at": now.isoformat(),
+    }
 
 
 def authorize_admin_edit(acting_user_id: int, target_user_id: int, password: str) -> str:
@@ -3831,7 +3925,7 @@ class Handler(BaseHTTPRequestHandler):
         return session_user(self.headers.get("Cookie", ""))
 
     def require_auth(self, roles: set[str] | None = None, require_csrf: bool = False) -> tuple[dict[str, Any], str] | None:
-        user, csrf, _ = self.auth_context()
+        user, csrf, token_hash = self.auth_context()
         if not user:
             self.send_json(401, {"error": "Autenticação necessária."})
             return None
@@ -3844,6 +3938,8 @@ class Handler(BaseHTTPRequestHandler):
         if require_csrf and not secrets.compare_digest(self.headers.get("X-CSRF-Token", ""), csrf or ""):
             self.send_json(403, {"error": "Token de segurança inválido. Entre novamente."})
             return None
+        if token_hash:
+            record_portal_activity(user["id"], token_hash)
         return user, csrf or ""
 
     def do_OPTIONS(self) -> None:
@@ -3886,6 +3982,8 @@ class Handler(BaseHTTPRequestHandler):
                 if user["role"] != "admin":
                     self.send_json(403, {"error": "Apenas administradores podem gerenciar usuários."}); return
                 self.send_json(200, {"items": list_users(), "roles": ROLE_LABELS}); return
+            if urllib.parse.urlparse(self.path).path == "/api/activity":
+                self.send_json(200, list_portal_activity()); return
         if urllib.parse.urlparse(self.path).path == "/api/approved-rules":
             self.send_json(200, {"items": list_approved_rules()})
             return
@@ -4005,9 +4103,15 @@ class Handler(BaseHTTPRequestHandler):
             if not context:
                 return
             user, _ = context
+            if self.path == "/api/activity/ping":
+                _, _, token_hash = self.auth_context()
+                if token_hash:
+                    record_portal_activity(user["id"], token_hash, str(data.get("area", "")))
+                self.send_json(200, {"ok": True}); return
             if self.path == "/api/auth/logout":
                 _, _, token_hash = self.auth_context()
                 if token_hash:
+                    record_portal_activity(user["id"], token_hash, "Saiu do portal")
                     with AUTH_LOCK, auth_connection() as connection:
                         connection.execute("DELETE FROM sessions WHERE token_hash=?", (token_hash,))
                 self.send_json(200, {"ok": True}, {"Set-Cookie": self.session_cookie("", 0)}); return

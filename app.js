@@ -67,6 +67,7 @@ const handoverView = $("#handoverView");
 const reportsView = $("#reportsView");
 const ruleManagementView = $("#ruleManagementView");
 const usersView = $("#usersView");
+const activityView = $("#activityView");
 const input = $("#searchInput");
 const searchBox = $("#searchForm");
 const searchResults = $("#searchResults");
@@ -103,6 +104,9 @@ let activeRulesTab = "unreviewed";
 let currentSourceUrl = "";
 let users = [];
 let usersLoaded = false;
+let portalActivity = [];
+let activityLoaded = false;
+let currentActivityArea = "Regras e procedimentos";
 
 function loadOperationalBases() {
   if (basesPromise) return basesPromise;
@@ -126,9 +130,11 @@ function renderBaseSelect(select, includeUnassigned, selected = "") {
 }
 
 function showView(view, name) {
-  [homeView, answerView, moduleView, aircraftView, handoverView, reportsView, ruleManagementView, usersView].forEach(item => item.classList.add("hidden"));
+  [homeView, answerView, moduleView, aircraftView, handoverView, reportsView, ruleManagementView, usersView, activityView].forEach(item => item.classList.add("hidden"));
   view.classList.remove("hidden");
   $("#pageName").textContent = name;
+  currentActivityArea = name;
+  if (currentUser && csrfToken) pingPortalActivity(name);
   window.scrollTo({ top: 0, behavior: "smooth" });
   $("#sidebar").classList.remove("open");
 }
@@ -1451,13 +1457,21 @@ function bootstrapPortal() {
   loadSearchHistory();
   loadHandovers();
   loadAircraft();
+  loadPortalActivity();
   if (!hasRole("viewer")) loadReports();
   if (hasRole("admin", "supervisor")) loadRules();
   updateShiftStatus();
   updateSystemStatus();
   setInterval(updateShiftStatus, 30_000);
   setInterval(updateSystemStatus, 60_000);
+  setInterval(() => {
+    if (!document.hidden) {
+      pingPortalActivity();
+      loadPortalActivity();
+    }
+  }, 30_000);
   applyInitialRoute();
+  pingPortalActivity();
 }
 
 function applyInitialRoute() {
@@ -1465,7 +1479,7 @@ function applyInitialRoute() {
   const initialQuestion = params.get("q");
   const initialView = params.get("view");
   if (initialQuestion) { input.value = initialQuestion; searchBox.classList.add("has-value"); search(initialQuestion); }
-  if (["aeronaves", "passagem", "reports", "gestao-regras", "usuarios"].includes(initialView)) {
+  if (["aeronaves", "passagem", "reports", "gestao-regras", "usuarios", "atividade"].includes(initialView)) {
     document.querySelectorAll(".nav-item").forEach(item => item.classList.toggle("active", item.dataset.view === initialView));
     openModule(initialView);
   }
@@ -1479,6 +1493,64 @@ async function loadUsers() {
     users = data.items; usersLoaded = true; renderUsers();
   } catch (error) {
     $("#userRows").innerHTML = `<tr><td colspan="5" class="table-message">${escapeHtml(error.message)}</td></tr>`;
+  }
+}
+
+function activityInitials(name) {
+  return String(name || "U").split(/\s+/).filter(Boolean).slice(0, 2).map(value => value[0]).join("").toUpperCase();
+}
+
+function activityRelativeTime(value) {
+  if (!value) return "Nunca";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Não informado";
+  const seconds = Math.max(0, Math.floor((Date.now() - date.getTime()) / 1000));
+  if (seconds < 60) return "Agora";
+  if (seconds < 3600) return `Há ${Math.floor(seconds / 60)} min`;
+  if (seconds < 86400) return `Há ${Math.floor(seconds / 3600)} h`;
+  return formatInstructorDate(value);
+}
+
+function renderPortalActivity(data) {
+  portalActivity = data.items || [];
+  activityLoaded = true;
+  $("#activityOnlineCount").textContent = data.online_count || 0;
+  $("#activityRecentCount").textContent = data.recent_count || 0;
+  $("#activityDayCount").textContent = data.accessed_24h_count || 0;
+  $("#activityUserCount").textContent = data.active_user_count || 0;
+  $("#activityNavCount").textContent = data.online_count > 99 ? "99+" : String(data.online_count || 0);
+  $("#activityRows").innerHTML = portalActivity.length ? portalActivity.map(item => `<tr>
+    <td><div class="activity-user"><span class="activity-avatar">${escapeHtml(activityInitials(item.display_name))}</span><div><strong>${escapeHtml(item.display_name)}</strong><small>@${escapeHtml(item.username)}</small></div></div></td>
+    <td><span class="user-role-badge">${escapeHtml(item.role_label)}</span></td>
+    <td><span class="presence-badge ${item.online ? "online" : ""}">${item.online ? "Online agora" : "Offline"}</span></td>
+    <td title="${escapeHtml(item.last_activity_at || "")}">${escapeHtml(activityRelativeTime(item.last_activity_at))}</td>
+    <td><span class="activity-area">${escapeHtml(item.last_activity_area || "Sem atividade registrada")}</span></td>
+    <td title="${escapeHtml(item.last_login_at || "")}">${escapeHtml(activityRelativeTime(item.last_login_at))}</td>
+  </tr>`).join("") : `<tr><td colspan="6" class="table-message">Nenhum usuário ativo cadastrado.</td></tr>`;
+  $("#activityUpdatedAt").textContent = `Atualizado em ${formatInstructorDate(data.generated_at)} · atualização automática a cada 30 segundos.`;
+}
+
+async function loadPortalActivity(showError = false) {
+  try {
+    const response = await apiFetch(`${window.location.origin}/api/activity`, { cache: "no-store" });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Não foi possível carregar a atividade.");
+    renderPortalActivity(data);
+  } catch (error) {
+    if (showError) {
+      $("#activityRows").innerHTML = `<tr><td colspan="6" class="table-message">${escapeHtml(error.message)}</td></tr>`;
+      toast(error.message);
+    }
+  }
+}
+
+async function pingPortalActivity(area = currentActivityArea) {
+  try {
+    await apiFetch(`${window.location.origin}/api/activity/ping`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ area }),
+    });
+  } catch (error) {
+    console.info("Registro de atividade temporariamente indisponível.", error.message);
   }
 }
 
@@ -1560,6 +1632,11 @@ function openModule(key) {
     if (!aircraftLoaded) loadAircraft();
     return;
   }
+  if (key === "atividade") {
+    showView(activityView, "Atividade do portal");
+    loadPortalActivity(true);
+    return;
+  }
   if (key === "passagem") {
     showView(handoverView, "Passagem de turno");
     if (!handoversLoaded) loadHandovers();
@@ -1628,6 +1705,7 @@ $("#aircraftFleetFilter").addEventListener("change", renderAircraft);
 $("#aircraftStatusFilter").addEventListener("change", renderAircraft);
 $("#aircraftForm").addEventListener("submit", saveAircraft);
 $("#deleteAircraft").addEventListener("click", removeAircraft);
+$("#refreshActivity").addEventListener("click", () => loadPortalActivity(true));
 $("#addHandover").addEventListener("click", () => openHandoverDialog());
 $("#handoverShiftFilter").addEventListener("change", renderHandovers);
 $("#handoverForm").addEventListener("submit", saveHandover);
