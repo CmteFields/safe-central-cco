@@ -317,6 +317,31 @@ class RetrievalTests(unittest.TestCase):
             self.assertEqual(result["sources"][0]["id"], "claim_cavok_acesso_pessoal_aluno")
             self.assertIn("pessoal, exclusivo e intransferível", result["answer"])
 
+    def test_pp_solo_passenger_variants_use_confirmed_answer_without_new_gap(self):
+        variants = [
+            "O aluno de PP pode voar com a mãe no voo solo?",
+            "Posso levar um familiar no voo solo de PPA?",
+            "Aluno PP pode levar passageiro no solo?",
+        ]
+        for question in variants:
+            with self.subTest(question=question), patch.object(
+                server, "call_gemini_with_retry"
+            ) as answer_gemini, patch.object(
+                server, "semantic_retrieve_with_retry"
+            ) as semantic_selector, patch.object(
+                server, "record_learning", return_value="query_pp_passenger"
+            ), patch.object(server, "upsert_rule_candidate") as create_gap:
+                result = server.answer_question(
+                    question, capture_candidate=True, save_history=False
+                )
+            answer_gemini.assert_not_called()
+            semantic_selector.assert_not_called()
+            create_gap.assert_not_called()
+            self.assertEqual(result["knowledge_status"], "approved")
+            self.assertEqual(result["response_mode"], "local_contingency")
+            self.assertEqual(result["sources"][0]["id"], "claim_mip_acompanhante_proibido_solo_pp")
+            self.assertIn("não pode levar a mãe", result["answer"].casefold())
+
     def test_semantic_selector_can_recover_confirmed_rule_before_answer_generation(self):
         semantic_evidence = [{
             "id": "claim_semantic", "kind": "confirmed_claim",
@@ -633,7 +658,7 @@ class WSGITests(unittest.TestCase):
         self.assertIn(b"CCO - Central de conhecimento", body)
         self.assertIn(b'styles.css?v=20260806-1', body)
         self.assertIn(b"public-knowledge-index.js?v=20260731-6", body)
-        self.assertIn(b"app.js?v=20260806-1", body)
+        self.assertIn(b"app.js?v=20260812-2", body)
         self.assertIn(b'id="newSearchButton"', body)
 
     def test_browser_uses_same_origin_ai_endpoint(self):
@@ -1067,9 +1092,96 @@ class ReportStorageTests(unittest.TestCase):
             self.assertEqual([row["action"] for row in events], ["Criado", "Atualizado"])
             self.assertEqual(events[-1]["actor_username"], "supervisor")
 
-            candidates = server.list_rule_candidates()
+            candidates = server.list_rule_candidates("pending_approval")
             self.assertEqual(len(candidates), 1)
             self.assertEqual(candidates[0]["source_kind"], "operator_report")
+            self.assertEqual(candidates[0]["proposed_answer"], "Pergunta validada e encaminhada para publicação.")
+
+    def test_discarded_question_report_rejects_linked_candidate(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            server, "REPORTS_DB_PATH", Path(directory) / "portal.db"
+        ), patch.object(server, "RULES_DB_PATH", Path(directory) / "portal.db"), patch.object(
+            server, "AUTH_DB_PATH", Path(directory) / "portal.db"
+        ):
+            actor = {
+                "id": 1, "username": "supervisor", "display_name": "Supervisor", "role": "supervisor",
+            }
+            created = server.create_report({
+                "report_type": "question",
+                "title": "Entrada digitada por engano",
+                "description": "Conteúdo inválido.",
+                "priority": "Normal",
+            }, actor)
+            self.assertIsNotNone(created["rule_candidate_id"])
+
+            discarded = server.update_report(created["id"], {
+                "status": "Descartado",
+                "priority": "Normal",
+                "resolution": "Registro criado por engano.",
+                "rule_action": "no_rule",
+            }, actor)
+
+            self.assertEqual(discarded["rule_candidate"]["status"], "rejected")
+            self.assertEqual(server.list_rule_candidates("unreviewed"), [])
+
+    def test_report_supports_assignment_comments_attachments_and_author_edit(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            server, "PORTAL_DB_PATH", Path(directory) / "portal.db"
+        ), patch.object(server, "REPORTS_DB_PATH", Path(directory) / "portal.db"), patch.object(
+            server, "RULES_DB_PATH", Path(directory) / "portal.db"
+        ), patch.object(server, "AUTH_DB_PATH", Path(directory) / "portal.db"):
+            server.configure_database(Path(directory) / "portal.db")
+            operator = {
+                "id": 10, "username": "operador", "display_name": "Operador", "role": "operator",
+            }
+            supervisor = {
+                "id": 20, "username": "supervisor", "display_name": "Supervisor", "role": "supervisor",
+            }
+            server.initialize_auth_db()
+            with server.auth_connection() as connection:
+                timestamp = server.now_iso()
+                connection.execute(
+                    """INSERT INTO users(id, username, display_name, password_hash, password_salt,
+                       role, active, must_change_password, created_at, updated_at)
+                       VALUES (20, 'supervisor', 'Supervisor', 'x', '00', 'supervisor', 1, 0, ?, ?)""",
+                    (timestamp, timestamp),
+                )
+            created = server.create_report({
+                "report_type": "discrepancy",
+                "title": "Resposta incompleta",
+                "description": "Falta uma condição operacional.",
+                "priority": "Alta",
+            }, operator)
+            edited = server.update_own_report(created["id"], {
+                "report_type": "discrepancy",
+                "title": "Resposta incompleta revisada",
+                "description": "Falta uma condição operacional importante.",
+                "reference": "Consulta query_123",
+                "priority": "Crítica",
+            }, operator)
+            self.assertEqual(edited["title"], "Resposta incompleta revisada")
+
+            comment = server.add_report_comment(created["id"], "Complemento do operador.", operator)
+            self.assertEqual(comment["author_username"], "operador")
+            attachment = server.add_report_attachment(created["id"], {
+                "filename": 'evidencia"teste.txt',
+                "content_type": "text/plain",
+                "content_base64": server.base64.b64encode(b"evidencia").decode(),
+            }, operator)
+            content, content_type, filename = server.get_report_attachment(attachment["id"])
+            self.assertEqual((content, content_type, filename), (b"evidencia", "text/plain", "evidencia_teste.txt"))
+
+            assigned = server.update_report(created["id"], {
+                "status": "Em análise",
+                "priority": "Crítica",
+                "resolution": "Em verificação.",
+                "assignee_user_id": 20,
+                "rule_action": "keep",
+            }, supervisor)
+            self.assertEqual(assigned["assignee_name"], "Supervisor")
+            self.assertEqual(len(assigned["comments"]), 1)
+            self.assertEqual(len(assigned["attachments"]), 1)
+            self.assertGreaterEqual(len(assigned["events"]), 5)
 
 
 class RuleCandidateStorageTests(unittest.TestCase):

@@ -97,6 +97,7 @@ let handovers = [];
 let handoversLoaded = false;
 let reports = [];
 let reportsLoaded = false;
+let reportAssignees = [];
 let unreviewedRules = [];
 let pendingApprovalRules = [];
 let approvedRules = [];
@@ -816,8 +817,7 @@ function renderHandovers() {
   $("#handoverDoneCount").textContent = counts("Concluída");
   const openCount = counts("Pendente") + counts("Em andamento");
   $("#handoverNavCount").textContent = openCount;
-  $("#notificationCount").textContent = openCount > 99 ? "99+" : openCount;
-  $("#notificationCount").classList.toggle("hidden", openCount === 0);
+  updateNotificationBadge();
   const columns = ["Pendente", "Em andamento", "Concluída"];
   $("#handoverBoard").innerHTML = columns.map(status => {
     const items = visible.filter(item => item.status === status);
@@ -919,8 +919,15 @@ function reportStatusClass(status) {
   return "open";
 }
 
+function reportRuleBadge(item) {
+  if (!item.rule_candidate) return "";
+  const statusClass = item.rule_candidate.status === "approved" ? "approved" : item.rule_candidate.status === "rejected" ? "rejected" : "pending";
+  return `<span class="report-rule-status ${statusClass}">Regra #${item.rule_candidate.id} · ${escapeHtml(item.rule_candidate.status_label)}</span>`;
+}
+
 function reportCard(item) {
   const canManage = hasRole("admin", "supervisor");
+  const canEditOwn = hasRole("operator") && item.reporter_username === currentUser.username && item.status === "Aberto";
   return `<article class="report-card priority-${normalizeText(item.priority)}">
     <div class="report-card-head">
       <span class="report-kind ${item.report_type === "question" ? "question" : ""}">${escapeHtml(item.type_label)}</span>
@@ -932,28 +939,76 @@ function reportCard(item) {
     <p class="report-description">${escapeHtml(item.description)}</p>
     ${item.reference ? `<div class="report-reference"><strong>REFERÊNCIA RELACIONADA</strong>${escapeHtml(item.reference)}</div>` : ""}
     ${item.resolution ? `<div class="report-resolution"><strong>TRATATIVA</strong>${escapeHtml(item.resolution)}</div>` : ""}
+    <div class="report-links">${item.assignee_name ? `<span>Responsável: <strong>${escapeHtml(item.assignee_name)}</strong></span>` : "<span>Sem responsável</span>"}${reportRuleBadge(item)}</div>
     <div class="report-card-footer">
-      <span>Reportado por <strong>${escapeHtml(item.reporter_name)}</strong> · ${formatInstructorDate(item.created_at)}</span>
+      <span>Reportado por <strong>${escapeHtml(item.reporter_name)}</strong> · ${formatInstructorDate(item.created_at)} · ${item.comments.length} comentário(s) · ${item.attachments.length} anexo(s)</span>
+      <button data-report-detail="${item.id}">Detalhes</button>
+      ${canEditOwn ? `<button data-report-edit="${item.id}">Editar</button>` : ""}
       ${canManage ? `<button data-report-review="${item.id}">Analisar</button>` : ""}
     </div>
   </article>`;
 }
 
+function updateNotificationBadge() {
+  const handoverCount = handovers.filter(item => ["Pendente", "Em andamento"].includes(item.status)).length;
+  const criticalReports = reports.filter(item => item.priority === "Crítica" && ["Aberto", "Em análise"].includes(item.status)).length;
+  const total = handoverCount + criticalReports;
+  $("#notificationCount").textContent = total > 99 ? "99+" : total;
+  $("#notificationCount").classList.toggle("hidden", total === 0);
+  $("#notificationButton").dataset.criticalReports = String(criticalReports);
+  $("#notificationButton").setAttribute(
+    "aria-label",
+    criticalReports ? `${criticalReports} report(s) crítico(s) e ${handoverCount} passagem(ns) pendente(s)` : "Abrir pendências da passagem de turno",
+  );
+}
+
+function syncReportAuthorFilter() {
+  const select = $("#reportAuthorFilter");
+  const selected = select.value;
+  const authors = [...new Map(reports.map(item => [item.reporter_username, item.reporter_name])).entries()]
+    .sort((left, right) => left[1].localeCompare(right[1], "pt-BR"));
+  select.innerHTML = '<option value="">Todos</option>' + authors.map(([username, name]) => `<option value="${escapeHtml(username)}">${escapeHtml(name)}</option>`).join("");
+  if (authors.some(([username]) => username === selected)) select.value = selected;
+}
+
 function renderReports() {
   const type = $("#reportTypeFilter").value;
   const status = $("#reportStatusFilter").value;
-  const visible = reports.filter(item => (!type || item.report_type === type) && (!status || item.status === status));
+  const priority = $("#reportPriorityFilter").value;
+  const author = $("#reportAuthorFilter").value;
+  const dateFrom = $("#reportDateFrom").value;
+  const dateTo = $("#reportDateTo").value;
+  const search = normalizeText($("#reportSearch").value);
+  const visible = reports.filter(item => {
+    const haystack = normalizeText([item.title, item.description, item.reference, item.reporter_name, item.assignee_name, item.resolution].join(" "));
+    const created = String(item.created_at).slice(0, 10);
+    return (!type || item.report_type === type)
+      && (!status || item.status === status)
+      && (!priority || item.priority === priority)
+      && (!author || item.reporter_username === author)
+      && (!dateFrom || created >= dateFrom)
+      && (!dateTo || created <= dateTo)
+      && (!search || haystack.includes(search));
+  });
   const count = value => reports.filter(item => item.status === value).length;
   $("#reportOpenCount").textContent = count("Aberto");
   $("#reportAnalysisCount").textContent = count("Em análise");
   $("#reportClosedCount").textContent = count("Resolvido") + count("Descartado");
   const openCount = count("Aberto") + count("Em análise");
   $("#reportNavCount").textContent = openCount > 99 ? "99+" : openCount;
+  updateNotificationBadge();
   $("#reportList").innerHTML = visible.length
     ? visible.map(reportCard).join("")
     : `<div class="table-message">Nenhum report encontrado com estes filtros.</div>`;
   document.querySelectorAll("[data-report-review]").forEach(button => button.addEventListener("click", () => {
     openReportReview(reports.find(item => item.id === Number(button.dataset.reportReview)));
+  }));
+  document.querySelectorAll("[data-report-detail]").forEach(button => button.addEventListener("click", () => {
+    openReportDetails(reports.find(item => item.id === Number(button.dataset.reportDetail)));
+  }));
+  document.querySelectorAll("[data-report-edit]").forEach(button => button.addEventListener("click", () => {
+    const item = reports.find(report => report.id === Number(button.dataset.reportEdit));
+    openReportDialog(item, item);
   }));
 }
 
@@ -961,7 +1016,9 @@ async function loadReports() {
   try {
     const data = await reportRequest();
     reports = data.items;
+    reportAssignees = data.assignees || [];
     reportsLoaded = true;
+    syncReportAuthorFilter();
     renderReports();
   } catch (error) {
     $("#reportList").innerHTML = `<div class="table-message">Não foi possível carregar os reports.</div>`;
@@ -969,20 +1026,41 @@ async function loadReports() {
   }
 }
 
-function openReportDialog(prefill = {}) {
+function openReportDialog(prefill = {}, editing = null) {
   if (!hasRole("admin", "supervisor", "operator")) {
     toast("Seu perfil não pode registrar reports.");
     return;
   }
   $("#reportForm").reset();
+  $("#reportForm").dataset.id = editing ? String(editing.id) : "";
   $("#reportFormError").classList.add("hidden");
+  $("#reportDialogTitle").textContent = editing ? "Editar report aberto" : "Novo report";
   $("#reportType").value = prefill.report_type || "discrepancy";
+  $("#reportType").disabled = Boolean(editing);
   $("#reportPriority").value = prefill.priority || "Normal";
   $("#reportTitle").value = prefill.title || "";
   $("#reportDescription").value = prefill.description || "";
   $("#reportReference").value = prefill.reference || "";
+  $("#saveReport").textContent = editing ? "Salvar alterações" : "Enviar report";
   $("#reportDialog").showModal();
   setTimeout(() => $("#reportTitle").focus(), 50);
+}
+
+async function reportFilePayload(file) {
+  if (file.size > 2 * 1024 * 1024) throw new Error(`${file.name}: o limite por anexo é 2 MB.`);
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  let binary = "";
+  for (let offset = 0; offset < bytes.length; offset += 32768) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + 32768));
+  }
+  return { filename: file.name, content_type: file.type || "text/plain", content_base64: btoa(binary) };
+}
+
+async function uploadReportFiles(reportId, files) {
+  if (files.length > 5) throw new Error("Selecione no máximo 5 anexos.");
+  for (const file of files) {
+    await reportRequest(`/${reportId}/attachments`, { method: "POST", body: JSON.stringify(await reportFilePayload(file)) });
+  }
 }
 
 async function saveReport(event) {
@@ -992,8 +1070,9 @@ async function saveReport(event) {
   errorBox.classList.add("hidden");
   button.disabled = true;
   try {
-    const saved = await reportRequest("", {
-      method: "POST",
+    const reportId = Number($("#reportForm").dataset.id || 0);
+    const saved = await reportRequest(reportId ? `/${reportId}` : "", {
+      method: reportId ? "PUT" : "POST",
       body: JSON.stringify({
         report_type: $("#reportType").value,
         priority: $("#reportPriority").value,
@@ -1002,12 +1081,12 @@ async function saveReport(event) {
         reference: $("#reportReference").value,
       }),
     });
-    reports.unshift(saved);
+    await uploadReportFiles(saved.id, [...$("#reportFiles").files]);
+    await loadReports();
     reportsLoaded = true;
-    renderReports();
     if (saved.report_type === "question" && hasRole("admin", "supervisor")) loadRules();
     $("#reportDialog").close();
-    toast("Report registrado e encaminhado para análise.");
+    toast(reportId ? "Report atualizado." : "Report registrado e encaminhado para análise.");
   } catch (error) {
     errorBox.textContent = error.message;
     errorBox.classList.remove("hidden");
@@ -1024,6 +1103,10 @@ function openReportReview(item) {
   $("#reportReviewTitle").textContent = item.title;
   $("#reportReviewStatus").value = item.status;
   $("#reportReviewPriority").value = item.priority;
+  $("#reportAssignee").innerHTML = '<option value="">Sem responsável</option>' + reportAssignees.map(user => `<option value="${user.id}">${escapeHtml(user.display_name)}</option>`).join("");
+  $("#reportAssignee").value = item.assignee_user_id ? String(item.assignee_user_id) : "";
+  $("#reportRuleAction").value = item.rule_action || "keep";
+  $("#reportRuleAction").disabled = !["Resolvido", "Descartado"].includes(item.status);
   $("#reportResolution").value = item.resolution || "";
   $("#reportReviewContext").innerHTML = `<strong>${escapeHtml(item.type_label)} · reportado por ${escapeHtml(item.reporter_name)}</strong><small>${escapeHtml(item.description)}</small>${item.reference ? `<small>Referência: ${escapeHtml(item.reference)}</small>` : ""}`;
   $("#reportReviewDialog").showModal();
@@ -1043,6 +1126,8 @@ async function saveReportReview(event) {
         status: $("#reportReviewStatus").value,
         priority: $("#reportReviewPriority").value,
         resolution: $("#reportResolution").value,
+        assignee_user_id: $("#reportAssignee").value,
+        rule_action: $("#reportRuleAction").value,
       }),
     });
     const index = reports.findIndex(item => item.id === id);
@@ -1056,6 +1141,64 @@ async function saveReportReview(event) {
   } finally {
     button.disabled = false;
   }
+}
+
+function formatReportFileSize(size) {
+  return size >= 1024 * 1024 ? `${(size / (1024 * 1024)).toFixed(1)} MB` : `${Math.max(1, Math.round(size / 1024))} KB`;
+}
+
+function openReportDetails(item) {
+  if (!item) return;
+  $("#reportDetailId").value = item.id;
+  $("#reportDetailTitle").textContent = item.title;
+  $("#reportDetailError").classList.add("hidden");
+  $("#reportComment").value = "";
+  $("#reportDetailFile").value = "";
+  const canCollaborate = hasRole("admin", "supervisor") || (hasRole("operator") && item.reporter_username === currentUser.username);
+  document.querySelector(".report-collaboration").classList.toggle("hidden", !canCollaborate);
+  $("#addReportComment").classList.toggle("hidden", !canCollaborate);
+  $("#addReportAttachment").classList.toggle("hidden", !canCollaborate);
+  const comments = item.comments.length ? item.comments.map(comment => `<div class="report-history-item"><strong>${escapeHtml(comment.author_name)}</strong><small>${formatInstructorDate(comment.created_at)}</small><p>${escapeHtml(comment.body)}</p></div>`).join("") : '<p class="report-empty-detail">Nenhum comentário.</p>';
+  const attachments = item.attachments.length ? item.attachments.map(file => `<div class="report-attachment"><a href="/api/report-attachments/${file.id}" target="_blank" rel="noopener">${escapeHtml(file.filename)}</a><small>${formatReportFileSize(file.size_bytes)} · ${escapeHtml(file.uploaded_by_name)}</small>${canCollaborate ? `<button type="button" data-report-attachment-delete="${file.id}">Excluir</button>` : ""}</div>`).join("") : '<p class="report-empty-detail">Nenhum anexo.</p>';
+  const events = item.events.length ? item.events.map(event => `<div class="report-event"><span>${escapeHtml(event.action)}</span><small>${escapeHtml(event.actor_name)} · ${formatInstructorDate(event.created_at)}</small></div>`).join("") : '<p class="report-empty-detail">Sem eventos.</p>';
+  $("#reportDetailContent").innerHTML = `<div class="report-detail-summary"><p>${escapeHtml(item.description)}</p>${item.reference ? `<small>Referência: ${escapeHtml(item.reference)}</small>` : ""}${item.assignee_name ? `<small>Responsável: ${escapeHtml(item.assignee_name)}</small>` : ""}${reportRuleBadge(item)}</div><section><h3>Comentários</h3>${comments}</section><section><h3>Anexos</h3>${attachments}</section><section><h3>Auditoria</h3>${events}</section>`;
+  document.querySelectorAll("[data-report-attachment-delete]").forEach(button => button.addEventListener("click", () => removeReportAttachment(Number(button.dataset.reportAttachmentDelete))));
+  $("#reportDetailDialog").showModal();
+}
+
+async function addCurrentReportComment() {
+  const id = Number($("#reportDetailId").value);
+  try {
+    await reportRequest(`/${id}/comments`, { method: "POST", body: JSON.stringify({ body: $("#reportComment").value }) });
+    await loadReports();
+    openReportDetails(reports.find(item => item.id === id));
+    toast("Comentário adicionado.");
+  } catch (error) { setDialogMessage("#reportDetailError", error.message); }
+}
+
+async function addCurrentReportAttachment() {
+  const id = Number($("#reportDetailId").value);
+  const file = $("#reportDetailFile").files[0];
+  if (!file) { setDialogMessage("#reportDetailError", "Selecione um arquivo."); return; }
+  try {
+    await uploadReportFiles(id, [file]);
+    await loadReports();
+    openReportDetails(reports.find(item => item.id === id));
+    toast("Anexo adicionado.");
+  } catch (error) { setDialogMessage("#reportDetailError", error.message); }
+}
+
+async function removeReportAttachment(id) {
+  if (!window.confirm("Excluir este anexo do report?")) return;
+  const reportId = Number($("#reportDetailId").value);
+  try {
+    await apiFetch(`${window.location.origin}/api/report-attachments/${id}`, { method: "DELETE" }).then(async response => {
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Não foi possível excluir o anexo.");
+    });
+    await loadReports();
+    openReportDetails(reports.find(item => item.id === reportId));
+  } catch (error) { setDialogMessage("#reportDetailError", error.message); }
 }
 
 async function ruleRequest(path = "", options = {}) {
@@ -1329,6 +1472,7 @@ function applyCurrentUser(user, csrf) {
   $("#operatorAvatar").textContent = user.display_name.split(/\s+/).slice(0, 2).map(value => value[0]).join("").toUpperCase();
   $("#usersNavItem").classList.toggle("hidden", user.role !== "admin");
   $("#ruleManagementNav").classList.toggle("hidden", !hasRole("admin", "supervisor"));
+  $("#reportsNavItem").classList.toggle("hidden", user.role === "viewer");
   $("#addInstructor").classList.toggle("hidden", !hasRole("admin", "supervisor"));
   $("#addAircraft").classList.toggle("hidden", !hasRole("admin", "supervisor"));
   $("#addHandover").classList.toggle("hidden", user.role === "viewer");
@@ -1394,7 +1538,7 @@ function bootstrapPortal() {
   loadHandovers();
   loadInstructors();
   loadAircraft();
-  loadReports();
+  if (!hasRole("viewer")) loadReports();
   if (hasRole("admin", "supervisor")) loadRules();
   updateShiftStatus();
   updateSystemStatus();
@@ -1514,6 +1658,7 @@ function openModule(key) {
     return;
   }
   if (key === "reports") {
+    if (hasRole("viewer")) { toast("O perfil de consulta não possui acesso aos reports."); return; }
     showView(reportsView, "Reports");
     if (!reportsLoaded) loadReports();
     return;
@@ -1588,8 +1733,20 @@ $("#deleteHandover").addEventListener("click", removeHandover);
 $("#addReport").addEventListener("click", () => openReportDialog());
 $("#reportTypeFilter").addEventListener("change", renderReports);
 $("#reportStatusFilter").addEventListener("change", renderReports);
+$("#reportPriorityFilter").addEventListener("change", renderReports);
+$("#reportAuthorFilter").addEventListener("change", renderReports);
+$("#reportDateFrom").addEventListener("change", renderReports);
+$("#reportDateTo").addEventListener("change", renderReports);
+$("#reportSearch").addEventListener("input", renderReports);
 $("#reportForm").addEventListener("submit", saveReport);
 $("#reportReviewForm").addEventListener("submit", saveReportReview);
+$("#reportReviewStatus").addEventListener("change", () => {
+  const status = $("#reportReviewStatus").value;
+  $("#reportRuleAction").value = status === "Resolvido" ? "pending_approval" : status === "Descartado" ? "no_rule" : "keep";
+  $("#reportRuleAction").disabled = !["Resolvido", "Descartado"].includes(status);
+});
+$("#addReportComment").addEventListener("click", addCurrentReportComment);
+$("#addReportAttachment").addEventListener("click", addCurrentReportAttachment);
 $("#unreviewedRulesTab").addEventListener("click", () => { activeRulesTab = "unreviewed"; renderRules(); });
 $("#pendingApprovalRulesTab").addEventListener("click", () => { activeRulesTab = "pending_approval"; renderRules(); });
 $("#approvedRulesTab").addEventListener("click", () => { activeRulesTab = "approved"; renderRules(); });
@@ -1623,8 +1780,9 @@ $("#shiftStatusCard").addEventListener("click", () => {
   openModule("passagem");
 });
 $("#notificationButton").addEventListener("click", () => {
-  document.querySelectorAll(".nav-item").forEach(item => item.classList.toggle("active", item.dataset.view === "passagem"));
-  openModule("passagem");
+  const target = Number($("#notificationButton").dataset.criticalReports || 0) > 0 && !hasRole("viewer") ? "reports" : "passagem";
+  document.querySelectorAll(".nav-item").forEach(item => item.classList.toggle("active", item.dataset.view === target));
+  openModule(target);
 });
 $("#helpButton").addEventListener("click", () => $("#helpDialog").showModal());
 $("#closeHelp").addEventListener("click", () => $("#helpDialog").close());

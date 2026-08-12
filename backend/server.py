@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import csv
 import io
@@ -70,7 +72,7 @@ LOCAL_MODEL = (
 )
 FALLBACK_MODEL = os.environ.get("GEMINI_FALLBACK_MODEL", "gemini-3.5-flash-lite")
 EXTERNAL_MODEL = os.environ.get("GEMINI_EXTERNAL_MODEL", "gemini-3.1-pro-preview")
-RELEASE_ID = os.environ.get("SAFE_CCO_RELEASE", "2026-08-06-grounding-fallback-5")
+RELEASE_ID = os.environ.get("SAFE_CCO_RELEASE", "2026-08-12-reports-workflow-6")
 HOST = os.environ.get("SAFE_CCO_HOST", "0.0.0.0" if os.environ.get("RENDER") else "127.0.0.1")
 PORT = int(os.environ.get("SAFE_CCO_PORT") or os.environ.get("PORT") or "8765")
 SECURE_COOKIES = os.environ.get("SAFE_CCO_SECURE_COOKIES", "").lower() in {"1", "true", "yes"} or bool(
@@ -178,6 +180,20 @@ HANDOVER_STATUSES = {"Pendente", "Em andamento", "Concluída"}
 REPORT_TYPES = {"discrepancy": "Discrepância", "question": "Indicação de pergunta"}
 REPORT_PRIORITIES = {"Baixa", "Normal", "Alta", "Crítica"}
 REPORT_STATUSES = {"Aberto", "Em análise", "Resolvido", "Descartado"}
+REPORT_RULE_ACTIONS = {
+    "keep": "Manter sem decisão",
+    "pending_approval": "Encaminhar para aprovação",
+    "covered": "Já coberta pela base",
+    "no_rule": "Não gera regra",
+}
+REPORT_ATTACHMENT_TYPES = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "application/pdf": ".pdf",
+    "text/plain": ".txt",
+}
+MAX_REPORT_ATTACHMENTS = 5
+MAX_REPORT_ATTACHMENT_BYTES = 2 * 1024 * 1024
 AIRCRAFT_FLEET_STATUSES = {"Ativa", "Inativa"}
 AIRCRAFT_OPERATIONAL_STATUSES = {"Operacional", "Fora de Operação", "Em Manutenção"}
 RULE_CANDIDATE_STATUS_LABELS = {
@@ -1444,6 +1460,7 @@ def reports_connection():
 
 
 def initialize_reports_db() -> None:
+    initialize_rules_db()
     with REPORTS_LOCK, reports_connection() as connection:
         connection.execute("""CREATE TABLE IF NOT EXISTS reports (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1457,6 +1474,11 @@ def initialize_reports_db() -> None:
             reporter_username TEXT NOT NULL,
             reporter_name TEXT NOT NULL,
             resolution TEXT NOT NULL DEFAULT '',
+            assignee_user_id INTEGER,
+            assignee_username TEXT NOT NULL DEFAULT '',
+            assignee_name TEXT NOT NULL DEFAULT '',
+            rule_candidate_id INTEGER,
+            rule_action TEXT NOT NULL DEFAULT 'keep',
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             resolved_at TEXT
@@ -1471,8 +1493,46 @@ def initialize_reports_db() -> None:
             created_at TEXT NOT NULL,
             FOREIGN KEY(report_id) REFERENCES reports(id) ON DELETE CASCADE
         )""")
+        connection.execute("""CREATE TABLE IF NOT EXISTS report_comments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            report_id INTEGER NOT NULL,
+            body TEXT NOT NULL,
+            author_user_id INTEGER NOT NULL,
+            author_username TEXT NOT NULL,
+            author_name TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(report_id) REFERENCES reports(id) ON DELETE CASCADE
+        )""")
+        connection.execute("""CREATE TABLE IF NOT EXISTS report_attachments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            report_id INTEGER NOT NULL,
+            filename TEXT NOT NULL,
+            content_type TEXT NOT NULL,
+            size_bytes INTEGER NOT NULL,
+            content BLOB NOT NULL,
+            uploaded_by_user_id INTEGER NOT NULL,
+            uploaded_by_username TEXT NOT NULL,
+            uploaded_by_name TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(report_id) REFERENCES reports(id) ON DELETE CASCADE
+        )""")
+        existing_columns = {
+            row["name"] for row in connection.execute("PRAGMA table_info(reports)").fetchall()
+        }
+        report_columns = {
+            "assignee_user_id": "INTEGER",
+            "assignee_username": "TEXT NOT NULL DEFAULT ''",
+            "assignee_name": "TEXT NOT NULL DEFAULT ''",
+            "rule_candidate_id": "INTEGER",
+            "rule_action": "TEXT NOT NULL DEFAULT 'keep'",
+        }
+        for column, declaration in report_columns.items():
+            if column not in existing_columns:
+                connection.execute(f"ALTER TABLE reports ADD COLUMN {column} {declaration}")
         connection.execute("CREATE INDEX IF NOT EXISTS idx_reports_status ON reports(status, priority, updated_at)")
         connection.execute("CREATE INDEX IF NOT EXISTS idx_report_events_report ON report_events(report_id, created_at)")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_report_comments_report ON report_comments(report_id, created_at)")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_report_attachments_report ON report_attachments(report_id, created_at)")
         migrate_legacy_tables(connection, REPORTS_DB_PATH, LEGACY_DB_PATHS["reports"], {
             "reports": (
                 "id", "report_type", "title", "description", "reference", "priority",
@@ -1484,10 +1544,81 @@ def initialize_reports_db() -> None:
                 "created_at",
             ),
         })
+    backfill_report_candidate_links()
 
 
-def report_dict(row: sqlite3.Row) -> dict[str, Any]:
-    return {
+def backfill_report_candidate_links() -> None:
+    """Relaciona reports antigos à regra criada na mesma indicação, sem mudar decisões."""
+    with reports_connection() as connection:
+        rows = connection.execute(
+            """SELECT id, title, reference FROM reports
+               WHERE report_type='question' AND rule_candidate_id IS NULL"""
+        ).fetchall()
+    if not rows:
+        return
+    updates = []
+    with rules_connection() as connection:
+        for row in rows:
+            question = row["reference"].strip() or row["title"].strip()
+            candidate = connection.execute(
+                "SELECT id FROM rule_candidates WHERE normalized_question=?",
+                (normalize(question),),
+            ).fetchone()
+            if candidate:
+                updates.append((int(candidate["id"]), int(row["id"])))
+    if updates:
+        with REPORTS_LOCK, reports_connection() as connection:
+            connection.executemany(
+                "UPDATE reports SET rule_candidate_id=? WHERE id=? AND rule_candidate_id IS NULL",
+                updates,
+            )
+
+
+def report_rule_summary(candidate_id: int | None) -> dict[str, Any] | None:
+    if not candidate_id:
+        return None
+    initialize_rules_db()
+    with rules_connection() as connection:
+        row = connection.execute(
+            "SELECT id, question, status, rule_code, updated_at FROM rule_candidates WHERE id=?",
+            (candidate_id,),
+        ).fetchone()
+    if not row:
+        return None
+    item = dict(row)
+    item["status_label"] = RULE_CANDIDATE_STATUS_LABELS.get(item["status"], item["status"])
+    return item
+
+
+def report_details(connection: sqlite3.Connection, report_id: int) -> dict[str, Any]:
+    comments = [dict(row) for row in connection.execute(
+        """SELECT id, body, author_username, author_name, created_at
+           FROM report_comments WHERE report_id=? ORDER BY created_at""",
+        (report_id,),
+    ).fetchall()]
+    attachments = [dict(row) for row in connection.execute(
+        """SELECT id, filename, content_type, size_bytes, uploaded_by_username,
+                  uploaded_by_name, created_at
+           FROM report_attachments WHERE report_id=? ORDER BY created_at""",
+        (report_id,),
+    ).fetchall()]
+    events = []
+    for row in connection.execute(
+        """SELECT id, action, actor_username, actor_name, details, created_at
+           FROM report_events WHERE report_id=? ORDER BY created_at""",
+        (report_id,),
+    ).fetchall():
+        item = dict(row)
+        try:
+            item["details"] = json.loads(item["details"] or "{}")
+        except json.JSONDecodeError:
+            item["details"] = {}
+        events.append(item)
+    return {"comments": comments, "attachments": attachments, "events": events}
+
+
+def report_dict(row: sqlite3.Row, connection: sqlite3.Connection | None = None) -> dict[str, Any]:
+    item = {
         "id": row["id"],
         "report_type": row["report_type"],
         "type_label": REPORT_TYPES.get(row["report_type"], row["report_type"]),
@@ -1499,10 +1630,19 @@ def report_dict(row: sqlite3.Row) -> dict[str, Any]:
         "reporter_username": row["reporter_username"],
         "reporter_name": row["reporter_name"],
         "resolution": row["resolution"],
+        "assignee_user_id": row["assignee_user_id"],
+        "assignee_username": row["assignee_username"],
+        "assignee_name": row["assignee_name"],
+        "rule_candidate_id": row["rule_candidate_id"],
+        "rule_action": row["rule_action"],
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
         "resolved_at": row["resolved_at"],
     }
+    item["rule_candidate"] = None
+    if connection is not None:
+        item.update(report_details(connection, int(row["id"])))
+    return item
 
 
 def validate_new_report(data: dict[str, Any]) -> tuple[str, str, str, str, str]:
@@ -1535,19 +1675,48 @@ def list_reports() -> list[dict[str, Any]]:
                    WHEN 'Normal' THEN 2 ELSE 3 END,
                updated_at DESC"""
         ).fetchall()
-    return [report_dict(row) for row in rows]
+        items = [report_dict(row, connection) for row in rows]
+    for item in items:
+        item["rule_candidate"] = report_rule_summary(item["rule_candidate_id"])
+    return items
+
+
+def list_report_assignees() -> list[dict[str, Any]]:
+    initialize_auth_db()
+    with auth_connection() as connection:
+        rows = connection.execute(
+            """SELECT id, username, display_name, role FROM users
+               WHERE active=1 AND role IN ('admin', 'supervisor')
+               ORDER BY display_name"""
+        ).fetchall()
+    return [dict(row) for row in rows]
 
 
 def create_report(data: dict[str, Any], reporter: dict[str, Any]) -> dict[str, Any]:
     initialize_reports_db()
     values = validate_new_report(data)
     timestamp = now_iso()
+    candidate = None
+    if values[0] == "question":
+        candidate = upsert_rule_candidate(
+            question=values[3] or values[1],
+            proposed_answer=values[2],
+            confidence="low",
+            source_kind="operator_report",
+            sources=[],
+            local_evidence=[],
+            actor=reporter,
+        )
     with REPORTS_LOCK, reports_connection() as connection:
         cursor = connection.execute(
             """INSERT INTO reports(report_type, title, description, reference, priority, status,
-               reporter_user_id, reporter_username, reporter_name, resolution, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, 'Aberto', ?, ?, ?, '', ?, ?)""",
-            (*values, reporter["id"], reporter["username"], reporter["display_name"], timestamp, timestamp),
+               reporter_user_id, reporter_username, reporter_name, resolution, rule_candidate_id,
+               rule_action, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, 'Aberto', ?, ?, ?, '', ?, 'keep', ?, ?)""",
+            (
+                *values, reporter["id"], reporter["username"], reporter["display_name"],
+                candidate["id"] if candidate else None, timestamp, timestamp,
+            ),
         )
         report_id = int(cursor.lastrowid)
         connection.execute(
@@ -1561,21 +1730,97 @@ def create_report(data: dict[str, Any], reporter: dict[str, Any]) -> dict[str, A
                 timestamp,
             ),
         )
+    with reports_connection() as connection:
         row = connection.execute("SELECT * FROM reports WHERE id=?", (report_id,)).fetchone()
-    report = report_dict(row)
-    if report["report_type"] == "question":
-        question = report["reference"] or report["title"]
-        description = report["description"]
-        upsert_rule_candidate(
-            question=question,
-            proposed_answer=description,
+        item = report_dict(row, connection)
+    item["rule_candidate"] = report_rule_summary(item["rule_candidate_id"])
+    return item
+
+
+def resolve_report_assignee(user_id: Any) -> tuple[int | None, str, str]:
+    if user_id in {None, "", 0, "0"}:
+        return None, "", ""
+    try:
+        candidate_id = int(user_id)
+    except (TypeError, ValueError) as error:
+        raise ValueError("Responsável inválido.") from error
+    initialize_auth_db()
+    with auth_connection() as connection:
+        row = connection.execute(
+            """SELECT id, username, display_name FROM users
+               WHERE id=? AND active=1 AND role IN ('admin', 'supervisor')""",
+            (candidate_id,),
+        ).fetchone()
+    if not row:
+        raise ValueError("Selecione um Supervisor ou Administrador ativo como responsável.")
+    return int(row["id"]), row["username"], row["display_name"]
+
+
+def transition_report_rule(
+    report: sqlite3.Row, rule_action: str, resolution: str, actor: dict[str, Any]
+) -> int | None:
+    candidate_id = report["rule_candidate_id"]
+    if rule_action == "keep":
+        return candidate_id
+    if rule_action not in REPORT_RULE_ACTIONS:
+        raise ValueError("Selecione uma tratativa válida para a regra relacionada.")
+    if not candidate_id and rule_action == "pending_approval":
+        candidate = upsert_rule_candidate(
+            question=report["reference"].strip() or report["title"].strip(),
+            proposed_answer=resolution,
             confidence="low",
             source_kind="operator_report",
             sources=[],
             local_evidence=[],
-            actor=reporter,
+            actor=actor,
         )
-    return report
+        candidate_id = int(candidate["id"])
+    if not candidate_id:
+        return None
+    with RULES_LOCK, rules_connection() as connection:
+        candidate = connection.execute(
+            "SELECT * FROM rule_candidates WHERE id=?", (candidate_id,)
+        ).fetchone()
+        if not candidate:
+            return None
+        if candidate["status"] == "approved":
+            if rule_action in {"covered", "pending_approval"}:
+                return candidate_id
+            raise ValueError("A regra relacionada já está aprovada e não pode ser descartada pelo report.")
+        timestamp = now_iso()
+        if rule_action == "pending_approval":
+            connection.execute(
+                """UPDATE rule_candidates SET proposed_answer=?, status='pending_approval',
+                   reviewed_by_username=?, reviewed_by_name=?, reviewed_at=?, review_note=?,
+                   updated_at=? WHERE id=?""",
+                (
+                    resolution, actor["username"], actor["display_name"], timestamp,
+                    "Encaminhada para aprovação pela tratativa do report.", timestamp, candidate_id,
+                ),
+            )
+            action = "Encaminhada pelo report"
+        else:
+            note = (
+                "Pergunta já coberta pela base confirmada; report encerrado."
+                if rule_action == "covered"
+                else "O report foi encerrado sem gerar regra de conhecimento."
+            )
+            connection.execute(
+                """UPDATE rule_candidates SET status='rejected', reviewed_by_username=?,
+                   reviewed_by_name=?, reviewed_at=?, review_note=?, updated_at=? WHERE id=?""",
+                (actor["username"], actor["display_name"], timestamp, note, timestamp, candidate_id),
+            )
+            action = "Rejeitada pelo report"
+        connection.execute(
+            """INSERT INTO rule_events(candidate_id, action, actor_username, actor_name, details, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (
+                candidate_id, action, actor["username"], actor["display_name"],
+                json.dumps({"report_id": report["id"], "rule_action": rule_action}, ensure_ascii=False),
+                timestamp,
+            ),
+        )
+    return candidate_id
 
 
 def update_report(report_id: int, data: dict[str, Any], actor: dict[str, Any]) -> dict[str, Any]:
@@ -1583,41 +1828,223 @@ def update_report(report_id: int, data: dict[str, Any], actor: dict[str, Any]) -
     priority = str(data.get("priority", "")).strip()
     status = str(data.get("status", "")).strip()
     resolution = str(data.get("resolution", "")).strip()
+    assignee = resolve_report_assignee(data.get("assignee_user_id"))
+    rule_action = str(data.get("rule_action", "keep")).strip() or "keep"
     if priority not in REPORT_PRIORITIES or status not in REPORT_STATUSES:
         raise ValueError("Prioridade ou situação do report inválida.")
     if len(resolution) > 2000:
         raise ValueError("A tratativa deve ter até 2.000 caracteres.")
     if status in {"Resolvido", "Descartado"} and not resolution:
         raise ValueError("Registre a tratativa antes de encerrar o report.")
+    if status not in {"Resolvido", "Descartado"}:
+        rule_action = "keep"
+    elif status == "Descartado" and rule_action == "keep":
+        rule_action = "no_rule"
+    elif status == "Resolvido" and rule_action == "keep":
+        rule_action = "pending_approval"
     timestamp = now_iso()
     resolved_at = timestamp if status in {"Resolvido", "Descartado"} else None
-    with REPORTS_LOCK, reports_connection() as connection:
-        current = connection.execute("SELECT * FROM reports WHERE id=?", (report_id,)).fetchone()
+    with REPORTS_LOCK:
+        with reports_connection() as connection:
+            current = connection.execute("SELECT * FROM reports WHERE id=?", (report_id,)).fetchone()
         if not current:
             raise LookupError("Report não encontrado.")
+        candidate_id = transition_report_rule(current, rule_action, resolution, actor)
         changes = {
             "status": {"from": current["status"], "to": status},
             "priority": {"from": current["priority"], "to": priority},
             "resolution_updated": resolution != current["resolution"],
+            "assignee": {"from": current["assignee_name"], "to": assignee[2]},
+            "rule_action": rule_action,
         }
+        with reports_connection() as connection:
+            connection.execute(
+                """UPDATE reports SET priority=?, status=?, resolution=?, assignee_user_id=?,
+                   assignee_username=?, assignee_name=?, rule_candidate_id=?, rule_action=?,
+                   updated_at=?, resolved_at=? WHERE id=?""",
+                (
+                    priority, status, resolution, *assignee, candidate_id, rule_action,
+                    timestamp, resolved_at, report_id,
+                ),
+            )
+            connection.execute(
+                """INSERT INTO report_events(report_id, action, actor_username, actor_name, details, created_at)
+                   VALUES (?, 'Atualizado', ?, ?, ?, ?)""",
+                (
+                    report_id, actor["username"], actor["display_name"],
+                    json.dumps(changes, ensure_ascii=False), timestamp,
+                ),
+            )
+    with reports_connection() as connection:
+        row = connection.execute("SELECT * FROM reports WHERE id=?", (report_id,)).fetchone()
+        item = report_dict(row, connection)
+    item["rule_candidate"] = report_rule_summary(item["rule_candidate_id"])
+    return item
+
+
+def update_own_report(report_id: int, data: dict[str, Any], actor: dict[str, Any]) -> dict[str, Any]:
+    values = validate_new_report(data)
+    timestamp = now_iso()
+    with REPORTS_LOCK, reports_connection() as connection:
+        current = connection.execute("SELECT * FROM reports WHERE id=?", (report_id,)).fetchone()
+        if not current:
+            raise LookupError("Report não encontrado.")
+        if current["reporter_user_id"] != actor["id"]:
+            raise PermissionError("Você só pode editar reports criados por você.")
+        if current["status"] != "Aberto":
+            raise PermissionError("Somente reports abertos podem ser editados pelo autor.")
+        if values[0] != current["report_type"]:
+            raise ValueError("O tipo do report não pode ser alterado após o envio.")
         connection.execute(
-            """UPDATE reports SET priority=?, status=?, resolution=?, updated_at=?, resolved_at=?
+            """UPDATE reports SET title=?, description=?, reference=?, priority=?, updated_at=?
                WHERE id=?""",
-            (priority, status, resolution, timestamp, resolved_at, report_id),
+            (values[1], values[2], values[3], values[4], timestamp, report_id),
         )
         connection.execute(
             """INSERT INTO report_events(report_id, action, actor_username, actor_name, details, created_at)
-               VALUES (?, 'Atualizado', ?, ?, ?, ?)""",
+               VALUES (?, 'Conteúdo editado', ?, ?, '{}', ?)""",
+            (report_id, actor["username"], actor["display_name"], timestamp),
+        )
+        candidate_id = current["rule_candidate_id"]
+    if candidate_id:
+        with RULES_LOCK, rules_connection() as connection:
+            candidate = connection.execute(
+                "SELECT status FROM rule_candidates WHERE id=?", (candidate_id,)
+            ).fetchone()
+            if candidate and candidate["status"] == "unreviewed":
+                try:
+                    connection.execute(
+                        """UPDATE rule_candidates SET question=?, normalized_question=?, proposed_answer=?,
+                           updated_at=? WHERE id=?""",
+                        (
+                            values[3] or values[1], normalize(values[3] or values[1]),
+                            values[2], timestamp, candidate_id,
+                        ),
+                    )
+                except sqlite3.IntegrityError as error:
+                    raise ValueError("Já existe outra regra candidata para esta pergunta.") from error
+    with reports_connection() as connection:
+        row = connection.execute("SELECT * FROM reports WHERE id=?", (report_id,)).fetchone()
+        item = report_dict(row, connection)
+    item["rule_candidate"] = report_rule_summary(item["rule_candidate_id"])
+    return item
+
+
+def add_report_comment(report_id: int, body: str, actor: dict[str, Any]) -> dict[str, Any]:
+    initialize_reports_db()
+    body = body.strip()
+    if not body or len(body) > 2000:
+        raise ValueError("Informe um comentário de até 2.000 caracteres.")
+    timestamp = now_iso()
+    with REPORTS_LOCK, reports_connection() as connection:
+        report = connection.execute("SELECT * FROM reports WHERE id=?", (report_id,)).fetchone()
+        if not report:
+            raise LookupError("Report não encontrado.")
+        if actor["role"] == "operator" and report["reporter_user_id"] != actor["id"]:
+            raise PermissionError("Você só pode comentar em reports criados por você.")
+        cursor = connection.execute(
+            """INSERT INTO report_comments(report_id, body, author_user_id, author_username,
+               author_name, created_at) VALUES (?, ?, ?, ?, ?, ?)""",
+            (report_id, body, actor["id"], actor["username"], actor["display_name"], timestamp),
+        )
+        connection.execute(
+            """INSERT INTO report_events(report_id, action, actor_username, actor_name, details, created_at)
+               VALUES (?, 'Comentário adicionado', ?, ?, '{}', ?)""",
+            (report_id, actor["username"], actor["display_name"], timestamp),
+        )
+        row = connection.execute("SELECT * FROM report_comments WHERE id=?", (cursor.lastrowid,)).fetchone()
+    return dict(row)
+
+
+def add_report_attachment(report_id: int, data: dict[str, Any], actor: dict[str, Any]) -> dict[str, Any]:
+    initialize_reports_db()
+    filename = Path(str(data.get("filename", "")).strip()).name[:180]
+    filename = re.sub(r'[\x00-\x1f\x7f"\\]', "_", filename).strip()
+    content_type = str(data.get("content_type", "")).strip().lower()
+    encoded = str(data.get("content_base64", ""))
+    if not filename or content_type not in REPORT_ATTACHMENT_TYPES:
+        raise ValueError("Envie uma imagem JPG/PNG, PDF ou arquivo TXT válido.")
+    try:
+        content = base64.b64decode(encoded, validate=True)
+    except (ValueError, binascii.Error) as error:
+        raise ValueError("O anexo enviado é inválido.") from error
+    if not content or len(content) > MAX_REPORT_ATTACHMENT_BYTES:
+        raise ValueError("Cada anexo deve possuir no máximo 2 MB.")
+    timestamp = now_iso()
+    with REPORTS_LOCK, reports_connection() as connection:
+        report = connection.execute("SELECT * FROM reports WHERE id=?", (report_id,)).fetchone()
+        if not report:
+            raise LookupError("Report não encontrado.")
+        if actor["role"] == "operator" and report["reporter_user_id"] != actor["id"]:
+            raise PermissionError("Você só pode anexar arquivos aos reports criados por você.")
+        if actor["role"] == "operator" and report["status"] not in {"Aberto", "Em análise"}:
+            raise PermissionError("Não é possível anexar arquivos a um report encerrado.")
+        count = connection.execute(
+            "SELECT COUNT(*) FROM report_attachments WHERE report_id=?", (report_id,)
+        ).fetchone()[0]
+        if count >= MAX_REPORT_ATTACHMENTS:
+            raise ValueError(f"Cada report aceita no máximo {MAX_REPORT_ATTACHMENTS} anexos.")
+        cursor = connection.execute(
+            """INSERT INTO report_attachments(report_id, filename, content_type, size_bytes,
+               content, uploaded_by_user_id, uploaded_by_username, uploaded_by_name, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
-                report_id,
-                actor["username"],
-                actor["display_name"],
-                json.dumps(changes, ensure_ascii=False),
-                timestamp,
+                report_id, filename, content_type, len(content), sqlite3.Binary(content), actor["id"],
+                actor["username"], actor["display_name"], timestamp,
             ),
         )
-        row = connection.execute("SELECT * FROM reports WHERE id=?", (report_id,)).fetchone()
-    return report_dict(row)
+        connection.execute(
+            """INSERT INTO report_events(report_id, action, actor_username, actor_name, details, created_at)
+               VALUES (?, 'Anexo adicionado', ?, ?, ?, ?)""",
+            (
+                report_id, actor["username"], actor["display_name"],
+                json.dumps({"filename": filename, "size_bytes": len(content)}, ensure_ascii=False), timestamp,
+            ),
+        )
+        row = connection.execute(
+            """SELECT id, filename, content_type, size_bytes, uploaded_by_username,
+                      uploaded_by_name, created_at FROM report_attachments WHERE id=?""",
+            (cursor.lastrowid,),
+        ).fetchone()
+    return dict(row)
+
+
+def get_report_attachment(attachment_id: int) -> tuple[bytes, str, str]:
+    initialize_reports_db()
+    with reports_connection() as connection:
+        row = connection.execute(
+            "SELECT filename, content_type, content FROM report_attachments WHERE id=?",
+            (attachment_id,),
+        ).fetchone()
+    if not row:
+        raise LookupError("Anexo não encontrado.")
+    return bytes(row["content"]), row["content_type"], row["filename"]
+
+
+def delete_report_attachment(attachment_id: int, actor: dict[str, Any]) -> None:
+    initialize_reports_db()
+    with REPORTS_LOCK, reports_connection() as connection:
+        row = connection.execute(
+            """SELECT a.*, r.status FROM report_attachments a
+               JOIN reports r ON r.id=a.report_id WHERE a.id=?""",
+            (attachment_id,),
+        ).fetchone()
+        if not row:
+            raise LookupError("Anexo não encontrado.")
+        if actor["role"] == "operator" and (
+            row["uploaded_by_user_id"] != actor["id"]
+            or row["status"] not in {"Aberto", "Em análise"}
+        ):
+            raise PermissionError("Você não pode excluir este anexo.")
+        connection.execute("DELETE FROM report_attachments WHERE id=?", (attachment_id,))
+        connection.execute(
+            """INSERT INTO report_events(report_id, action, actor_username, actor_name, details, created_at)
+               VALUES (?, 'Anexo removido', ?, ?, ?, ?)""",
+            (
+                row["report_id"], actor["username"], actor["display_name"],
+                json.dumps({"filename": row["filename"]}, ensure_ascii=False), now_iso(),
+            ),
+        )
 
 
 @contextmanager
@@ -3325,12 +3752,28 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(200, {"items": list_handovers(), "shifts": SHIFTS})
             return
         if urllib.parse.urlparse(self.path).path == "/api/reports":
+            if user["role"] == "viewer":
+                self.send_json(403, {"error": "O perfil de consulta não possui acesso aos reports."}); return
             self.send_json(200, {
                 "items": list_reports(),
                 "types": REPORT_TYPES,
                 "priorities": sorted(REPORT_PRIORITIES),
                 "statuses": ["Aberto", "Em análise", "Resolvido", "Descartado"],
+                "rule_actions": REPORT_RULE_ACTIONS,
+                "assignees": list_report_assignees(),
             })
+            return
+        attachment_match = re.fullmatch(
+            r"/api/report-attachments/(\d+)", urllib.parse.urlparse(self.path).path
+        )
+        if attachment_match:
+            if user["role"] == "viewer":
+                self.send_json(403, {"error": "O perfil de consulta não possui acesso aos reports."}); return
+            try:
+                content, content_type, filename = get_report_attachment(int(attachment_match.group(1)))
+                self.send_bytes(200, content, content_type, filename)
+            except LookupError as error:
+                self.send_json(404, {"error": str(error)})
             return
         if urllib.parse.urlparse(self.path).path == "/api/searches":
             query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
@@ -3366,7 +3809,13 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         try:
             length = int(self.headers.get("Content-Length", "0"))
-            data = json.loads(self.rfile.read(min(length, 16_384)).decode("utf-8"))
+            is_report_attachment = bool(re.fullmatch(
+                r"/api/reports/\d+/attachments", urllib.parse.urlparse(self.path).path
+            ))
+            max_body = 3_000_000 if is_report_attachment else 16_384
+            if length > max_body:
+                raise ValueError("A requisição excede o tamanho permitido.")
+            data = json.loads(self.rfile.read(length).decode("utf-8"))
             if self.path == "/api/auth/setup":
                 if not auth_setup_required():
                     self.send_json(409, {"error": "O administrador inicial já foi configurado."}); return
@@ -3430,6 +3879,22 @@ class Handler(BaseHTTPRequestHandler):
                 if user["role"] not in {"admin", "supervisor", "operator"}:
                     self.send_json(403, {"error": "Perfil de consulta não pode registrar reports."}); return
                 self.send_json(201, create_report(data, user))
+                return
+            report_comment_match = re.fullmatch(r"/api/reports/(\d+)/comments", self.path)
+            if report_comment_match:
+                if user["role"] == "viewer":
+                    self.send_json(403, {"error": "O perfil de consulta não pode comentar reports."}); return
+                self.send_json(201, add_report_comment(
+                    int(report_comment_match.group(1)), str(data.get("body", "")), user
+                ))
+                return
+            report_attachment_match = re.fullmatch(r"/api/reports/(\d+)/attachments", self.path)
+            if report_attachment_match:
+                if user["role"] == "viewer":
+                    self.send_json(403, {"error": "O perfil de consulta não pode anexar arquivos."}); return
+                self.send_json(201, add_report_attachment(
+                    int(report_attachment_match.group(1)), data, user
+                ))
                 return
             if self.path == "/api/searches":
                 record_id = save_search_history(
@@ -3496,12 +3961,17 @@ class Handler(BaseHTTPRequestHandler):
             return
         report_match = re.fullmatch(r"/api/reports/(\d+)", urllib.parse.urlparse(self.path).path)
         if report_match:
-            if user["role"] not in {"admin", "supervisor"}:
-                self.send_json(403, {"error": "Somente Supervisor ou Administrador pode tratar reports."}); return
+            if user["role"] == "viewer":
+                self.send_json(403, {"error": "O perfil de consulta não pode alterar reports."}); return
             try:
                 length = int(self.headers.get("Content-Length", "0"))
                 data = json.loads(self.rfile.read(min(length, 16_384)).decode("utf-8"))
-                self.send_json(200, update_report(int(report_match.group(1)), data, user))
+                saved = (
+                    update_report(int(report_match.group(1)), data, user)
+                    if user["role"] in {"admin", "supervisor"}
+                    else update_own_report(int(report_match.group(1)), data, user)
+                )
+                self.send_json(200, saved)
             except (ValueError, json.JSONDecodeError) as error:
                 self.send_json(400, {"error": str(error)})
             except LookupError as error:
@@ -3560,6 +4030,20 @@ class Handler(BaseHTTPRequestHandler):
         if not context:
             return
         user, _ = context
+        attachment_match = re.fullmatch(
+            r"/api/report-attachments/(\d+)", urllib.parse.urlparse(self.path).path
+        )
+        if attachment_match:
+            if user["role"] == "viewer":
+                self.send_json(403, {"error": "O perfil de consulta não pode excluir anexos."}); return
+            try:
+                delete_report_attachment(int(attachment_match.group(1)), user)
+                self.send_json(200, {"ok": True})
+            except PermissionError as error:
+                self.send_json(403, {"error": str(error)})
+            except LookupError as error:
+                self.send_json(404, {"error": str(error)})
+            return
         handover_match = re.fullmatch(r"/api/handovers/(\d+)", urllib.parse.urlparse(self.path).path)
         if handover_match:
             if user["role"] not in {"admin", "supervisor", "operator"}:
