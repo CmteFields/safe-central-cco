@@ -737,6 +737,7 @@ class WSGITests(unittest.TestCase):
         payload = json.loads(body)
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["release"], server.RELEASE_ID)
+        self.assertEqual(payload["updated_at"], server.PORTAL_UPDATED_AT)
         self.assertIn(payload["knowledge"], {"private_bundle", "configured_root", "public_index"})
         self.assertIn(payload["gemini"], {"configured", "missing"})
         self.assertEqual(payload["gemini_model"], server.LOCAL_MODEL)
@@ -747,9 +748,11 @@ class WSGITests(unittest.TestCase):
         self.assertEqual(status, "200 OK")
         self.assertIn("text/html", headers["Content-Type"])
         self.assertIn(b"CCO - Central de conhecimento", body)
+        self.assertIn(b'id="portalUpdatedAt"', body)
+        self.assertIn(b'<option selected>Aberto</option>', body)
         self.assertIn(b'styles.css?v=20260806-1', body)
         self.assertIn(b"public-knowledge-index.js?v=20260731-6", body)
-        self.assertIn(b"app.js?v=20260812-2", body)
+        self.assertIn(b"app.js?v=20260812-3", body)
         self.assertIn(b'id="newSearchButton"', body)
 
     def test_browser_uses_same_origin_ai_endpoint(self):
