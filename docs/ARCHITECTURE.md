@@ -55,6 +55,7 @@ Se a requisição falhar, a interface muda para o estado real `fallback`, inform
 - `graphify-out` é sempre regenerável e não deve ser editado manualmente.
 - `PortalCCO/data` é sempre regenerável e não é fonte oficial.
 - Dados mutáveis não são simulados como documentos Markdown. Usuários, bases, instrutores, aeronaves, passagens, reports, pesquisas, regras em aprovação, auditoria e aprendizagem ficam em tabelas do banco único `portalcco.db`.
+- Reports armazenam responsável, comentários, anexos e eventos de auditoria no banco privado. Indicações de pergunta mantêm vínculo explícito com `rule_candidates`: descarte rejeita a candidata, resolução pode encaminhá-la para aprovação ou encerrá-la como já coberta/sem regra. O perfil Consulta não acessa o módulo; Operadores criam e complementam os próprios registros, enquanto Supervisores e Administradores executam a tratativa.
 - `Regras/catalogo_regras.json` espelha a governança documental na tabela `rule_candidates`. A importação é idempotente e deixa de gerenciar automaticamente um item depois de uma decisão humana registrada no Portal.
 - Em implantação pública, o catálogo interno fica no armazenamento persistente indicado por `SAFE_RULES_CATALOG_PATH`; seu conteúdo não é versionado no repositório público.
 - Instrutores e aeronaves selecionam suas bases a partir da tabela `bases`, exposta por `/api/bases`; códigos de base livres não são aceitos.

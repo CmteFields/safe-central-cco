@@ -10,7 +10,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css?v=20260806-1">
-  <link rel="stylesheet" href="instrutores.css?v=20260731-17">
+  <link rel="stylesheet" href="instrutores.css?v=20260812-18">
   <link rel="stylesheet" href="topbar.css?v=20260724-13">
   <link rel="stylesheet" href="auth.css?v=20260724-16">
 </head>
@@ -42,7 +42,7 @@
         <p class="nav-label">OPERAÇÃO</p>
         <button class="nav-item active" data-view="regras"><span class="nav-icon">✓</span>Regras e procedimentos<span class="nav-count">128</span></button>
         <button class="nav-item hidden" data-view="gestao-regras" id="ruleManagementNav"><span class="nav-icon">⇧</span>Gestão de regras<span class="handover-nav-count" id="ruleCandidateNavCount">0</span></button>
-        <button class="nav-item" data-view="reports"><span class="nav-icon">⚑</span>Reports<span class="handover-nav-count report-nav-count" id="reportNavCount">0</span></button>
+        <button class="nav-item" data-view="reports" id="reportsNavItem"><span class="nav-icon">⚑</span>Reports<span class="handover-nav-count report-nav-count" id="reportNavCount">0</span></button>
         <button class="nav-item" data-view="passagem"><span class="nav-icon">⇄</span>Passagem de turno<span class="handover-nav-count" id="handoverNavCount">0</span></button>
         <button class="nav-item" data-view="instrutores"><span class="nav-icon">♙</span>Instrutores</button>
         <button class="nav-item" data-view="aeronaves"><span class="nav-icon">✈</span>Aeronaves</button>
@@ -220,6 +220,13 @@
           <label>Tipo<select id="reportTypeFilter"><option value="">Todos</option><option value="discrepancy">Discrepâncias</option><option value="question">Indicações de pergunta</option></select></label>
           <label>Situação<select id="reportStatusFilter"><option value="">Todas</option><option>Aberto</option><option>Em análise</option><option>Resolvido</option><option>Descartado</option></select></label>
         </div>
+        <div class="report-toolbar">
+          <label class="table-search"><span>⌕</span><input id="reportSearch" type="search" placeholder="Buscar título, descrição, autor, responsável ou referência…"></label>
+          <label>Prioridade<select id="reportPriorityFilter"><option value="">Todas</option><option>Crítica</option><option>Alta</option><option>Normal</option><option>Baixa</option></select></label>
+          <label>Autor<select id="reportAuthorFilter"><option value="">Todos</option></select></label>
+          <label>De<input id="reportDateFrom" type="date"></label>
+          <label>Até<input id="reportDateTo" type="date"></label>
+        </div>
         <div class="report-list" id="reportList"><div class="table-message">Carregando reports…</div></div>
       </section>
 
@@ -325,13 +332,14 @@
   </dialog>
   <dialog class="instructor-dialog report-dialog" id="reportDialog">
     <form method="dialog" id="reportForm">
-      <div class="dialog-head"><div><p class="eyebrow">MELHORIA CONTÍNUA</p><h2>Novo report</h2></div><button class="dialog-close" value="cancel" aria-label="Fechar">×</button></div>
+      <div class="dialog-head"><div><p class="eyebrow">MELHORIA CONTÍNUA</p><h2 id="reportDialogTitle">Novo report</h2></div><button class="dialog-close" value="cancel" aria-label="Fechar">×</button></div>
       <div class="form-grid">
         <label>Tipo<select id="reportType" required><option value="discrepancy">Discrepância</option><option value="question">Indicação de pergunta</option></select></label>
         <label>Prioridade<select id="reportPriority" required><option>Normal</option><option>Alta</option><option>Crítica</option><option>Baixa</option></select></label>
         <label class="wide">Título<input id="reportTitle" maxlength="160" required placeholder="Resuma o ponto que precisa de atenção"></label>
         <label class="wide">Descrição<textarea id="reportDescription" maxlength="3000" rows="6" required placeholder="Explique o que foi encontrado, qual seria o comportamento esperado e por que isso importa."></textarea></label>
         <label class="wide">Pergunta, consulta ou fonte relacionada <span class="optional-label">(opcional)</span><textarea id="reportReference" maxlength="500" rows="3" placeholder="Cole a pergunta, o código da consulta ou indique a fonte relacionada."></textarea></label>
+        <label class="wide">Anexos <span class="optional-label">(opcional · até 5 arquivos de 2 MB)</span><input id="reportFiles" type="file" multiple accept="image/jpeg,image/png,application/pdf,text/plain"></label>
       </div>
       <div class="dialog-error hidden" id="reportFormError" role="alert"></div>
       <div class="dialog-actions"><span></span><button value="cancel" class="secondary-button">Cancelar</button><button type="submit" class="primary-button" id="saveReport">Enviar report</button></div>
@@ -345,10 +353,25 @@
       <div class="form-grid">
         <label>Situação<select id="reportReviewStatus" required><option>Aberto</option><option>Em análise</option><option>Resolvido</option><option>Descartado</option></select></label>
         <label>Prioridade<select id="reportReviewPriority" required><option>Normal</option><option>Alta</option><option>Crítica</option><option>Baixa</option></select></label>
+        <label>Responsável<select id="reportAssignee"><option value="">Sem responsável</option></select></label>
+        <label>Destino da regra<select id="reportRuleAction" required><option value="keep">Manter sem decisão</option><option value="pending_approval">Encaminhar para aprovação</option><option value="covered">Já coberta pela base</option><option value="no_rule">Não gera regra</option></select></label>
         <label class="wide">Tratativa / conclusão<textarea id="reportResolution" maxlength="2000" rows="6" placeholder="Registre a análise, correção realizada ou motivo do descarte."></textarea></label>
       </div>
       <div class="dialog-error hidden" id="reportReviewError" role="alert"></div>
       <div class="dialog-actions"><span></span><button value="cancel" class="secondary-button">Cancelar</button><button type="submit" class="primary-button" id="saveReportReview">Salvar tratativa</button></div>
+    </form>
+  </dialog>
+  <dialog class="instructor-dialog report-dialog" id="reportDetailDialog">
+    <form method="dialog" id="reportDetailForm">
+      <div class="dialog-head"><div><p class="eyebrow">HISTÓRICO DO REPORT</p><h2 id="reportDetailTitle">Detalhes</h2></div><button class="dialog-close" value="cancel" aria-label="Fechar">×</button></div>
+      <input type="hidden" id="reportDetailId">
+      <div id="reportDetailContent"></div>
+      <div class="report-collaboration">
+        <label>Adicionar comentário<textarea id="reportComment" maxlength="2000" rows="3" placeholder="Registre uma informação complementar ou atualização."></textarea></label>
+        <label>Anexar arquivo <span class="optional-label">(JPG, PNG, PDF ou TXT · até 2 MB)</span><input id="reportDetailFile" type="file" accept="image/jpeg,image/png,application/pdf,text/plain"></label>
+      </div>
+      <div class="dialog-error hidden" id="reportDetailError" role="alert"></div>
+      <div class="dialog-actions"><button type="button" class="secondary-button" id="addReportAttachment">Anexar</button><span></span><button value="cancel" class="secondary-button">Fechar</button><button type="button" class="primary-button" id="addReportComment">Comentar</button></div>
     </form>
   </dialog>
   <dialog class="instructor-dialog rule-review-dialog" id="ruleReviewDialog">
@@ -415,6 +438,6 @@
   <div class="toast" id="toast" role="status"></div>
   <script src="data/public-knowledge-index.js?v=20260731-6"></script>
   <script src="data/knowledge-index.js"></script>
-  <script src="app.js?v=20260806-1"></script>
+  <script src="app.js?v=20260812-2"></script>
 </body>
 </html>
