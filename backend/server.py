@@ -72,7 +72,22 @@ LOCAL_MODEL = (
 )
 FALLBACK_MODEL = os.environ.get("GEMINI_FALLBACK_MODEL", "gemini-3.5-flash-lite")
 EXTERNAL_MODEL = os.environ.get("GEMINI_EXTERNAL_MODEL", "gemini-3.1-pro-preview")
-RELEASE_ID = os.environ.get("SAFE_CCO_RELEASE", "2026-08-12-reports-workflow-6")
+RELEASE_ID = os.environ.get("SAFE_CCO_RELEASE", "2026-08-12-portal-update-7")
+PORTAL_UPDATED_AT = os.environ.get("SAFE_CCO_UPDATED_AT", "").strip() or datetime.fromtimestamp(
+    max(
+        path.stat().st_mtime
+        for path in (
+            PORTAL_ROOT / "index.html",
+            PORTAL_ROOT / "app.js",
+            PORTAL_ROOT / "styles.css",
+            PORTAL_ROOT / "topbar.css",
+            PORTAL_ROOT / "backend" / "server.py",
+            PUBLIC_KNOWLEDGE_INDEX_PATH,
+        )
+        if path.is_file()
+    ),
+    timezone.utc,
+).isoformat()
 HOST = os.environ.get("SAFE_CCO_HOST", "0.0.0.0" if os.environ.get("RENDER") else "127.0.0.1")
 PORT = int(os.environ.get("SAFE_CCO_PORT") or os.environ.get("PORT") or "8765")
 SECURE_COOKIES = os.environ.get("SAFE_CCO_SECURE_COOKIES", "").lower() in {"1", "true", "yes"} or bool(
@@ -3839,6 +3854,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(200, {
                 "ok": True,
                 "release": RELEASE_ID,
+                "updated_at": PORTAL_UPDATED_AT,
                 "knowledge": "private_bundle" if BUNDLED_KNOWLEDGE_ACTIVE else (
                     "configured_root" if CONFIGURED_KNOWLEDGE_ROOT else "public_index"
                 ),

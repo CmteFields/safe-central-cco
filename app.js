@@ -1486,11 +1486,24 @@ async function updateSystemStatus() {
   try {
     const response = await apiFetch(`${window.location.origin}/api/health`, { cache: "no-store" });
     if (!response.ok) throw new Error();
+    const data = await response.json();
     status.dataset.state = "online";
     $("#systemStatusText").textContent = "Operacional";
+    const updatedAt = data.updated_at ? new Date(data.updated_at) : null;
+    const validDate = updatedAt && !Number.isNaN(updatedAt.getTime());
+    $("#portalUpdatedAt").textContent = validDate
+      ? new Intl.DateTimeFormat("pt-BR", {
+        day: "2-digit", month: "2-digit", year: "numeric",
+        hour: "2-digit", minute: "2-digit", timeZone: "America/Sao_Paulo",
+      }).format(updatedAt).replace(",", " ·")
+      : "Não informada";
+    $("#portalUpdate").title = validDate
+      ? `Última atualização publicada: ${updatedAt.toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" })}`
+      : "Data da última atualização não informada";
   } catch {
     status.dataset.state = "offline";
     $("#systemStatusText").textContent = "Indisponível";
+    $("#portalUpdatedAt").textContent = "Não disponível";
   }
 }
 
