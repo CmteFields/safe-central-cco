@@ -10,7 +10,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css?v=20260806-1">
-  <link rel="stylesheet" href="instrutores.css?v=20260812-19">
+  <link rel="stylesheet" href="instrutores.css?v=20260812-20">
   <link rel="stylesheet" href="topbar.css?v=20260812-14">
   <link rel="stylesheet" href="auth.css?v=20260724-16">
 </head>
@@ -45,10 +45,12 @@
         <button class="nav-item" data-view="reports" id="reportsNavItem"><span class="nav-icon">⚑</span>Reports<span class="handover-nav-count report-nav-count" id="reportNavCount">0</span></button>
         <button class="nav-item" data-view="passagem"><span class="nav-icon">⇄</span>Passagem de turno<span class="handover-nav-count" id="handoverNavCount">0</span></button>
         <button class="nav-item" data-view="aeronaves"><span class="nav-icon">✈</span>Aeronaves</button>
+        <button class="nav-item" data-view="atividade"><span class="nav-icon">◉</span>Atividade do portal<span class="handover-nav-count activity-nav-count" id="activityNavCount">0</span></button>
         <button class="nav-item hidden" data-view="usuarios" id="usersNavItem"><span class="nav-icon">♙</span>Usuários e permissões</button>
       </nav>
 
       <div class="sidebar-footer">
+        <div class="portal-monitoring-note"><span>◉</span><small>Acessos e atividade de uso monitorados</small></div>
         <button class="shift-status-card" id="shiftStatusCard" type="button" aria-label="Abrir passagem de turno">
           <span class="shift-status-icon" id="shiftStatusIcon">T1</span>
           <span class="shift-status-copy"><strong id="shiftStatusTitle">Verificando turno…</strong><small id="shiftStatusDetail">Calculando o estágio operacional</small><em id="shiftStatusTime">--:--</em></span>
@@ -246,6 +248,27 @@
         </div>
       </section>
 
+      <section class="page hidden" id="activityView">
+        <div class="instructors-head">
+          <div><p class="eyebrow">TRANSPARÊNCIA · USO DO SISTEMA</p><h1>Atividade do portal</h1><p>Veja quem está utilizando o Portal CCO e os acessos recentes.</p></div>
+          <button class="secondary-button" id="refreshActivity" type="button">↻ Atualizar</button>
+        </div>
+        <div class="activity-transparency"><span>i</span><div><strong>Monitoramento transparente</strong><p>O Portal registra login, horário da última atividade e módulo acessado. Senhas e o conteúdo digitado pelos usuários não são exibidos nesta página.</p></div></div>
+        <div class="activity-summary">
+          <div class="online"><small>ONLINE AGORA</small><strong id="activityOnlineCount">0</strong><span>atividade nos últimos 5 min</span></div>
+          <div><small>ATIVOS EM 30 MIN</small><strong id="activityRecentCount">0</strong><span>usuários com atividade recente</span></div>
+          <div><small>ACESSARAM EM 24 H</small><strong id="activityDayCount">0</strong><span>usuários identificados</span></div>
+          <div><small>CONTAS ATIVAS</small><strong id="activityUserCount">0</strong><span>com acesso permitido</span></div>
+        </div>
+        <div class="instructor-table-wrap activity-table-wrap">
+          <table class="instructor-table activity-table">
+            <thead><tr><th>Usuário</th><th>Perfil</th><th>Estado</th><th>Última atividade</th><th>Módulo</th><th>Último login</th></tr></thead>
+            <tbody id="activityRows"><tr><td colspan="6" class="table-message">Carregando atividade do portal…</td></tr></tbody>
+          </table>
+        </div>
+        <p class="activity-updated" id="activityUpdatedAt">Atualização automática a cada 30 segundos.</p>
+      </section>
+
       <section class="page hidden" id="moduleView">
         <button class="back-button" id="moduleBack">← Voltar para Regras e procedimentos</button>
         <div class="empty-state"><div class="empty-icon" id="moduleIcon">◇</div><p class="eyebrow">MÓDULO DA CENTRAL</p><h1 id="moduleTitle">Em preparação</h1><p id="moduleDescription"></p><div class="roadmap"><div class="done"><span>✓</span><p><strong>Estrutura definida</strong><small>Modelo de dados e interface</small></p></div><div><span>2</span><p><strong>Importação dos dados</strong><small>Próxima etapa</small></p></div><div><span>3</span><p><strong>Validação operacional</strong><small>Revisão com o CCO</small></p></div></div><button class="primary-button" id="returnHome">Voltar ao início</button></div>
@@ -359,6 +382,7 @@
       <button data-help-target="regras"><span>⌕</span><div><strong>Pesquisar regras</strong><small>Consulte procedimentos e respostas armazenadas.</small></div></button>
       <button data-help-target="passagem"><span>⇄</span><div><strong>Passagem de turno</strong><small>Registre, assuma ou conclua pendências.</small></div></button>
       <button data-help-target="aeronaves"><span>✈</span><div><strong>Consultar aeronaves</strong><small>Verifique situação e restrições da frota.</small></div></button>
+      <button data-help-target="atividade"><span>◉</span><div><strong>Ver atividade</strong><small>Consulte usuários online e acessos recentes.</small></div></button>
       <button data-help-target="reports"><span>⚑</span><div><strong>Enviar um report</strong><small>Reporte discrepâncias ou indique perguntas para a base.</small></div></button>
     </div>
     <div class="help-note"><span>i</span><p>Em decisões críticas, confirme a informação na fonte oficial indicada pelo portal.</p></div>
@@ -394,6 +418,6 @@
   <div class="toast" id="toast" role="status"></div>
   <script src="data/public-knowledge-index.js?v=20260731-6"></script>
   <script src="data/knowledge-index.js"></script>
-  <script src="app.js?v=20260812-4"></script>
+  <script src="app.js?v=20260812-5"></script>
 </body>
 </html>

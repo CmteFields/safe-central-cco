@@ -640,6 +640,23 @@ class AuthenticationTests(unittest.TestCase):
             self.assertEqual(csrf, stored_csrf)
             self.assertTrue(token_hash)
 
+    def test_portal_activity_exposes_online_users_without_sensitive_data(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            server, "AUTH_DB_PATH", Path(directory) / "auth.db"
+        ):
+            server.create_user({
+                "username": "admin.cco", "display_name": "Administrador CCO", "password": "senha",
+            }, force_admin=True)
+            user, token, _ = server.authenticate("admin.cco", "senha")
+            _, _, token_hash = server.session_user(f"cco_session={token}")
+            server.record_portal_activity(user["id"], token_hash, "Aeronaves")
+            activity = server.list_portal_activity()
+            self.assertEqual(activity["online_count"], 1)
+            self.assertEqual(activity["items"][0]["display_name"], "Administrador CCO")
+            self.assertEqual(activity["items"][0]["last_activity_area"], "Aeronaves")
+            self.assertNotIn("password_hash", activity["items"][0])
+            self.assertNotIn("csrf_token", activity["items"][0])
+
     def test_temporary_password_requires_change(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(
             server, "AUTH_DB_PATH", Path(directory) / "auth.db"
@@ -752,7 +769,7 @@ class WSGITests(unittest.TestCase):
         self.assertIn(b'<option selected>Aberto</option>', body)
         self.assertIn(b'styles.css?v=20260806-1', body)
         self.assertIn(b"public-knowledge-index.js?v=20260731-6", body)
-        self.assertIn(b"app.js?v=20260812-4", body)
+        self.assertIn(b"app.js?v=20260812-5", body)
         self.assertIn(b'id="newSearchButton"', body)
 
     def test_browser_uses_same_origin_ai_endpoint(self):
@@ -792,6 +809,10 @@ class WSGITests(unittest.TestCase):
         self.assertNotIn(b'id="instructorsView"', body)
         self.assertNotIn(b'id="instructorDialog"', body)
         self.assertNotIn(b'data-help-target="instrutores"', body)
+        self.assertIn(b'data-view="atividade"', body)
+        self.assertIn(b'id="activityView"', body)
+        self.assertIn(b'id="activityRows"', body)
+        self.assertIn("Acessos e atividade de uso monitorados".encode(), body)
 
     def test_temporary_password_and_first_writes_through_wsgi(self):
         with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
@@ -839,6 +860,16 @@ class WSGITests(unittest.TestCase):
                 authenticated_headers,
             )
             self.assertEqual(status, "200 OK", json.loads(body))
+
+            status, _, body = self.request(
+                "/api/activity/ping", "POST", {"area": "Passagem de turno"}, authenticated_headers
+            )
+            self.assertEqual(status, "200 OK", json.loads(body))
+            status, _, body = self.request("/api/activity", request_headers=authenticated_headers)
+            self.assertEqual(status, "200 OK", body.decode("utf-8"))
+            activity = json.loads(body)
+            self.assertEqual(activity["online_count"], 1)
+            self.assertEqual(activity["items"][0]["display_name"], "Supervisor")
 
             first_records = (
                 ("/api/handovers", {
