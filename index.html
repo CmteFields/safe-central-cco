@@ -10,7 +10,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css?v=20260806-1">
-  <link rel="stylesheet" href="instrutores.css?v=20260812-18">
+  <link rel="stylesheet" href="instrutores.css?v=20260812-19">
   <link rel="stylesheet" href="topbar.css?v=20260812-14">
   <link rel="stylesheet" href="auth.css?v=20260724-16">
 </head>
@@ -44,7 +44,6 @@
         <button class="nav-item hidden" data-view="gestao-regras" id="ruleManagementNav"><span class="nav-icon">⇧</span>Gestão de regras<span class="handover-nav-count" id="ruleCandidateNavCount">0</span></button>
         <button class="nav-item" data-view="reports" id="reportsNavItem"><span class="nav-icon">⚑</span>Reports<span class="handover-nav-count report-nav-count" id="reportNavCount">0</span></button>
         <button class="nav-item" data-view="passagem"><span class="nav-icon">⇄</span>Passagem de turno<span class="handover-nav-count" id="handoverNavCount">0</span></button>
-        <button class="nav-item" data-view="instrutores"><span class="nav-icon">♙</span>Instrutores</button>
         <button class="nav-item" data-view="aeronaves"><span class="nav-icon">✈</span>Aeronaves</button>
         <button class="nav-item hidden" data-view="usuarios" id="usersNavItem"><span class="nav-icon">♙</span>Usuários e permissões</button>
       </nav>
@@ -118,11 +117,6 @@
             <div class="panel-head"><div><h2>Aeronaves com restrição</h2><p>Somente aeronaves ativas fora de operação ou em manutenção</p></div><button class="text-button" id="openAircraftDashboard">Ver frota →</button></div>
             <div id="restrictedAircraftList"><div class="dashboard-loading">Carregando aeronaves…</div></div>
           </section>
-          <section class="panel dashboard-instructors">
-            <div class="panel-head"><div><h2>Instrutores</h2><p>Visão inicial da equipe por base e grupo</p></div><button class="text-button" id="openInstructorsDashboard">Ver equipe →</button></div>
-            <div id="instructorSnapshot"><div class="dashboard-loading">Carregando instrutores…</div></div>
-            <div class="dashboard-development"><span>i</span>Este painel será detalhado na próxima etapa do módulo Instrutores.</div>
-          </section>
         </div>
       </section>
 
@@ -140,29 +134,6 @@
             <div class="answer-footer"><span>Esta resposta foi útil?</span><button>♡ Sim</button><button>△ Não</button><button id="reportAnswerIssue">⚑ Reportar discrepância</button><small>Consulte sempre a documentação oficial em decisões críticas.</small></div>
           </article>
           <aside class="context-panel"><p class="eyebrow">CONTEXTO RELACIONADO</p><h3>Conexões no conhecimento</h3><div class="relation-list" id="relationList"></div><div class="context-note"><span>i</span><p>As relações ajudam a encontrar regras complementares e reduzem respostas isoladas.</p></div></aside>
-        </div>
-      </section>
-
-      <section class="page hidden" id="instructorsView">
-        <div class="instructors-head">
-          <div>
-            <p class="eyebrow">OPERAÇÃO · EQUIPE</p>
-            <h1>Instrutores</h1>
-            <p>Consulte bases, grupos e liberações vigentes da equipe.</p>
-          </div>
-          <button class="primary-button" id="addInstructor">+ Novo instrutor</button>
-        </div>
-        <div class="instructor-toolbar">
-          <label class="table-search"><span>⌕</span><input id="instructorSearch" type="search" placeholder="Buscar instrutor ou liberação…"></label>
-          <select id="baseFilter" aria-label="Filtrar por base"><option value="">Todas as bases</option></select>
-          <select id="groupFilter" aria-label="Filtrar por grupo"><option value="">Todos os grupos</option></select>
-          <span class="instructor-total" id="instructorTotal">Carregando…</span>
-        </div>
-        <div class="instructor-table-wrap">
-          <table class="instructor-table">
-            <thead><tr><th>Instrutor</th><th>Base</th><th>Grupo</th><th>Liberações</th><th>Última atualização</th><th><span class="sr-only">Ações</span></th></tr></thead>
-            <tbody id="instructorRows"><tr><td colspan="6" class="table-message">Carregando banco de instrutores…</td></tr></tbody>
-          </table>
         </div>
       </section>
 
@@ -281,21 +252,6 @@
       </section>
     </main>
   </div>
-  <dialog class="instructor-dialog" id="instructorDialog">
-    <form method="dialog" id="instructorForm">
-      <div class="dialog-head"><div><p class="eyebrow">BANCO DE INSTRUTORES</p><h2 id="instructorDialogTitle">Novo instrutor</h2></div><button class="dialog-close" value="cancel" aria-label="Fechar">×</button></div>
-      <input type="hidden" id="instructorId">
-      <div class="form-grid">
-        <label class="wide">Instrutor<input id="instructorName" maxlength="120" required autocomplete="off"></label>
-        <label>Base<select id="instructorBase" required><option value="">Selecione a base</option></select></label>
-        <label>Grupo<input id="instructorGroup" maxlength="50" required list="groupOptions" autocomplete="off"></label>
-      </div>
-      <datalist id="groupOptions"><option value="INVA"><option value="INVA Solo"></datalist>
-      <fieldset class="release-fieldset"><legend>Liberações</legend><div class="release-options" id="releaseOptions"></div></fieldset>
-      <div class="dialog-error hidden" id="instructorFormError" role="alert"></div>
-      <div class="dialog-actions"><button type="button" class="danger-button hidden" id="deleteInstructor">Excluir</button><span></span><button value="cancel" class="secondary-button">Cancelar</button><button type="submit" class="primary-button" id="saveInstructor">Salvar alterações</button></div>
-    </form>
-  </dialog>
   <dialog class="instructor-dialog aircraft-dialog" id="aircraftDialog">
     <form method="dialog" id="aircraftForm">
       <div class="dialog-head"><div><p class="eyebrow">BANCO DE AERONAVES</p><h2 id="aircraftDialogTitle">Nova aeronave</h2></div><button class="dialog-close" value="cancel" aria-label="Fechar">×</button></div>
@@ -403,7 +359,6 @@
       <button data-help-target="regras"><span>⌕</span><div><strong>Pesquisar regras</strong><small>Consulte procedimentos e respostas armazenadas.</small></div></button>
       <button data-help-target="passagem"><span>⇄</span><div><strong>Passagem de turno</strong><small>Registre, assuma ou conclua pendências.</small></div></button>
       <button data-help-target="aeronaves"><span>✈</span><div><strong>Consultar aeronaves</strong><small>Verifique situação e restrições da frota.</small></div></button>
-      <button data-help-target="instrutores"><span>♙</span><div><strong>Consultar instrutores</strong><small>Confira bases, grupos e liberações.</small></div></button>
       <button data-help-target="reports"><span>⚑</span><div><strong>Enviar um report</strong><small>Reporte discrepâncias ou indique perguntas para a base.</small></div></button>
     </div>
     <div class="help-note"><span>i</span><p>Em decisões críticas, confirme a informação na fonte oficial indicada pelo portal.</p></div>
@@ -439,6 +394,6 @@
   <div class="toast" id="toast" role="status"></div>
   <script src="data/public-knowledge-index.js?v=20260731-6"></script>
   <script src="data/knowledge-index.js"></script>
-  <script src="app.js?v=20260812-3"></script>
+  <script src="app.js?v=20260812-4"></script>
 </body>
 </html>
