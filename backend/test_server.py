@@ -752,7 +752,7 @@ class WSGITests(unittest.TestCase):
         self.assertIn(b'<option selected>Aberto</option>', body)
         self.assertIn(b'styles.css?v=20260806-1', body)
         self.assertIn(b"public-knowledge-index.js?v=20260731-6", body)
-        self.assertIn(b"app.js?v=20260812-3", body)
+        self.assertIn(b"app.js?v=20260812-4", body)
         self.assertIn(b'id="newSearchButton"', body)
 
     def test_browser_uses_same_origin_ai_endpoint(self):
@@ -788,6 +788,10 @@ class WSGITests(unittest.TestCase):
         self.assertIn("<th>Ações</th>".encode(), body)
         self.assertIn(b'id="unreviewedRulesTab"', body)
         self.assertIn(b'id="pendingApprovalRulesTab"', body)
+        self.assertNotIn(b'data-view="instrutores"', body)
+        self.assertNotIn(b'id="instructorsView"', body)
+        self.assertNotIn(b'id="instructorDialog"', body)
+        self.assertNotIn(b'data-help-target="instrutores"', body)
 
     def test_temporary_password_and_first_writes_through_wsgi(self):
         with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:

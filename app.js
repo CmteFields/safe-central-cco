@@ -44,7 +44,6 @@ async function apiFetch(url, options = {}) {
 
 const moduleInfo = {
   regras: ["✓", "Regras e procedimentos", "Consulte o conhecimento já indexado em AVOPs, manuais, programas de instrução e regras aprovadas."],
-  instrutores: ["♙", "Instrutores", "Este módulo reunirá habilitações, qualificações, disponibilidade e restrições individuais dos instrutores."],
   aeronaves: ["✈", "Aeronaves e manutenção", "Este módulo exibirá situação da frota, horas, vencimentos, limitações e indisponibilidades de manutenção."],
   manutencao: ["◇", "Manutenção", "Acompanhamento de inspeções, vencimentos, discrepâncias e retorno ao serviço será integrado aqui."],
   restricoes: ["!", "Restrições operacionais", "Centralização de restrições temporárias por aeródromo, base, aeronave, instrutor e aluno."],
@@ -63,7 +62,6 @@ function setDialogMessage(selector, message = "", kind = "error") {
 const homeView = $("#homeView");
 const answerView = $("#answerView");
 const moduleView = $("#moduleView");
-const instructorsView = $("#instructorsView");
 const aircraftView = $("#aircraftView");
 const handoverView = $("#handoverView");
 const reportsView = $("#reportsView");
@@ -87,8 +85,6 @@ let archivedQuestion = "";
 let searchInProgress = false;
 let progressTimers = [];
 let progressClock = null;
-let instructors = [];
-let instructorsLoaded = false;
 let aircraft = [];
 let aircraftLoaded = false;
 let operationalBases = [];
@@ -107,7 +103,6 @@ let activeRulesTab = "unreviewed";
 let currentSourceUrl = "";
 let users = [];
 let usersLoaded = false;
-const instructorReleases = ["Liberado MC01", "Liberado C150", "Liberado P-Mentor VFR/IFR SIC", "Liberado IFR Avião", "Liberado IFR AATD", "Liberado IFR PCATD (Laboratório)", "Liberado COLT", "Instrutor Eventual"];
 
 function loadOperationalBases() {
   if (basesPromise) return basesPromise;
@@ -131,7 +126,7 @@ function renderBaseSelect(select, includeUnassigned, selected = "") {
 }
 
 function showView(view, name) {
-  [homeView, answerView, moduleView, instructorsView, aircraftView, handoverView, reportsView, ruleManagementView, usersView].forEach(item => item.classList.add("hidden"));
+  [homeView, answerView, moduleView, aircraftView, handoverView, reportsView, ruleManagementView, usersView].forEach(item => item.classList.add("hidden"));
   view.classList.remove("hidden");
   $("#pageName").textContent = name;
   window.scrollTo({ top: 0, behavior: "smooth" });
@@ -525,152 +520,10 @@ async function search(query) {
   }
 }
 
-function releaseKind(value) {
-  const normalized = normalizeText(value);
-  if (normalized.includes("mc01")) return "mc01";
-  if (normalized.includes("c150")) return "c150";
-  if (normalized.includes("mentor")) return "mentor";
-  if (normalized.includes("ifr")) return "ifr";
-  if (normalized.includes("colt")) return "colt";
-  if (normalized.includes("eventual")) return "eventual";
-  return "other";
-}
-
 function formatInstructorDate(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "—";
   return new Intl.DateTimeFormat("pt-BR", { dateStyle: "short", timeStyle: "short" }).format(date);
-}
-
-function fillInstructorFilters() {
-  const base = $("#baseFilter").value;
-  const group = $("#groupFilter").value;
-  const bases = [...new Set(instructors.map(item => item.base))].sort();
-  const groups = [...new Set(instructors.map(item => item.group))].sort();
-  $("#baseFilter").innerHTML = `<option value="">Todas as bases</option>${bases.map(value => `<option>${escapeHtml(value)}</option>`).join("")}`;
-  $("#groupFilter").innerHTML = `<option value="">Todos os grupos</option>${groups.map(value => `<option>${escapeHtml(value)}</option>`).join("")}`;
-  $("#baseFilter").value = bases.includes(base) ? base : "";
-  $("#groupFilter").value = groups.includes(group) ? group : "";
-}
-
-function renderInstructorSnapshot() {
-  const box = $("#instructorSnapshot");
-  if (!box) return;
-  const countBy = key => [...new Set(instructors.map(item => item[key]))].sort().map(value => [value, instructors.filter(item => item[key] === value).length]);
-  const bases = countBy("base");
-  const groups = countBy("group");
-  box.innerHTML = `<div class="instructor-snapshot-grid">
-    <div class="snapshot-total"><small>Total da equipe</small><strong>${instructors.length}</strong></div>
-    <div class="snapshot-group"><small>Por base</small>${bases.map(([value, count]) => `<div><span>${escapeHtml(value)}</span><b>${count}</b></div>`).join("")}</div>
-    <div class="snapshot-group"><small>Por grupo</small>${groups.map(([value, count]) => `<div><span>${escapeHtml(value)}</span><b>${count}</b></div>`).join("")}</div>
-  </div>`;
-}
-
-function renderInstructors() {
-  const query = normalizeText($("#instructorSearch").value);
-  const base = $("#baseFilter").value;
-  const group = $("#groupFilter").value;
-  const visible = instructors.filter(item => {
-    const searchable = normalizeText(`${item.name} ${item.base} ${item.group} ${item.releases.join(" ")}`);
-    return (!query || searchable.includes(query)) && (!base || item.base === base) && (!group || item.group === group);
-  });
-  $("#instructorTotal").textContent = `${visible.length} de ${instructors.length} instrutor${instructors.length === 1 ? "" : "es"}`;
-  $("#instructorRows").innerHTML = visible.length ? visible.map(item => `
-    <tr>
-      <td><span class="instructor-name">${escapeHtml(item.name)}</span></td>
-      <td><span class="base-badge ${item.base === "CPQ" ? "cpq" : ""}">${escapeHtml(item.base)}</span></td>
-      <td><span class="group-badge ${normalizeText(item.group).includes("solo") ? "solo" : ""}">${escapeHtml(item.group)}</span></td>
-      <td><div class="release-list">${item.releases.length ? item.releases.map(value => `<span class="release-chip" data-kind="${releaseKind(value)}">${escapeHtml(value)}</span>`).join("") : "<span>—</span>"}</div></td>
-      <td class="updated-cell">${formatInstructorDate(item.updated_at)}</td>
-      <td class="row-actions">${hasRole("admin", "supervisor") ? `<button class="edit-instructor" data-instructor-id="${item.id}" aria-label="Editar ${escapeHtml(item.name)}">✎</button>` : ""}</td>
-    </tr>`).join("") : `<tr><td colspan="6" class="table-message">Nenhum instrutor encontrado com esses filtros.</td></tr>`;
-  document.querySelectorAll("[data-instructor-id]").forEach(button => button.addEventListener("click", () => openInstructorDialog(instructors.find(item => item.id === Number(button.dataset.instructorId)))));
-  renderInstructorSnapshot();
-}
-
-async function instructorRequest(path = "", options = {}) {
-  const response = await apiFetch(`${window.location.origin}/api/instructors${path}`, {
-    ...options,
-    headers: options.body ? { "Content-Type": "application/json", ...(options.headers || {}) } : options.headers,
-  });
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.error || `Erro HTTP ${response.status}`);
-  return data;
-}
-
-async function loadInstructors() {
-  $("#instructorRows").innerHTML = `<tr><td colspan="6" class="table-message">Carregando banco de instrutores…</td></tr>`;
-  try {
-    const data = await instructorRequest();
-    instructors = data.items;
-    instructorsLoaded = true;
-    fillInstructorFilters();
-    renderInstructors();
-  } catch (error) {
-    $("#instructorRows").innerHTML = `<tr><td colspan="6" class="table-message">Não foi possível acessar o banco. Inicie o portal pelo servidor local.</td></tr>`;
-    toast(error.message);
-  }
-}
-
-async function openInstructorDialog(item = null) {
-  try { await loadOperationalBases(); } catch (error) { toast(error.message); return; }
-  $("#instructorForm").reset();
-  setDialogMessage("#instructorFormError");
-  $("#instructorId").value = item?.id || "";
-  $("#instructorName").value = item?.name || "";
-  renderBaseSelect($("#instructorBase"), false, item?.base || "");
-  $("#instructorGroup").value = item?.group || "";
-  $("#instructorDialogTitle").textContent = item ? "Editar instrutor" : "Novo instrutor";
-  $("#deleteInstructor").classList.toggle("hidden", !item);
-  $("#releaseOptions").innerHTML = instructorReleases.map(value => `<label class="release-option"><input type="checkbox" name="release" value="${escapeHtml(value)}" ${item?.releases.includes(value) ? "checked" : ""}>${escapeHtml(value)}</label>`).join("");
-  $("#instructorDialog").showModal();
-  setTimeout(() => $("#instructorName").focus(), 50);
-}
-
-async function saveInstructor(event) {
-  event.preventDefault();
-  const id = $("#instructorId").value;
-  const payload = {
-    name: $("#instructorName").value,
-    base: $("#instructorBase").value,
-    group: $("#instructorGroup").value,
-    releases: [...document.querySelectorAll('input[name="release"]:checked')].map(input => input.value),
-  };
-  const button = $("#saveInstructor");
-  button.disabled = true;
-  try {
-    const saved = await instructorRequest(id ? `/${id}` : "", { method: id ? "PUT" : "POST", body: JSON.stringify(payload) });
-    const index = instructors.findIndex(item => item.id === saved.id);
-    if (index >= 0) instructors[index] = saved; else instructors.push(saved);
-    fillInstructorFilters();
-    renderInstructors();
-    $("#instructorDialog").close();
-    toast(id ? "Instrutor atualizado com sucesso." : "Instrutor cadastrado com sucesso.");
-  } catch (error) {
-    setDialogMessage("#instructorFormError", error.message);
-  } finally {
-    button.disabled = false;
-  }
-}
-
-async function removeInstructor() {
-  const id = Number($("#instructorId").value);
-  const item = instructors.find(value => value.id === id);
-  if (!item || !window.confirm(`Excluir ${item.name} do banco de instrutores?`)) return;
-  const button = $("#deleteInstructor");
-  button.disabled = true;
-  try {
-    await instructorRequest(`/${id}`, { method: "DELETE" });
-    instructors = instructors.filter(value => value.id !== id);
-    fillInstructorFilters();
-    renderInstructors();
-    $("#instructorDialog").close();
-    toast("Instrutor excluído.");
-  } catch (error) {
-    setDialogMessage("#instructorFormError", error.message);
-  } finally {
-    button.disabled = false;
-  }
 }
 
 function aircraftStatusClass(status) {
@@ -1535,7 +1388,6 @@ function applyCurrentUser(user, csrf) {
   $("#usersNavItem").classList.toggle("hidden", user.role !== "admin");
   $("#ruleManagementNav").classList.toggle("hidden", !hasRole("admin", "supervisor"));
   $("#reportsNavItem").classList.toggle("hidden", user.role === "viewer");
-  $("#addInstructor").classList.toggle("hidden", !hasRole("admin", "supervisor"));
   $("#addAircraft").classList.toggle("hidden", !hasRole("admin", "supervisor"));
   $("#addHandover").classList.toggle("hidden", user.role === "viewer");
   $("#addReport").classList.toggle("hidden", user.role === "viewer");
@@ -1591,14 +1443,13 @@ async function initializeAuth() {
 
 function bootstrapPortal() {
   if (portalBootstrapped) {
-    renderInstructors(); renderAircraft(); renderHandovers(); renderReports();
+    renderAircraft(); renderHandovers(); renderReports();
     if (hasRole("admin", "supervisor") && rulesLoaded) renderRules();
     return;
   }
   portalBootstrapped = true;
   loadSearchHistory();
   loadHandovers();
-  loadInstructors();
   loadAircraft();
   if (!hasRole("viewer")) loadReports();
   if (hasRole("admin", "supervisor")) loadRules();
@@ -1614,7 +1465,7 @@ function applyInitialRoute() {
   const initialQuestion = params.get("q");
   const initialView = params.get("view");
   if (initialQuestion) { input.value = initialQuestion; searchBox.classList.add("has-value"); search(initialQuestion); }
-  if (["instrutores", "aeronaves", "passagem", "reports", "gestao-regras", "usuarios"].includes(initialView)) {
+  if (["aeronaves", "passagem", "reports", "gestao-regras", "usuarios"].includes(initialView)) {
     document.querySelectorAll(".nav-item").forEach(item => item.classList.toggle("active", item.dataset.view === initialView));
     openModule(initialView);
   }
@@ -1704,11 +1555,6 @@ async function saveUser(event) {
 function openModule(key) {
   if (key === "inicio") { showView(homeView, "Regras e procedimentos"); return; }
   if (key === "regras" || key === "consulta") { showView(homeView, "Regras e procedimentos"); setTimeout(() => input.focus(), 200); return; }
-  if (key === "instrutores") {
-    showView(instructorsView, "Instrutores");
-    if (!instructorsLoaded) loadInstructors();
-    return;
-  }
   if (key === "aeronaves") {
     showView(aircraftView, "Aeronaves");
     if (!aircraftLoaded) loadAircraft();
@@ -1775,12 +1621,6 @@ $("#sourceButton").addEventListener("click", () => {
   if (!currentSourceUrl) { toast("A fonte está registrada na base interna."); return; }
   window.open(currentSourceUrl, "_blank", "noopener,noreferrer");
 });
-$("#addInstructor").addEventListener("click", () => openInstructorDialog());
-$("#instructorSearch").addEventListener("input", renderInstructors);
-$("#baseFilter").addEventListener("change", renderInstructors);
-$("#groupFilter").addEventListener("change", renderInstructors);
-$("#instructorForm").addEventListener("submit", saveInstructor);
-$("#deleteInstructor").addEventListener("click", removeInstructor);
 $("#addAircraft").addEventListener("click", () => openAircraftDialog());
 $("#aircraftSearch").addEventListener("input", renderAircraft);
 $("#aircraftBaseFilter").addEventListener("change", renderAircraft);
@@ -1857,10 +1697,6 @@ document.querySelectorAll("[data-help-target]").forEach(button => button.addEven
 $("#openAircraftDashboard").addEventListener("click", () => {
   document.querySelectorAll(".nav-item").forEach(item => item.classList.toggle("active", item.dataset.view === "aeronaves"));
   openModule("aeronaves");
-});
-$("#openInstructorsDashboard").addEventListener("click", () => {
-  document.querySelectorAll(".nav-item").forEach(item => item.classList.toggle("active", item.dataset.view === "instrutores"));
-  openModule("instrutores");
 });
 $("#repeatArchivedSearch").addEventListener("click", () => {
   if (!archivedQuestion) return;
