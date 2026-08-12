@@ -214,6 +214,18 @@ GENERAL_CMA_RULE_IDS = {
     "claim_rbac61_tolerancia_habilitacao_nao_prorroga_cma",
 }
 INSTRUCTOR_ALLOCATION_RULE_ID = "claim_mip_substituicao_instrutor_solicitada_administracao"
+CMA_INVALID_RULE_ID = "claim_rbac61_cma_vencido_impede_prerrogativas"
+CMA_EXTENSION_RULE_ID = "claim_rbac61_tolerancia_habilitacao_nao_prorroga_cma"
+CAVOK_ACCESS_RULE_ID = "claim_cavok_acesso_pessoal_aluno"
+PP_SOLO_PASSENGER_RULE_ID = "claim_mip_acompanhante_proibido_solo_pp"
+SOLO_FAMILY_VISIT_RULE_ID = "claim_mip_familia_pode_acompanhar_evento_solo_em_terra"
+PPA_SEQUENCE_RULE_ID = "claim_ppap001k_sequencia_completa_missoes"
+PPA_MISSION_ORDER_RULE_ID = "claim_ppap001k_nav03_pode_anteceder_nav02"
+PP_NAV_MONITORING_RULE_ID = "claim_mgop_monitoria_nav_durante_fase_ap"
+BASE_TRANSFER_RULE_ID = "claim_rg006_troca_base_aluno"
+BARS_PRIORITY_RULE_ID = "claim_rg010_prioridade_barras_missoes_criticas"
+SOLO_RECENCY_RULE_ID = "claim_bops054_sem_solo_30_dias_novo_endosso"
+READAPTATION_RULE_ID = "claim_bops054_readaptacao_90_dias"
 ROLES = {"admin", "supervisor", "operator", "viewer"}
 ROLE_LABELS = {"admin": "Administrador", "supervisor": "Supervisor", "operator": "Operador", "viewer": "Consulta"}
 SESSION_HOURS = 12
@@ -2455,6 +2467,98 @@ def instructor_allocation_intent(value: str) -> bool:
     return mentions_instructor and asks_allocation
 
 
+def canonical_intent_rule_ids(value: str) -> list[str]:
+    """Mapeia intenções operacionais conhecidas às respostas canônicas aprovadas.
+
+    O roteamento é contextual: ele não substitui a busca, apenas impede que uma
+    coincidência lexical de outro assunto seja tratada como resposta definitiva.
+    """
+    normalized = normalize(value)
+    preferred: list[str] = []
+
+    def prefer(*rule_ids: str) -> None:
+        for rule_id in rule_ids:
+            if rule_id and rule_id not in preferred:
+                preferred.append(rule_id)
+
+    medical_intent = "cma" in normalized or "certificado medico" in normalized
+    if medical_intent and any(term in normalized for term in (
+        "extens", "prorrog", "tolerancia", "30 dias", "validade",
+    )):
+        prefer(CMA_EXTENSION_RULE_ID, CMA_INVALID_RULE_ID)
+    elif medical_intent and any(term in normalized for term in (
+        "voar", "voo", "operar", "sem cma", "vencid", "valido",
+    )):
+        prefer(CMA_INVALID_RULE_ID, CMA_EXTENSION_RULE_ID)
+
+    if "cavok" in normalized and any(term in normalized for term in (
+        "acess", "entr", "login", "senha", "link", "portal", "cadastro",
+    )):
+        prefer(CAVOK_ACCESS_RULE_ID)
+
+    if instructor_allocation_intent(normalized):
+        prefer(INSTRUCTOR_ALLOCATION_RULE_ID)
+
+    base_context = (
+        "base" in normalized
+        or bool(re.search(r"\b(?:sjk|cpq)\b", normalized))
+        or "sao jose" in normalized
+        or "campinas" in normalized
+    )
+    if base_context and any(term in normalized for term in (
+        "troc", "mud", "transfer", "alter", "migr",
+    )):
+        prefer(BASE_TRANSFER_RULE_ID)
+
+    if "barra" in normalized and any(term in normalized for term in (
+        "prior", "primeira", "segunda", "cheque", "missao", "critica", "ordem",
+    )):
+        prefer(BARS_PRIORITY_RULE_ID)
+
+    if "monitor" in normalized and "nav" in normalized and any(term in normalized for term in (
+        "fase ap", "aperfeicoamento", "ap01", "ap02", "ap03", "ap04", "ap05",
+    )):
+        prefer(PP_NAV_MONITORING_RULE_ID)
+
+    asks_nav_order = "nav03" in normalized and "nav02" in normalized and any(
+        term in normalized for term in ("antes", "ordem", "sequencia", "adiant", "preced")
+    )
+    if asks_nav_order:
+        prefer(PPA_MISSION_ORDER_RULE_ID)
+    elif "sequencia" in normalized and any(term in normalized for term in (
+        "ppa", "pp", "missoes", "missao",
+    )):
+        prefer(PPA_SEQUENCE_RULE_ID)
+
+    day_values = [int(value) for value in re.findall(r"\b(\d{1,3})\s*dias?\b", normalized)]
+    recency_days_intent = "trinta dias" in normalized or any(value >= 30 for value in day_values)
+    if recency_days_intent and any(
+        term in normalized for term in ("sem solo", "sem voar solo", "ap05", "ultimo solo", "ultima solo")
+    ):
+        prefer(SOLO_RECENCY_RULE_ID, READAPTATION_RULE_ID)
+
+    family_terms = ("mae", "pai", "famil", "acompanhante", "passageiro", "esposa", "marido")
+    if "solo" in normalized and any(term in normalized for term in family_terms):
+        boarding_terms = ("levar", "embarcar", "a bordo", "voar com", "para voar", "passageiro")
+        ground_terms = ("assistir", "acompanhar", "presenciar", "ver", "evento", "terra", "patio")
+        if any(term in normalized for term in boarding_terms):
+            prefer(PP_SOLO_PASSENGER_RULE_ID, SOLO_FAMILY_VISIT_RULE_ID)
+        elif any(term in normalized for term in ground_terms):
+            prefer(SOLO_FAMILY_VISIT_RULE_ID, PP_SOLO_PASSENGER_RULE_ID)
+        else:
+            prefer(PP_SOLO_PASSENGER_RULE_ID, SOLO_FAMILY_VISIT_RULE_ID)
+
+    return preferred
+
+
+def canonical_intent_boost(claim_id: str, preferred_ids: list[str]) -> int:
+    try:
+        position = preferred_ids.index(claim_id)
+    except ValueError:
+        return 0
+    return max(520, 650 - (position * 40))
+
+
 def load_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -2523,6 +2627,7 @@ def retrieve_dynamic_rules(question: str) -> list[dict[str, Any]]:
 
 def retrieve_public_claims(question: str, limit: int = 8) -> list[dict[str, Any]]:
     query_tokens = tokens(question)
+    preferred_rule_ids = canonical_intent_rule_ids(question)
     course = requested_course(question)
     question_norm = normalize(question)
     medical_intent = "cma" in query_tokens or "certificado medico" in question_norm
@@ -2581,6 +2686,7 @@ def retrieve_public_claims(question: str, limit: int = 8) -> list[dict[str, Any]
             score += 20
         if instructor_intent and claim.get("id") == INSTRUCTOR_ALLOCATION_RULE_ID:
             score += 60
+        score += canonical_intent_boost(str(claim.get("id", "")), preferred_rule_ids)
         if score <= 0:
             continue
         results.append({
@@ -2670,6 +2776,7 @@ def retrieve(question: str, limit: int = 8) -> list[dict[str, Any]]:
     if not CLAIMS_PATH.is_file() or not GRAPH_PATH.is_file():
         return retrieve_public_claims(question, limit)
     query_tokens = tokens(question)
+    preferred_rule_ids = canonical_intent_rule_ids(question)
     course = requested_course(question)
     question_norm = normalize(question)
     medical_intent = "cma" in query_tokens or "certificado medico" in question_norm
@@ -2684,6 +2791,11 @@ def retrieve(question: str, limit: int = 8) -> list[dict[str, Any]]:
         term in question_norm for term in ("slot", "slots", "hora", "horas", "dia", "diaria", "diarias")
     )
     instructor_intent = instructor_allocation_intent(question_norm)
+    banca_ppa_intent = (
+        requested_course(question_norm) == "pp"
+        and "banca" in question_norm
+        and any(term in question_norm for term in ("quantos voos", "sem a banca", "sem banca"))
+    )
     claims_data = load_json(CLAIMS_PATH)
     graph_data = load_json(GRAPH_PATH)
     public_operator_answers = load_public_operator_answers(str(PUBLIC_KNOWLEDGE_INDEX_PATH))
@@ -2739,6 +2851,7 @@ def retrieve(question: str, limit: int = 8) -> list[dict[str, Any]]:
             score += 20
         if instructor_intent and claim.get("id") == INSTRUCTOR_ALLOCATION_RULE_ID:
             score += 60
+        score += canonical_intent_boost(str(claim.get("id", "")), preferred_rule_ids)
         if score > 0:
             results.append({
                 "id": claim["id"], "kind": "confirmed_claim", "label": claim["label"],
@@ -2757,6 +2870,8 @@ def retrieve(question: str, limit: int = 8) -> list[dict[str, Any]]:
         if not course_compatible(course, node.get("label", ""), metadata):
             continue
         score = score_text(query_tokens, node.get("label", ""), metadata)
+        if banca_ppa_intent and "b-ops-065" in normalize(f"{node.get('label', '')} {metadata}"):
+            score += 120
         if score:
             results.append({
                 "id": node["id"], "kind": "graph_node", "label": node.get("label", node["id"]),
@@ -3210,7 +3325,43 @@ def call_grounded_gemini_with_fallback(
     )
 
 
-def deterministic_local_result(evidence: list[dict[str, Any]]) -> dict[str, Any] | None:
+def canonical_evidence_relevant(question: str, item: dict[str, Any]) -> bool:
+    if not question:
+        return True
+    preferred_ids = canonical_intent_rule_ids(question)
+    item_id = str(item.get("id", ""))
+    if preferred_ids:
+        return item_id in preferred_ids
+    if int(item.get("score", 0) or 0) >= 200:
+        return True
+    normalized_question = normalize(question)
+    query_stems = {
+        light_portuguese_stem(token)
+        for token in re.split(r"[^a-z0-9-]+", normalized_question)
+        if len(token) > 1
+        and token not in STOPWORDS
+        and light_portuguese_stem(token) not in DYNAMIC_GENERIC_STEMS
+    }
+    evidence_text = normalize(" ".join(str(item.get(field, "")) for field in (
+        "label", "code", "source", "location",
+    )))
+    if reference_codes(question) & reference_codes(evidence_text):
+        return True
+    if not query_stems:
+        return False
+    evidence_stems = {
+        light_portuguese_stem(token)
+        for token in re.split(r"[^a-z0-9-]+", evidence_text)
+        if len(token) > 1
+    }
+    matches = query_stems & evidence_stems
+    coverage = len(matches) / len(query_stems)
+    return coverage >= 0.45 and (len(matches) >= 2 or len(query_stems) <= 2)
+
+
+def deterministic_local_result(
+    evidence: list[dict[str, Any]], question: str = ""
+) -> dict[str, Any] | None:
     confirmed = [
         (index, item)
         for index, item in enumerate(evidence, 1)
@@ -3218,9 +3369,17 @@ def deterministic_local_result(evidence: list[dict[str, Any]]) -> dict[str, Any]
     ]
     if not confirmed:
         return None
+    preferred_ids = canonical_intent_rule_ids(question) if question else []
+    if preferred_ids:
+        confirmed.sort(key=lambda pair: (
+            preferred_ids.index(str(pair[1].get("id", "")))
+            if str(pair[1].get("id", "")) in preferred_ids
+            else len(preferred_ids),
+            pair[0],
+        ))
     for index, item in confirmed:
         answer = str(item.get("operator_answer", "")).strip()
-        if answer:
+        if answer and canonical_evidence_relevant(question, item):
             return {
                 "answer": answer,
                 "confidence": "medium",
@@ -3434,7 +3593,7 @@ def answer_question(
 ) -> dict[str, Any]:
     local_errors = []
     evidence = retrieve(question)
-    canonical_result = deterministic_local_result(evidence)
+    canonical_result = deterministic_local_result(evidence, question)
     if not canonical_result and gemini_key():
         try:
             semantic_evidence = semantic_retrieve_with_retry(question)
@@ -3443,7 +3602,7 @@ def answer_question(
                 evidence = (semantic_evidence + [
                     item for item in evidence if item["id"] not in semantic_ids
                 ])[:8]
-                canonical_result = deterministic_local_result(evidence)
+                canonical_result = deterministic_local_result(evidence, question)
         except Exception as error:
             local_errors.append(f"Seleção semântica: {error}")
     if canonical_result and any(item.get("operator_answer") for item in evidence):

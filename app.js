@@ -195,9 +195,56 @@ function scoreRecord(record, tokens) {
   return tokens.reduce((total, token) => total + (label.includes(token) ? 4 : 0) + (source.includes(token) ? 1 : 0), 0);
 }
 
+function preferredClaimIds(query) {
+  const text = normalizeText(query);
+  const ids = [];
+  const prefer = (...values) => values.forEach(value => { if (!ids.includes(value)) ids.push(value); });
+  const hasAny = values => values.some(value => text.includes(value));
+
+  const medical = text.includes("cma") || text.includes("certificado medico");
+  if (medical && hasAny(["extens", "prorrog", "tolerancia", "30 dias", "validade"])) {
+    prefer("claim_rbac61_tolerancia_habilitacao_nao_prorroga_cma", "claim_rbac61_cma_vencido_impede_prerrogativas");
+  } else if (medical && hasAny(["voar", "voo", "operar", "sem cma", "vencid", "valido"])) {
+    prefer("claim_rbac61_cma_vencido_impede_prerrogativas", "claim_rbac61_tolerancia_habilitacao_nao_prorroga_cma");
+  }
+  if (text.includes("cavok") && hasAny(["acess", "entr", "login", "senha", "link", "portal", "cadastro"])) {
+    prefer("claim_cavok_acesso_pessoal_aluno");
+  }
+  if (hasAny(["inva", "instrutor", "professor de voo"]) && hasAny(["escolh", "prefer", "troc", "substitu", "voar com", "escala"])) {
+    prefer("claim_mip_substituicao_instrutor_solicitada_administracao");
+  }
+  if (hasAny(["base", "sjk", "cpq", "sao jose", "campinas"]) && hasAny(["troc", "mud", "transfer", "alter", "migr"])) {
+    prefer("claim_rg006_troca_base_aluno");
+  }
+  if (text.includes("barra") && hasAny(["prior", "primeira", "segunda", "cheque", "missao", "critica", "ordem"])) {
+    prefer("claim_rg010_prioridade_barras_missoes_criticas");
+  }
+  if (text.includes("monitor") && text.includes("nav") && hasAny(["fase ap", "aperfeicoamento", "ap01", "ap02", "ap03", "ap04", "ap05"])) {
+    prefer("claim_mgop_monitoria_nav_durante_fase_ap");
+  }
+  if (text.includes("nav03") && text.includes("nav02") && hasAny(["antes", "ordem", "sequencia", "adiant", "preced"])) {
+    prefer("claim_ppap001k_nav03_pode_anteceder_nav02");
+  } else if (text.includes("sequencia") && hasAny(["ppa", "pp", "missoes", "missao"])) {
+    prefer("claim_ppap001k_sequencia_completa_missoes");
+  }
+  const recencyDays = [...text.matchAll(/\b(\d{1,3})\s*dias?\b/g)].some(match => Number(match[1]) >= 30);
+  if ((text.includes("trinta dias") || recencyDays) && hasAny(["sem solo", "sem voar solo", "ap05", "ultimo solo"])) {
+    prefer("claim_bops054_sem_solo_30_dias_novo_endosso", "claim_bops054_readaptacao_90_dias");
+  }
+  if (text.includes("solo") && hasAny(["mae", "pai", "famil", "acompanhante", "passageiro", "esposa", "marido"])) {
+    if (hasAny(["levar", "embarcar", "a bordo", "voar com", "para voar", "passageiro"])) {
+      prefer("claim_mip_acompanhante_proibido_solo_pp", "claim_mip_familia_pode_acompanhar_evento_solo_em_terra");
+    } else if (hasAny(["assistir", "acompanhar", "presenciar", "ver", "evento", "terra", "patio"])) {
+      prefer("claim_mip_familia_pode_acompanhar_evento_solo_em_terra", "claim_mip_acompanhante_proibido_solo_pp");
+    }
+  }
+  return ids;
+}
+
 function findGraphResults(query) {
   const tokens = tokenize(query);
   if (!tokens.length) return [];
+  const preferredIds = preferredClaimIds(query);
   const medicalIntent = tokens.includes("cma") || normalizeText(query).includes("certificado medico");
   const medicalOperationIntent = medicalIntent && tokens.some(token => ["voar", "voo", "operar", "operacao", "prerrogativas", "valido", "vencido", "sem"].includes(token));
   return [...graphIndex.claims.map(item => ({ ...item, kind: "Regra confirmada" })), ...graphIndex.documents.map(item => ({ ...item, kind: "Documento relacionado" }))]
@@ -209,9 +256,11 @@ function findGraphResults(query) {
     .map(item => {
       const medicalText = normalizeText(`${item.label || ""} ${item.appliesTo || ""}`);
       const canonicalBoost = item.operatorAnswer ? 50 : 0;
+      const preferredPosition = preferredIds.indexOf(item.id);
+      const contextualBoost = preferredPosition >= 0 ? Math.max(520, 650 - (preferredPosition * 40)) : 0;
       const enrollmentPenalty = medicalOperationIntent && medicalText.includes("matricula") ? -15 : 0;
       const intentBoost = medicalIntent && !medicalOperationIntent && medicalText.includes("matricula") ? 8 : 0;
-      return { ...item, score: scoreRecord(item, tokens) + canonicalBoost + enrollmentPenalty + intentBoost };
+      return { ...item, score: scoreRecord(item, tokens) + canonicalBoost + contextualBoost + enrollmentPenalty + intentBoost };
     })
     .filter(item => item.score >= (medicalIntent ? 4 : Math.max(4, tokens.length * 2)))
     .sort((a, b) => b.score - a.score || a.label.localeCompare(b.label, "pt-BR"))
