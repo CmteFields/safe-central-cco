@@ -953,7 +953,25 @@ def synchronize_rules_catalog(connection: sqlite3.Connection) -> int:
         current = connection.execute(
             "SELECT * FROM rule_candidates WHERE document_id=?", (document_id,)
         ).fetchone()
-        if current and (not current["catalog_managed"] or current["catalog_hash"] == catalog_hash):
+        matched_question_alias = False
+        aliases = [
+            normalize(str(value))
+            for value in item.get("question_aliases", [])
+            if str(value).strip()
+        ]
+        if not current and aliases:
+            placeholders = ",".join("?" for _ in aliases)
+            current = connection.execute(
+                f"""SELECT * FROM rule_candidates
+                    WHERE document_id='' AND status IN ('unreviewed', 'pending_approval')
+                      AND normalized_question IN ({placeholders})
+                    ORDER BY occurrence_count DESC, id ASC LIMIT 1""",
+                aliases,
+            ).fetchone()
+            matched_question_alias = current is not None
+        if current and not matched_question_alias and (
+            not current["catalog_managed"] or current["catalog_hash"] == catalog_hash
+        ):
             continue
 
         evidence = [{
@@ -973,6 +991,12 @@ def synchronize_rules_catalog(connection: sqlite3.Connection) -> int:
             "medium" if portal_status == "pending_approval" else "low"
         )
         if current:
+            question = current["question"] if matched_question_alias else title
+            normalized_question = (
+                current["normalized_question"]
+                if matched_question_alias
+                else normalize(f"{document_id} {title}")
+            )
             connection.execute(
                 """UPDATE rule_candidates
                    SET normalized_question=?, question=?, proposed_answer=?, confidence=?,
@@ -980,15 +1004,16 @@ def synchronize_rules_catalog(connection: sqlite3.Connection) -> int:
                        status=?, last_asked_at=?, updated_at=?, reviewed_by_username=?,
                        reviewed_by_name=?, reviewed_at=?, review_note=?, approved_rule_text=?,
                        rule_code=?, authority=?, source_reference=?, scope=?, document_path=?,
-                       catalog_status=?, catalog_hash=?, catalog_synced_at=?, catalog_managed=1
+                       document_id=?, catalog_status=?, catalog_hash=?, catalog_synced_at=?,
+                       catalog_managed=1
                    WHERE id=?""",
                 (
-                    normalize(f"{document_id} {title}"), title, summary, confidence,
+                    normalized_question, question, summary, confidence,
                     evidence_json, evidence_json, portal_status, catalog_updated_at,
                     catalog_updated_at, reviewed_by_username, reviewed_by_name, reviewed_at,
                     review_note, approved_text, published_rule_id if portal_status == "approved" else "",
-                    authority, source_reference, scope, document_path, catalog_status,
-                    catalog_hash, now_iso(), current["id"],
+                    authority, source_reference, scope, document_path, document_id,
+                    catalog_status, catalog_hash, now_iso(), current["id"],
                 ),
             )
             candidate_id = int(current["id"])
@@ -1024,7 +1049,11 @@ def synchronize_rules_catalog(connection: sqlite3.Connection) -> int:
             (
                 candidate_id, action,
                 json.dumps(
-                    {"document_id": document_id, "catalog_status": catalog_status},
+                    {
+                        "document_id": document_id,
+                        "catalog_status": catalog_status,
+                        "matched_question_alias": matched_question_alias,
+                    },
                     ensure_ascii=False,
                 ),
                 now_iso(),

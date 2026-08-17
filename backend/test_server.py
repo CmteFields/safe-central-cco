@@ -1390,6 +1390,48 @@ class RuleCandidateStorageTests(unittest.TestCase):
                 self.assertEqual(preserved["proposed_answer"], "Texto recebido do documento local.")
                 self.assertEqual(preserved["review_note"], "Revisão humana preservada.")
 
+    def test_catalog_approval_claims_matching_open_question_alias(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            database = root / "rules.db"
+            catalog = root / "catalogo_regras.json"
+            with patch.object(server, "RULES_DB_PATH", database), patch.object(
+                server, "RULES_CATALOG_PATH", catalog
+            ):
+                candidate = server.upsert_rule_candidate(
+                    "Quantos mockups são necessários para o SIRA?", "Sem resposta", "low",
+                    "unanswered", [], [], self.operator,
+                )
+                payload = {
+                    "schema_version": 1,
+                    "updated_at": "2026-08-17T11:05:28-03:00",
+                    "items": [{
+                        "document_id": "RG-011",
+                        "title": "Mockups obrigatórios para SIRA/P-Mentor",
+                        "status": "aprovada",
+                        "summary": "Três sessões de duas horas.",
+                        "approved_rule_text": "SIRA/P-Mentor exige três mockups de duas horas.",
+                        "document_path": "Regras/regras_aprovadas.md",
+                        "authority": "Escola SAFE",
+                        "source_reference": "RG-011; MGOP",
+                        "scope": "SIRA/P-Mentor",
+                        "question_aliases": ["Quantos mockups são necessários para o SIRA?"],
+                    }],
+                }
+                catalog.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+                with server.rules_connection() as connection:
+                    self.assertEqual(server.synchronize_rules_catalog(connection), 1)
+                    self.assertEqual(server.synchronize_rules_catalog(connection), 0)
+
+                approved = server.list_rule_candidates("approved")
+                self.assertEqual(len(approved), 1)
+                self.assertEqual(approved[0]["id"], candidate["id"])
+                self.assertEqual(approved[0]["question"], candidate["question"])
+                self.assertEqual(approved[0]["document_id"], "RG-011")
+                self.assertEqual(approved[0]["rule_code"], "RG-011")
+                self.assertTrue(approved[0]["catalog_managed"])
+
     def test_repeated_question_is_deduplicated_and_prioritized(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(
             server, "RULES_DB_PATH", Path(directory) / "rules.db"
