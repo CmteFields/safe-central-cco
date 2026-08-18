@@ -91,6 +91,7 @@ let aircraftLoaded = false;
 let operationalBases = [];
 let basesPromise = null;
 let handovers = [];
+let handoverSummary = { pending: 0, in_progress: 0, completed: 0, information: 0 };
 let handoversLoaded = false;
 let reports = [];
 let reportsLoaded = false;
@@ -704,41 +705,104 @@ async function handoverRequest(path = "", options = {}) {
   return data;
 }
 
-function handoverCard(item) {
-  const canEdit = hasRole("admin", "supervisor", "operator");
-  const nextStatus = item.status === "Pendente" ? "Em andamento" : item.status === "Em andamento" ? "Concluída" : "";
-  const nextLabel = item.status === "Pendente" ? "Assumir" : item.status === "Em andamento" ? "Concluir" : "";
+function currentHandoverRoute() {
+  const now = new Date();
+  const minutes = now.getHours() * 60 + now.getMinutes();
+  if (minutes < 14 * 60) return { origin: "T1", target: "T2" };
+  if (minutes < 18 * 60) return { origin: "T2", target: "T3" };
+  return { origin: "T3", target: "T1" };
+}
+
+function findHandoverItem(id) {
+  for (const cycle of handovers) {
+    const item = cycle.items.find(value => value.id === id);
+    if (item) return { item, cycle };
+  }
+  return {};
+}
+
+function handoverActionButton(action, id, label, className = "") {
+  return `<button class="${className}" data-handover-action="${action}" data-handover-id="${id}">${label}</button>`;
+}
+
+function handoverCard(item, cycle) {
+  const canOperate = hasRole("admin", "supervisor", "operator");
+  const canEdit = canOperate && cycle.state === "draft" && !item.carried_from_id;
+  const canTransition = canOperate && item.is_latest_root;
+  const actions = [];
+  if (canEdit) actions.push(`<button data-handover-edit="${item.id}">Editar</button>`);
+  if (canTransition && item.item_type === "Pendência") {
+    if (item.status === "Pendente") actions.push(handoverActionButton("assume", item.id, "Assumir", "advance"));
+    if (["Pendente", "Em andamento"].includes(item.status)) actions.push(handoverActionButton("complete", item.id, "Concluir", "advance"));
+    if (item.status === "Concluída") actions.push(handoverActionButton("reopen", item.id, "Reabrir"));
+    actions.push(handoverActionButton("assign", item.id, "Responsável"));
+  }
+  if (canTransition) actions.push(handoverActionButton("comment", item.id, "Comentar"));
   return `<article class="handover-card priority-${normalizeText(item.priority)}">
-    <div class="handover-card-top"><span class="shift-route">${item.origin_shift} → ${item.target_shift}</span><span class="priority-label">${escapeHtml(item.priority)}</span><span class="handover-card-time">${formatInstructorDate(item.updated_at)}</span></div>
+    <div class="handover-card-top"><span class="handover-type type-${normalizeText(item.item_type)}">${escapeHtml(item.item_type)}</span><span class="priority-label">${escapeHtml(item.priority)}</span><span class="handover-status status-${normalizeText(item.status)}">${escapeHtml(item.status)}</span><span class="handover-card-time">${formatInstructorDate(item.updated_at)}</span></div>
     <p>${escapeHtml(item.message)}</p>
-    <span class="handover-author">Deixado por <strong>${escapeHtml(item.author)}</strong></span>
-    ${canEdit ? `<div class="handover-card-actions">${nextStatus ? `<button class="advance" data-handover-status="${item.id}" data-next-status="${nextStatus}">${nextLabel}</button>` : ""}<button data-handover-edit="${item.id}">Editar</button></div>` : ""}
+    <div class="handover-item-meta"><span>Deixado por <strong>${escapeHtml(item.author)}</strong></span>${item.assignee ? `<span>Responsável: <strong>${escapeHtml(item.assignee)}</strong></span>` : ""}${item.carried_from_id ? '<span class="carried-tag">↻ Pendência trazida da passagem anterior</span>' : ""}</div>
+    ${item.completion_note ? `<div class="handover-completion"><strong>Conclusão por ${escapeHtml(item.completed_by)}</strong>${escapeHtml(item.completion_note)}</div>` : ""}
+    ${actions.length ? `<div class="handover-card-actions">${actions.join("")}</div>` : ""}
   </article>`;
+}
+
+function handoverEvents(cycle) {
+  if (!cycle.events.length) return "";
+  return `<details class="handover-audit"><summary>Histórico e auditoria (${cycle.events.length})</summary><div>${cycle.events.map(event => {
+    const note = event.details?.note || event.details?.assignee || "";
+    return `<p><strong>${escapeHtml(event.action)}</strong> · ${escapeHtml(event.actor_name || "Sistema")} · ${formatInstructorDate(event.created_at)}${note ? `<br><span>${escapeHtml(note)}</span>` : ""}</p>`;
+  }).join("")}</div></details>`;
+}
+
+function handoverCycle(cycle, expanded) {
+  const canOperate = hasRole("admin", "supervisor", "operator");
+  const bases = ["Geral", "SDAM", "SBSJ"];
+  const controls = cycle.state === "draft" && canOperate
+    ? `<button class="primary-action" data-handover-publish="${cycle.id}">Publicar passagem</button>`
+    : cycle.state === "awaiting_receipt" && canOperate
+      ? `<button class="primary-action" data-handover-receive="${cycle.id}">Confirmar recebimento</button>` : "";
+  const body = `<div class="handover-base-grid">${bases.map(base => {
+    const items = cycle.items.filter(item => item.base_scope === base);
+    return `<section class="handover-base-section base-${base.toLowerCase()}"><div class="handover-base-head"><strong>${base}</strong><span>${items.length}</span></div>${items.length ? items.map(item => handoverCard(item, cycle)).join("") : '<div class="handover-empty">Nenhuma anotação para esta seção.</div>'}</section>`;
+  }).join("")}</div>${handoverEvents(cycle)}`;
+  return `<article class="handover-cycle state-${cycle.state}">
+    <div class="handover-cycle-head"><div><div class="handover-cycle-route">${cycle.origin_shift} → ${cycle.target_shift}<span>${escapeHtml(cycle.state_label)}</span></div><p>${cycle.state === "draft" ? `Em elaboração por ${escapeHtml(cycle.created_by_name || "Operador")}` : `Publicada por ${escapeHtml(cycle.published_by_name || "Operador")} · ${formatInstructorDate(cycle.published_at)}`}${cycle.received_at ? ` · Recebida por ${escapeHtml(cycle.received_by_name)} em ${formatInstructorDate(cycle.received_at)}` : ""}</p></div><div class="handover-cycle-controls"><span>${cycle.items.length} anotação(ões)</span>${controls}</div></div>
+    ${expanded ? body : `<details class="handover-history-cycle"><summary>Visualizar esta passagem</summary>${body}</details>`}
+  </article>`;
+}
+
+function bindHandoverActions() {
+  document.querySelectorAll("[data-handover-edit]").forEach(button => button.addEventListener("click", () => {
+    const found = findHandoverItem(Number(button.dataset.handoverEdit));
+    openHandoverDialog(found.item, found.cycle);
+  }));
+  document.querySelectorAll("[data-handover-action]").forEach(button => button.addEventListener("click", () => transitionHandover(Number(button.dataset.handoverId), button.dataset.handoverAction)));
+  document.querySelectorAll("[data-handover-publish]").forEach(button => button.addEventListener("click", () => publishHandover(Number(button.dataset.handoverPublish))));
+  document.querySelectorAll("[data-handover-receive]").forEach(button => button.addEventListener("click", () => receiveHandover(Number(button.dataset.handoverReceive))));
 }
 
 function renderHandovers() {
   const target = $("#handoverShiftFilter").value;
-  const visible = handovers.filter(item => !target || item.target_shift === target);
-  const counts = status => handovers.filter(item => item.status === status).length;
-  $("#handoverPendingCount").textContent = counts("Pendente");
-  $("#handoverProgressCount").textContent = counts("Em andamento");
-  $("#handoverDoneCount").textContent = counts("Concluída");
-  const openCount = counts("Pendente") + counts("Em andamento");
+  const visible = handovers.filter(cycle => !target || cycle.target_shift === target);
+  $("#handoverPendingCount").textContent = handoverSummary.pending;
+  $("#handoverProgressCount").textContent = handoverSummary.in_progress;
+  $("#handoverInfoCount").textContent = handoverSummary.information;
+  $("#handoverDoneCount").textContent = handoverSummary.completed;
+  const openCount = handoverSummary.pending + handoverSummary.in_progress;
   $("#handoverNavCount").textContent = openCount;
   updateNotificationBadge();
-  const columns = ["Pendente", "Em andamento", "Concluída"];
-  $("#handoverBoard").innerHTML = columns.map(status => {
-    const items = visible.filter(item => item.status === status);
-    return `<section class="handover-column"><div class="handover-column-head"><strong>${status}</strong><span>${items.length}</span></div>${items.length ? items.map(handoverCard).join("") : '<div class="handover-empty">Nenhuma passagem nesta etapa.</div>'}</section>`;
-  }).join("");
-  document.querySelectorAll("[data-handover-edit]").forEach(button => button.addEventListener("click", () => openHandoverDialog(handovers.find(item => item.id === Number(button.dataset.handoverEdit)))));
-  document.querySelectorAll("[data-handover-status]").forEach(button => button.addEventListener("click", () => updateHandoverStatus(Number(button.dataset.handoverStatus), button.dataset.nextStatus)));
+  $("#handoverBoard").innerHTML = visible.length
+    ? visible.map((cycle, index) => handoverCycle(cycle, index === 0 || cycle.state !== "received")).join("")
+    : '<div class="table-message">Nenhuma passagem para o filtro selecionado.</div>';
+  bindHandoverActions();
 }
 
 async function loadHandovers() {
   try {
     const data = await handoverRequest();
-    handovers = data.items;
+    handovers = data.cycles || [];
+    handoverSummary = data.summary || handoverSummary;
     handoversLoaded = true;
     renderHandovers();
   } catch (error) {
@@ -747,66 +811,86 @@ async function loadHandovers() {
   }
 }
 
-function openHandoverDialog(item = null) {
+function openHandoverDialog(item = null, cycle = null) {
   $("#handoverForm").reset();
   setDialogMessage("#handoverFormError");
+  const activeDraft = handovers.find(value => value.state === "draft");
+  const route = activeDraft ? { origin: activeDraft.origin_shift, target: activeDraft.target_shift } : currentHandoverRoute();
   $("#handoverId").value = item?.id || "";
-  $("#handoverOrigin").value = item?.origin_shift || "T1";
-  $("#handoverTarget").value = item?.target_shift || "T2";
+  $("#handoverOrigin").value = item?.origin_shift || route.origin;
+  $("#handoverTarget").value = item?.target_shift || route.target;
+  $("#handoverBase").value = item?.base_scope || "Geral";
+  $("#handoverType").value = item?.item_type || "Pendência";
   $("#handoverPriority").value = item?.priority || "Normal";
-  $("#handoverStatus").value = item?.status || "Pendente";
-  $("#handoverAuthor").value = item?.author || currentUser?.display_name || "";
+  $("#handoverAssignee").value = item?.assignee || "";
   $("#handoverMessage").value = item?.message || "";
-  $("#handoverDialogTitle").textContent = item ? "Editar passagem de turno" : "Nova passagem de turno";
-  $("#deleteHandover").classList.toggle("hidden", !item);
+  $("#handoverOrigin").disabled = Boolean(activeDraft || item);
+  $("#handoverTarget").disabled = Boolean(activeDraft || item);
+  $("#handoverDialogTitle").textContent = item ? "Editar anotação" : "Nova anotação da passagem";
+  $("#deleteHandover").classList.toggle("hidden", !item || cycle?.state !== "draft");
   $("#handoverDialog").showModal();
-  setTimeout(() => (item ? $("#handoverMessage") : $("#handoverAuthor")).focus(), 50);
+  setTimeout(() => $("#handoverMessage").focus(), 50);
 }
 
 function handoverPayload() {
   return {
     origin_shift: $("#handoverOrigin").value, target_shift: $("#handoverTarget").value,
-    priority: $("#handoverPriority").value, status: $("#handoverStatus").value,
-    author: $("#handoverAuthor").value, message: $("#handoverMessage").value,
+    base_scope: $("#handoverBase").value, item_type: $("#handoverType").value,
+    priority: $("#handoverPriority").value, assignee: $("#handoverAssignee").value,
+    message: $("#handoverMessage").value,
   };
 }
 
 async function saveHandover(event) {
   event.preventDefault();
   const id = $("#handoverId").value;
-  const payload = handoverPayload();
   const button = $("#saveHandover");
   button.disabled = true;
   try {
-    const saved = await handoverRequest(id ? `/${id}` : "", { method: id ? "PUT" : "POST", body: JSON.stringify(payload) });
-    const index = handovers.findIndex(item => item.id === saved.id);
-    if (index >= 0) handovers[index] = saved; else handovers.unshift(saved);
-    renderHandovers(); $("#handoverDialog").close(); toast(id ? "Passagem atualizada." : "Passagem registrada para o próximo turno.");
+    await handoverRequest(id ? `/${id}` : "", { method: id ? "PUT" : "POST", body: JSON.stringify(handoverPayload()) });
+    $("#handoverDialog").close();
+    await loadHandovers();
+    toast(id ? "Anotação atualizada." : "Anotação incluída na passagem em elaboração.");
   } catch (error) { setDialogMessage("#handoverFormError", error.message); }
   finally { button.disabled = false; }
 }
 
-async function updateHandoverStatus(id, status) {
-  const item = handovers.find(value => value.id === id);
-  if (!item) return;
+async function transitionHandover(id, action) {
+  const labels = { complete: "Informe como a pendência foi concluída:", reopen: "Informe por que a pendência será reaberta:", comment: "Digite o comentário:", assign: "Informe o responsável (deixe vazio para remover):" };
+  let note = "";
+  let assignee = "";
+  if (labels[action]) {
+    const value = window.prompt(labels[action]);
+    if (value === null) return;
+    if (action === "assign") assignee = value.trim(); else note = value.trim();
+    if (["complete", "reopen", "comment"].includes(action) && !note) { toast("A observação é obrigatória."); return; }
+  }
   try {
-    const saved = await handoverRequest(`/${id}`, { method: "PUT", body: JSON.stringify({ ...item, status }) });
-    handovers[handovers.findIndex(value => value.id === id)] = saved;
-    renderHandovers();
-    toast(status === "Concluída" ? "Pendência concluída." : "Pendência assumida pelo turno.");
+    await handoverRequest(`/${id}/actions`, { method: "POST", body: JSON.stringify({ action, note, assignee }) });
+    await loadHandovers();
+    toast({ assume: "Pendência assumida.", complete: "Pendência concluída.", reopen: "Pendência reaberta.", assign: "Responsável atualizado.", comment: "Comentário registrado." }[action]);
   } catch (error) { toast(error.message); }
+}
+
+async function publishHandover(id) {
+  if (!window.confirm("Publicar esta passagem? O conteúdo original não poderá mais ser editado.")) return;
+  try { await handoverRequest(`/cycles/${id}/publish`, { method: "POST", body: "{}" }); await loadHandovers(); toast("Passagem publicada e aguardando recebimento."); }
+  catch (error) { toast(error.message); }
+}
+
+async function receiveHandover(id) {
+  if (!window.confirm("Confirmar o recebimento desta passagem de turno?")) return;
+  try { await handoverRequest(`/cycles/${id}/receive`, { method: "POST", body: "{}" }); await loadHandovers(); toast("Recebimento confirmado."); }
+  catch (error) { toast(error.message); }
 }
 
 async function removeHandover() {
   const id = Number($("#handoverId").value);
-  if (!id || !window.confirm("Excluir esta passagem de turno?")) return;
+  if (!id || !window.confirm("Excluir esta anotação da passagem em elaboração?")) return;
   const button = $("#deleteHandover");
   button.disabled = true;
-  try {
-    await handoverRequest(`/${id}`, { method: "DELETE" });
-    handovers = handovers.filter(item => item.id !== id);
-    renderHandovers(); $("#handoverDialog").close(); toast("Passagem excluída.");
-  } catch (error) { setDialogMessage("#handoverFormError", error.message); }
+  try { await handoverRequest(`/${id}`, { method: "DELETE" }); $("#handoverDialog").close(); await loadHandovers(); toast("Anotação excluída."); }
+  catch (error) { setDialogMessage("#handoverFormError", error.message); }
   finally { button.disabled = false; }
 }
 
@@ -858,7 +942,7 @@ function reportCard(item) {
 }
 
 function updateNotificationBadge() {
-  const handoverCount = handovers.filter(item => ["Pendente", "Em andamento"].includes(item.status)).length;
+  const handoverCount = handoverSummary.pending + handoverSummary.in_progress;
   const criticalReports = reports.filter(item => item.priority === "Crítica" && ["Aberto", "Em análise"].includes(item.status)).length;
   const total = handoverCount + criticalReports;
   $("#notificationCount").textContent = total > 99 ? "99+" : total;
