@@ -10,7 +10,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css?v=20260806-1">
-  <link rel="stylesheet" href="instrutores.css?v=20260812-20">
+  <link rel="stylesheet" href="instrutores.css?v=20260818-21">
   <link rel="stylesheet" href="topbar.css?v=20260812-14">
   <link rel="stylesheet" href="auth.css?v=20260724-16">
 </head>
@@ -161,8 +161,8 @@
 
       <section class="page hidden" id="handoverView">
         <div class="instructors-head">
-          <div><p class="eyebrow">OPERAÇÃO · CONTINUIDADE</p><h1>Passagem de turno</h1><p>Registre pendências e acompanhe o que precisa ser executado pelo próximo turno.</p></div>
-          <button class="primary-button" id="addHandover">+ Nova passagem</button>
+          <div><p class="eyebrow">OPERAÇÃO · CONTINUIDADE</p><h1>Passagem de turno</h1><p>Uma única passagem para as duas bases, organizada em Geral, SDAM e SBSJ.</p></div>
+          <button class="primary-button" id="addHandover">+ Nova anotação</button>
         </div>
         <div class="shift-strip" aria-label="Horários dos turnos">
           <div><span>T1</span><strong>08:00–14:00</strong></div>
@@ -172,6 +172,7 @@
         <div class="handover-summary">
           <div><small>PENDENTES</small><strong id="handoverPendingCount">0</strong></div>
           <div><small>EM ANDAMENTO</small><strong id="handoverProgressCount">0</strong></div>
+          <div><small>INFORMAÇÕES</small><strong id="handoverInfoCount">0</strong></div>
           <div><small>CONCLUÍDAS</small><strong id="handoverDoneCount">0</strong></div>
           <label>Destino<select id="handoverShiftFilter"><option value="">Todos os turnos</option><option value="T1">T1</option><option value="T2">T2</option><option value="T3">T3</option></select></label>
         </div>
@@ -296,18 +297,19 @@
   </dialog>
   <dialog class="instructor-dialog handover-dialog" id="handoverDialog">
     <form method="dialog" id="handoverForm">
-      <div class="dialog-head"><div><p class="eyebrow">CONTINUIDADE OPERACIONAL</p><h2 id="handoverDialogTitle">Nova passagem de turno</h2></div><button class="dialog-close" value="cancel" aria-label="Fechar">×</button></div>
+      <div class="dialog-head"><div><p class="eyebrow">CONTINUIDADE OPERACIONAL</p><h2 id="handoverDialogTitle">Nova anotação da passagem</h2></div><button class="dialog-close" value="cancel" aria-label="Fechar">×</button></div>
       <input type="hidden" id="handoverId">
       <div class="form-grid">
         <label>Turno de origem<select id="handoverOrigin" required><option value="T1">T1 · 08:00–14:00</option><option value="T2">T2 · 12:00–18:00</option><option value="T3">T3 · 18:00–20:00</option></select></label>
         <label>Turno de destino<select id="handoverTarget" required><option value="T2">T2 · 12:00–18:00</option><option value="T3">T3 · 18:00–20:00</option><option value="T1">T1 · próximo dia</option></select></label>
+        <label>Seção<select id="handoverBase" required><option>Geral</option><option>SDAM</option><option>SBSJ</option></select></label>
+        <label>Tipo<select id="handoverType" required><option>Pendência</option><option>Informação</option></select></label>
         <label>Prioridade<select id="handoverPriority" required><option>Normal</option><option>Alta</option><option>Crítica</option><option>Baixa</option></select></label>
-        <label>Situação<select id="handoverStatus" required><option>Pendente</option><option>Em andamento</option><option>Concluída</option></select></label>
-        <label class="wide">Operador que está passando<input id="handoverAuthor" maxlength="100" required placeholder="Nome do operador"></label>
+        <label>Responsável <span class="optional-label">(opcional)</span><input id="handoverAssignee" maxlength="100" placeholder="Nome do responsável"></label>
         <label class="wide">Mensagem / ação necessária<textarea id="handoverMessage" maxlength="2000" rows="5" required placeholder="Descreva objetivamente o que o próximo turno precisa verificar ou executar."></textarea></label>
       </div>
       <div class="dialog-error hidden" id="handoverFormError" role="alert"></div>
-      <div class="dialog-actions"><button type="button" class="danger-button hidden" id="deleteHandover">Excluir</button><span></span><button value="cancel" class="secondary-button">Cancelar</button><button type="submit" class="primary-button" id="saveHandover">Salvar passagem</button></div>
+      <div class="dialog-actions"><button type="button" class="danger-button hidden" id="deleteHandover">Excluir</button><span></span><button value="cancel" class="secondary-button">Cancelar</button><button type="submit" class="primary-button" id="saveHandover">Salvar anotação</button></div>
     </form>
   </dialog>
   <dialog class="instructor-dialog report-dialog" id="reportDialog">
@@ -418,6 +420,6 @@
   <div class="toast" id="toast" role="status"></div>
   <script src="data/public-knowledge-index.js?v=20260731-6"></script>
   <script src="data/knowledge-index.js"></script>
-  <script src="app.js?v=20260812-5"></script>
+  <script src="app.js?v=20260818-6"></script>
 </body>
 </html>

@@ -72,7 +72,7 @@ LOCAL_MODEL = (
 )
 FALLBACK_MODEL = os.environ.get("GEMINI_FALLBACK_MODEL", "gemini-3.5-flash-lite")
 EXTERNAL_MODEL = os.environ.get("GEMINI_EXTERNAL_MODEL", "gemini-3.1-pro-preview")
-RELEASE_ID = os.environ.get("SAFE_CCO_RELEASE", "2026-08-12-portal-activity-9")
+RELEASE_ID = os.environ.get("SAFE_CCO_RELEASE", "2026-08-18-handover-bases-10")
 PORTAL_UPDATED_AT = os.environ.get("SAFE_CCO_UPDATED_AT", "").strip() or datetime.fromtimestamp(
     max(
         path.stat().st_mtime
@@ -192,6 +192,9 @@ SHIFTS = {
 }
 HANDOVER_PRIORITIES = {"Baixa", "Normal", "Alta", "Crítica"}
 HANDOVER_STATUSES = {"Pendente", "Em andamento", "Concluída"}
+HANDOVER_BASES = {"Geral", "SDAM", "SBSJ"}
+HANDOVER_ITEM_TYPES = {"Pendência", "Informação"}
+HANDOVER_CYCLE_STATES = {"draft", "awaiting_receipt", "received"}
 REPORT_TYPES = {"discrepancy": "Discrepância", "question": "Indicação de pergunta"}
 REPORT_PRIORITIES = {"Baixa", "Normal", "Alta", "Crítica"}
 REPORT_STATUSES = {"Aberto", "Em análise", "Resolvido", "Descartado"}
@@ -1513,13 +1516,116 @@ def initialize_handovers_db() -> None:
             updated_at TEXT NOT NULL,
             completed_at TEXT
         )""")
+        existing_columns = {
+            row["name"] for row in connection.execute("PRAGMA table_info(handovers)").fetchall()
+        }
+        added_columns = {
+            "cycle_id": "INTEGER",
+            "base_scope": "TEXT NOT NULL DEFAULT 'Geral'",
+            "item_type": "TEXT NOT NULL DEFAULT 'Pendência'",
+            "assignee": "TEXT NOT NULL DEFAULT ''",
+            "author_username": "TEXT NOT NULL DEFAULT ''",
+            "completed_by": "TEXT NOT NULL DEFAULT ''",
+            "completion_note": "TEXT NOT NULL DEFAULT ''",
+            "carried_from_id": "INTEGER",
+            "root_item_id": "INTEGER",
+            "reopened_at": "TEXT",
+        }
+        for column, declaration in added_columns.items():
+            if column not in existing_columns:
+                connection.execute(f"ALTER TABLE handovers ADD COLUMN {column} {declaration}")
+        connection.execute("""CREATE TABLE IF NOT EXISTS handover_cycles (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            origin_shift TEXT NOT NULL,
+            target_shift TEXT NOT NULL,
+            state TEXT NOT NULL DEFAULT 'draft',
+            operation_date TEXT NOT NULL,
+            created_by_username TEXT NOT NULL DEFAULT '',
+            created_by_name TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            published_by_username TEXT NOT NULL DEFAULT '',
+            published_by_name TEXT NOT NULL DEFAULT '',
+            published_at TEXT,
+            received_by_username TEXT NOT NULL DEFAULT '',
+            received_by_name TEXT NOT NULL DEFAULT '',
+            received_at TEXT
+        )""")
+        connection.execute("""CREATE TABLE IF NOT EXISTS handover_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            cycle_id INTEGER NOT NULL,
+            item_id INTEGER,
+            action TEXT NOT NULL,
+            actor_username TEXT NOT NULL DEFAULT '',
+            actor_name TEXT NOT NULL DEFAULT '',
+            details TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL
+        )""")
         connection.execute("CREATE INDEX IF NOT EXISTS idx_handovers_status ON handovers(status, updated_at)")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_handovers_cycle ON handovers(cycle_id, id)")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_handovers_root ON handovers(root_item_id, id)")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_handover_cycles_state ON handover_cycles(state, updated_at)")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_handover_events_cycle ON handover_events(cycle_id, created_at)")
         migrate_legacy_tables(connection, HANDOVERS_DB_PATH, LEGACY_DB_PATHS["handovers"], {
             "handovers": (
                 "id", "origin_shift", "target_shift", "message", "priority", "status",
                 "author", "created_at", "updated_at", "completed_at",
             ),
         })
+        migrate_legacy_handovers(connection)
+
+
+def migrate_legacy_handovers(connection: sqlite3.Connection) -> int:
+    """Agrupa registros antigos por rota/dia, sem alterar conteúdo ou autoria."""
+    rows = connection.execute(
+        """SELECT id, origin_shift, target_shift, author, created_at, updated_at
+           FROM handovers WHERE cycle_id IS NULL ORDER BY id"""
+    ).fetchall()
+    if not rows:
+        connection.execute("UPDATE handovers SET root_item_id=id WHERE root_item_id IS NULL")
+        return 0
+    grouped: dict[tuple[str, str, str], list[sqlite3.Row]] = {}
+    for row in rows:
+        operation_date = str(row["created_at"] or "")[:10] or now_iso()[:10]
+        grouped.setdefault(
+            (row["origin_shift"], row["target_shift"], operation_date), []
+        ).append(row)
+    migrated = 0
+    for (origin, target, operation_date), items in grouped.items():
+        created_at = min(str(item["created_at"]) for item in items)
+        updated_at = max(str(item["updated_at"]) for item in items)
+        publisher = str(items[0]["author"] or "Registro legado")
+        cursor = connection.execute(
+            """INSERT INTO handover_cycles(
+               origin_shift, target_shift, state, operation_date,
+               created_by_name, created_at, updated_at,
+               published_by_name, published_at, received_by_name, received_at
+               ) VALUES (?, ?, 'received', ?, ?, ?, ?, ?, ?, 'Migração segura', ?)""",
+            (
+                origin, target, operation_date, publisher, created_at, updated_at,
+                publisher, created_at, updated_at,
+            ),
+        )
+        cycle_id = int(cursor.lastrowid)
+        item_ids = [int(item["id"]) for item in items]
+        placeholders = ",".join("?" for _ in item_ids)
+        connection.execute(
+            f"""UPDATE handovers SET cycle_id=?, base_scope='Geral', item_type='Pendência',
+                root_item_id=id WHERE id IN ({placeholders})""",
+            (cycle_id, *item_ids),
+        )
+        connection.execute(
+            """INSERT INTO handover_events(
+               cycle_id, action, actor_name, details, created_at
+               ) VALUES (?, 'Migração de passagem anterior', 'Sistema', ?, ?)""",
+            (
+                cycle_id,
+                json.dumps({"legacy_item_ids": item_ids, "base_scope": "Geral"}, ensure_ascii=False),
+                now_iso(),
+            ),
+        )
+        migrated += len(items)
+    return migrated
 
 
 def handover_dict(row: sqlite3.Row) -> dict[str, Any]:
@@ -1527,28 +1633,139 @@ def handover_dict(row: sqlite3.Row) -> dict[str, Any]:
         "id": row["id"], "origin_shift": row["origin_shift"], "target_shift": row["target_shift"],
         "message": row["message"], "priority": row["priority"], "status": row["status"],
         "author": row["author"], "created_at": row["created_at"], "updated_at": row["updated_at"],
-        "completed_at": row["completed_at"],
+        "completed_at": row["completed_at"], "cycle_id": row["cycle_id"],
+        "base_scope": row["base_scope"], "item_type": row["item_type"],
+        "assignee": row["assignee"], "author_username": row["author_username"],
+        "completed_by": row["completed_by"], "completion_note": row["completion_note"],
+        "carried_from_id": row["carried_from_id"], "root_item_id": row["root_item_id"],
+        "reopened_at": row["reopened_at"],
     }
 
 
-def validate_handover(data: dict[str, Any]) -> tuple[str, str, str, str, str, str]:
+def validate_handover(data: dict[str, Any]) -> tuple[str, str, str, str, str, str, str]:
     origin = str(data.get("origin_shift", "")).strip().upper()
     target = str(data.get("target_shift", "")).strip().upper()
     message = str(data.get("message", "")).strip()
     priority = str(data.get("priority", "Normal")).strip()
-    status = str(data.get("status", "Pendente")).strip()
-    author = str(data.get("author", "")).strip()
+    base_scope = str(data.get("base_scope", "Geral")).strip()
+    item_type = str(data.get("item_type", "Pendência")).strip()
+    assignee = str(data.get("assignee", "")).strip()
     if origin not in SHIFTS or target not in SHIFTS:
         raise ValueError("Selecione turnos de origem e destino válidos.")
     if origin == target:
         raise ValueError("O turno de destino deve ser diferente do turno de origem.")
     if not message or len(message) > 2000:
         raise ValueError("Informe uma mensagem de até 2.000 caracteres.")
-    if priority not in HANDOVER_PRIORITIES or status not in HANDOVER_STATUSES:
-        raise ValueError("Prioridade ou situação inválida.")
-    if not author or len(author) > 100:
-        raise ValueError("Informe quem está deixando a passagem.")
-    return origin, target, message, priority, status, author
+    if priority not in HANDOVER_PRIORITIES:
+        raise ValueError("Prioridade inválida.")
+    if base_scope not in HANDOVER_BASES:
+        raise ValueError("Selecione Geral, SDAM ou SBSJ.")
+    if item_type not in HANDOVER_ITEM_TYPES:
+        raise ValueError("Selecione Pendência ou Informação.")
+    if len(assignee) > 100:
+        raise ValueError("O responsável deve possuir até 100 caracteres.")
+    return origin, target, message, priority, base_scope, item_type, assignee
+
+
+def handover_actor(actor: dict[str, Any] | None, data: dict[str, Any] | None = None) -> tuple[str, str]:
+    data = data or {}
+    if actor:
+        return str(actor.get("username", "")), str(actor.get("display_name", ""))
+    return "", str(data.get("author", "")).strip() or "Operador"
+
+
+def record_handover_event(
+    connection: sqlite3.Connection, cycle_id: int, action: str,
+    actor: dict[str, Any] | None, *, item_id: int | None = None,
+    details: dict[str, Any] | None = None,
+) -> None:
+    username, name = handover_actor(actor)
+    connection.execute(
+        """INSERT INTO handover_events(
+           cycle_id, item_id, action, actor_username, actor_name, details, created_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (
+            cycle_id, item_id, action, username, name,
+            json.dumps(details or {}, ensure_ascii=False), now_iso(),
+        ),
+    )
+
+
+def carry_open_handover_items(connection: sqlite3.Connection, cycle_id: int) -> int:
+    rows = connection.execute(
+        """SELECT h.* FROM handovers h
+           JOIN (
+               SELECT COALESCE(root_item_id, id) AS root_id, MAX(id) AS latest_id
+               FROM handovers GROUP BY COALESCE(root_item_id, id)
+           ) latest ON latest.latest_id=h.id
+           JOIN handover_cycles c ON c.id=h.cycle_id
+           WHERE h.item_type='Pendência' AND h.status IN ('Pendente', 'Em andamento')
+             AND c.state IN ('awaiting_receipt', 'received')
+           ORDER BY CASE h.priority WHEN 'Crítica' THEN 0 WHEN 'Alta' THEN 1
+                    WHEN 'Normal' THEN 2 ELSE 3 END, h.id"""
+    ).fetchall()
+    copied = 0
+    timestamp = now_iso()
+    for row in rows:
+        cursor = connection.execute(
+            """INSERT INTO handovers(
+               cycle_id, origin_shift, target_shift, message, priority, status, author,
+               created_at, updated_at, completed_at, base_scope, item_type, assignee,
+               author_username, completed_by, completion_note, carried_from_id,
+               root_item_id, reopened_at
+               ) SELECT ?, c.origin_shift, c.target_shift, ?, ?, ?, ?, ?, ?, NULL, ?,
+                        'Pendência', ?, ?, '', '', ?, COALESCE(source.root_item_id, source.id), NULL
+                 FROM handovers source JOIN handover_cycles c ON c.id=?
+                 WHERE source.id=?""",
+            (
+                cycle_id, row["message"], row["priority"], row["status"], row["author"],
+                timestamp, timestamp, row["base_scope"], row["assignee"],
+                row["author_username"], row["id"], cycle_id, row["id"],
+            ),
+        )
+        new_id = int(cursor.lastrowid)
+        record_handover_event(
+            connection, cycle_id, "Pendência carregada automaticamente", None,
+            item_id=new_id,
+            details={"carried_from_id": row["id"], "root_item_id": row["root_item_id"] or row["id"]},
+        )
+        copied += 1
+    return copied
+
+
+def ensure_draft_handover_cycle(
+    connection: sqlite3.Connection, origin: str, target: str,
+    actor: dict[str, Any] | None,
+) -> sqlite3.Row:
+    draft = connection.execute(
+        "SELECT * FROM handover_cycles WHERE state='draft' ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    if draft:
+        if draft["origin_shift"] != origin or draft["target_shift"] != target:
+            raise ValueError(
+                f"Já existe uma passagem em elaboração: {draft['origin_shift']} → {draft['target_shift']}."
+            )
+        return draft
+    awaiting = connection.execute(
+        "SELECT * FROM handover_cycles WHERE state='awaiting_receipt' ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    if awaiting:
+        raise ValueError(
+            f"Confirme o recebimento da passagem {awaiting['origin_shift']} → {awaiting['target_shift']} antes de iniciar outra."
+        )
+    timestamp = now_iso()
+    username, name = handover_actor(actor)
+    cursor = connection.execute(
+        """INSERT INTO handover_cycles(
+           origin_shift, target_shift, state, operation_date,
+           created_by_username, created_by_name, created_at, updated_at
+           ) VALUES (?, ?, 'draft', ?, ?, ?, ?, ?)""",
+        (origin, target, timestamp[:10], username, name, timestamp, timestamp),
+    )
+    cycle_id = int(cursor.lastrowid)
+    record_handover_event(connection, cycle_id, "Passagem iniciada", actor)
+    carry_open_handover_items(connection, cycle_id)
+    return connection.execute("SELECT * FROM handover_cycles WHERE id=?", (cycle_id,)).fetchone()
 
 
 def list_handovers() -> list[dict[str, Any]]:
@@ -1563,37 +1780,261 @@ def list_handovers() -> list[dict[str, Any]]:
     return [handover_dict(row) for row in rows]
 
 
-def save_handover(data: dict[str, Any], handover_id: int | None = None) -> dict[str, Any]:
+def list_handover_cycles() -> dict[str, Any]:
+    initialize_handovers_db()
+    with handovers_connection() as connection:
+        cycle_rows = connection.execute(
+            """SELECT * FROM handover_cycles ORDER BY
+               CASE state WHEN 'draft' THEN 0 WHEN 'awaiting_receipt' THEN 1 ELSE 2 END,
+               updated_at DESC, id DESC LIMIT 100"""
+        ).fetchall()
+        item_rows = connection.execute(
+            """SELECT * FROM handovers ORDER BY
+               CASE base_scope WHEN 'Geral' THEN 0 WHEN 'SDAM' THEN 1 ELSE 2 END,
+               CASE priority WHEN 'Crítica' THEN 0 WHEN 'Alta' THEN 1
+                    WHEN 'Normal' THEN 2 ELSE 3 END, id"""
+        ).fetchall()
+        event_rows = connection.execute(
+            "SELECT * FROM handover_events ORDER BY created_at DESC, id DESC"
+        ).fetchall()
+        latest_rows = connection.execute(
+            """SELECT h.* FROM handovers h JOIN (
+               SELECT COALESCE(root_item_id, id) AS root_id, MAX(id) AS latest_id
+               FROM handovers GROUP BY COALESCE(root_item_id, id)
+               ) latest ON latest.latest_id=h.id"""
+        ).fetchall()
+    items_by_cycle: dict[int, list[dict[str, Any]]] = {}
+    latest_item_ids = {int(row["id"]) for row in latest_rows}
+    for row in item_rows:
+        item = handover_dict(row)
+        item["is_latest_root"] = int(row["id"]) in latest_item_ids
+        items_by_cycle.setdefault(int(row["cycle_id"]), []).append(item)
+    events_by_cycle: dict[int, list[dict[str, Any]]] = {}
+    for row in event_rows:
+        event = dict(row)
+        try:
+            event["details"] = json.loads(event.pop("details"))
+        except (json.JSONDecodeError, TypeError):
+            event["details"] = {}
+        events_by_cycle.setdefault(int(row["cycle_id"]), []).append(event)
+    state_labels = {
+        "draft": "Em elaboração",
+        "awaiting_receipt": "Aguardando recebimento",
+        "received": "Recebida",
+    }
+    cycles = []
+    for row in cycle_rows:
+        cycle = dict(row)
+        cycle["state_label"] = state_labels.get(cycle["state"], cycle["state"])
+        cycle["items"] = items_by_cycle.get(int(row["id"]), [])
+        cycle["events"] = events_by_cycle.get(int(row["id"]), [])
+        cycles.append(cycle)
+    summary = {
+        "pending": sum(row["status"] == "Pendente" and row["item_type"] == "Pendência" for row in latest_rows),
+        "in_progress": sum(row["status"] == "Em andamento" and row["item_type"] == "Pendência" for row in latest_rows),
+        "completed": sum(row["status"] == "Concluída" and row["item_type"] == "Pendência" for row in latest_rows),
+        "information": sum(row["item_type"] == "Informação" for row in latest_rows),
+    }
+    return {"cycles": cycles, "summary": summary, "shifts": SHIFTS}
+
+
+def save_handover(
+    data: dict[str, Any], handover_id: int | None = None,
+    actor: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     initialize_handovers_db()
     values = validate_handover(data)
     timestamp = now_iso()
-    completed_at = timestamp if values[4] == "Concluída" else None
+    origin, target, message, priority, base_scope, item_type, assignee = values
+    username, author = handover_actor(actor, data)
     with HANDOVERS_LOCK, handovers_connection() as connection:
         if handover_id is None:
+            cycle = ensure_draft_handover_cycle(connection, origin, target, actor)
+            status = "Pendente" if item_type == "Pendência" else "Informação"
             cursor = connection.execute(
-                """INSERT INTO handovers(origin_shift, target_shift, message, priority, status, author,
-                   created_at, updated_at, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (*values, timestamp, timestamp, completed_at),
+                """INSERT INTO handovers(
+                   cycle_id, origin_shift, target_shift, message, priority, status, author,
+                   created_at, updated_at, completed_at, base_scope, item_type, assignee,
+                   author_username
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)""",
+                (
+                    cycle["id"], origin, target, message, priority, status, author,
+                    timestamp, timestamp, base_scope, item_type, assignee, username,
+                ),
             )
-            handover_id = cursor.lastrowid
+            handover_id = int(cursor.lastrowid)
+            connection.execute(
+                "UPDATE handovers SET root_item_id=id WHERE id=?", (handover_id,)
+            )
+            connection.execute(
+                "UPDATE handover_cycles SET updated_at=? WHERE id=?", (timestamp, cycle["id"])
+            )
+            record_handover_event(
+                connection, int(cycle["id"]), "Item criado", actor,
+                item_id=handover_id,
+                details={"base_scope": base_scope, "item_type": item_type, "priority": priority},
+            )
         else:
+            current = connection.execute(
+                """SELECT h.*, c.state AS cycle_state FROM handovers h
+                   JOIN handover_cycles c ON c.id=h.cycle_id WHERE h.id=?""",
+                (handover_id,),
+            ).fetchone()
+            if not current:
+                raise LookupError("Item da passagem de turno não encontrado.")
+            if current["cycle_state"] != "draft":
+                raise ValueError("Após a publicação, o conteúdo original não pode ser alterado.")
+            if int(current["carried_from_id"] or 0):
+                raise ValueError("Pendências carregadas mantêm o texto original; use comentários para complementar.")
+            if current["origin_shift"] != origin or current["target_shift"] != target:
+                raise ValueError("Os turnos da passagem em elaboração não podem ser alterados por item.")
+            status = "Pendente" if item_type == "Pendência" else "Informação"
             cursor = connection.execute(
-                """UPDATE handovers SET origin_shift=?, target_shift=?, message=?, priority=?, status=?,
-                   author=?, updated_at=?, completed_at=? WHERE id=?""",
-                (*values, timestamp, completed_at, handover_id),
+                """UPDATE handovers SET message=?, priority=?, status=?, base_scope=?,
+                   item_type=?, assignee=?, updated_at=? WHERE id=?""",
+                (message, priority, status, base_scope, item_type, assignee, timestamp, handover_id),
             )
             if not cursor.rowcount:
-                raise LookupError("Passagem de turno não encontrada.")
+                raise LookupError("Item da passagem de turno não encontrado.")
+            record_handover_event(
+                connection, int(current["cycle_id"]), "Item editado", actor,
+                item_id=handover_id,
+                details={"base_scope": base_scope, "item_type": item_type, "priority": priority},
+            )
         row = connection.execute("SELECT * FROM handovers WHERE id=?", (handover_id,)).fetchone()
     return handover_dict(row)
 
 
-def delete_handover(handover_id: int) -> None:
+def delete_handover(handover_id: int, actor: dict[str, Any] | None = None) -> None:
     initialize_handovers_db()
     with HANDOVERS_LOCK, handovers_connection() as connection:
+        item = connection.execute(
+            """SELECT h.*, c.state AS cycle_state FROM handovers h
+               JOIN handover_cycles c ON c.id=h.cycle_id WHERE h.id=?""",
+            (handover_id,),
+        ).fetchone()
+        if not item:
+            raise LookupError("Item da passagem de turno não encontrado.")
+        if item["cycle_state"] != "draft":
+            raise ValueError("Itens publicados não podem ser excluídos; conclua ou comente a pendência.")
         cursor = connection.execute("DELETE FROM handovers WHERE id=?", (handover_id,))
         if not cursor.rowcount:
+            raise LookupError("Item da passagem de turno não encontrado.")
+        record_handover_event(
+            connection, int(item["cycle_id"]), "Item excluído durante elaboração", actor,
+            details={"item_id": handover_id, "message": item["message"][:300]},
+        )
+
+
+def publish_handover_cycle(cycle_id: int, actor: dict[str, Any]) -> dict[str, Any]:
+    initialize_handovers_db()
+    with HANDOVERS_LOCK, handovers_connection() as connection:
+        cycle = connection.execute("SELECT * FROM handover_cycles WHERE id=?", (cycle_id,)).fetchone()
+        if not cycle:
             raise LookupError("Passagem de turno não encontrada.")
+        if cycle["state"] != "draft":
+            raise ValueError("Somente uma passagem em elaboração pode ser publicada.")
+        if not connection.execute("SELECT 1 FROM handovers WHERE cycle_id=? LIMIT 1", (cycle_id,)).fetchone():
+            raise ValueError("Inclua ao menos uma anotação antes de publicar.")
+        timestamp = now_iso()
+        username, name = handover_actor(actor)
+        connection.execute(
+            """UPDATE handover_cycles SET state='awaiting_receipt', updated_at=?,
+               published_by_username=?, published_by_name=?, published_at=? WHERE id=?""",
+            (timestamp, username, name, timestamp, cycle_id),
+        )
+        record_handover_event(connection, cycle_id, "Passagem publicada", actor)
+    return next(item for item in list_handover_cycles()["cycles"] if item["id"] == cycle_id)
+
+
+def receive_handover_cycle(cycle_id: int, actor: dict[str, Any]) -> dict[str, Any]:
+    initialize_handovers_db()
+    with HANDOVERS_LOCK, handovers_connection() as connection:
+        cycle = connection.execute("SELECT * FROM handover_cycles WHERE id=?", (cycle_id,)).fetchone()
+        if not cycle:
+            raise LookupError("Passagem de turno não encontrada.")
+        if cycle["state"] != "awaiting_receipt":
+            raise ValueError("Esta passagem não está aguardando recebimento.")
+        timestamp = now_iso()
+        username, name = handover_actor(actor)
+        connection.execute(
+            """UPDATE handover_cycles SET state='received', updated_at=?,
+               received_by_username=?, received_by_name=?, received_at=? WHERE id=?""",
+            (timestamp, username, name, timestamp, cycle_id),
+        )
+        record_handover_event(connection, cycle_id, "Recebimento confirmado", actor)
+    return next(item for item in list_handover_cycles()["cycles"] if item["id"] == cycle_id)
+
+
+def transition_handover_item(
+    handover_id: int, data: dict[str, Any], actor: dict[str, Any]
+) -> dict[str, Any]:
+    initialize_handovers_db()
+    action = str(data.get("action", "")).strip()
+    note = str(data.get("note", "")).strip()
+    assignee = str(data.get("assignee", "")).strip()
+    if action not in {"assume", "complete", "reopen", "assign", "comment"}:
+        raise ValueError("Ação de passagem de turno inválida.")
+    if action in {"complete", "reopen", "comment"} and not note:
+        raise ValueError("Registre uma observação para esta ação.")
+    if len(note) > 2000 or len(assignee) > 100:
+        raise ValueError("Observação ou responsável excede o limite permitido.")
+    timestamp = now_iso()
+    username, name = handover_actor(actor)
+    with HANDOVERS_LOCK, handovers_connection() as connection:
+        item = connection.execute("SELECT * FROM handovers WHERE id=?", (handover_id,)).fetchone()
+        if not item:
+            raise LookupError("Item da passagem de turno não encontrado.")
+        newer = connection.execute(
+            """SELECT 1 FROM handovers WHERE COALESCE(root_item_id, id)=?
+               AND id>? LIMIT 1""",
+            (item["root_item_id"] or item["id"], item["id"]),
+        ).fetchone()
+        if newer:
+            raise ValueError("Use a ocorrência mais recente desta pendência para registrar a ação.")
+        if item["item_type"] != "Pendência" and action != "comment":
+            raise ValueError("Informações não possuem fluxo de conclusão.")
+        details: dict[str, Any] = {"note": note} if note else {}
+        if action == "assume":
+            connection.execute(
+                "UPDATE handovers SET status='Em andamento', assignee=?, updated_at=? WHERE id=?",
+                (name, timestamp, handover_id),
+            )
+            event_action = "Pendência assumida"
+            details["assignee"] = name
+        elif action == "complete":
+            if item["status"] == "Concluída":
+                raise ValueError("Esta pendência já está concluída.")
+            connection.execute(
+                """UPDATE handovers SET status='Concluída', completed_at=?, completed_by=?,
+                   completion_note=?, updated_at=? WHERE id=?""",
+                (timestamp, name, note, timestamp, handover_id),
+            )
+            event_action = "Pendência concluída"
+        elif action == "reopen":
+            if item["status"] != "Concluída":
+                raise ValueError("Somente uma pendência concluída pode ser reaberta.")
+            connection.execute(
+                """UPDATE handovers SET status='Pendente', completed_at=NULL, completed_by='',
+                   completion_note='', reopened_at=?, updated_at=? WHERE id=?""",
+                (timestamp, timestamp, handover_id),
+            )
+            event_action = "Pendência reaberta"
+        elif action == "assign":
+            connection.execute(
+                "UPDATE handovers SET assignee=?, updated_at=? WHERE id=?",
+                (assignee, timestamp, handover_id),
+            )
+            event_action = "Responsável alterado"
+            details["assignee"] = assignee
+        else:
+            event_action = "Comentário adicionado"
+        record_handover_event(
+            connection, int(item["cycle_id"]), event_action, actor,
+            item_id=handover_id, details=details,
+        )
+        row = connection.execute("SELECT * FROM handovers WHERE id=?", (handover_id,)).fetchone()
+    return handover_dict(row)
 
 
 @contextmanager
@@ -4051,7 +4492,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(200, {"items": list_bases()})
             return
         if urllib.parse.urlparse(self.path).path == "/api/handovers":
-            self.send_json(200, {"items": list_handovers(), "shifts": SHIFTS})
+            self.send_json(200, list_handover_cycles())
             return
         if urllib.parse.urlparse(self.path).path == "/api/reports":
             if user["role"] == "viewer":
@@ -4181,7 +4622,25 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == "/api/handovers":
                 if user["role"] not in {"admin", "supervisor", "operator"}:
                     self.send_json(403, {"error": "Perfil de consulta não pode registrar passagens."}); return
-                self.send_json(201, save_handover(data))
+                self.send_json(201, save_handover(data, actor=user))
+                return
+            handover_cycle_action = re.fullmatch(r"/api/handovers/cycles/(\d+)/(publish|receive)", self.path)
+            if handover_cycle_action:
+                if user["role"] not in {"admin", "supervisor", "operator"}:
+                    self.send_json(403, {"error": "Perfil de consulta não pode operar passagens."}); return
+                cycle_id = int(handover_cycle_action.group(1))
+                saved = (
+                    publish_handover_cycle(cycle_id, user)
+                    if handover_cycle_action.group(2) == "publish"
+                    else receive_handover_cycle(cycle_id, user)
+                )
+                self.send_json(200, saved)
+                return
+            handover_item_action = re.fullmatch(r"/api/handovers/(\d+)/actions", self.path)
+            if handover_item_action:
+                if user["role"] not in {"admin", "supervisor", "operator"}:
+                    self.send_json(403, {"error": "Perfil de consulta não pode operar passagens."}); return
+                self.send_json(200, transition_handover_item(int(handover_item_action.group(1)), data, user))
                 return
             if self.path == "/api/reports":
                 if user["role"] not in {"admin", "supervisor", "operator"}:
@@ -4294,7 +4753,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 length = int(self.headers.get("Content-Length", "0"))
                 data = json.loads(self.rfile.read(min(length, 16_384)).decode("utf-8"))
-                self.send_json(200, save_handover(data, int(handover_match.group(1))))
+                self.send_json(200, save_handover(data, int(handover_match.group(1)), actor=user))
             except (ValueError, json.JSONDecodeError) as error:
                 self.send_json(400, {"error": str(error)})
             except LookupError as error:
@@ -4357,8 +4816,10 @@ class Handler(BaseHTTPRequestHandler):
             if user["role"] not in {"admin", "supervisor", "operator"}:
                 self.send_json(403, {"error": "Perfil de consulta não pode excluir passagens."}); return
             try:
-                delete_handover(int(handover_match.group(1)))
+                delete_handover(int(handover_match.group(1)), actor=user)
                 self.send_json(200, {"ok": True})
+            except ValueError as error:
+                self.send_json(400, {"error": str(error)})
             except LookupError as error:
                 self.send_json(404, {"error": str(error)})
             except Exception as error:

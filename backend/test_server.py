@@ -769,7 +769,7 @@ class WSGITests(unittest.TestCase):
         self.assertIn(b'<option selected>Aberto</option>', body)
         self.assertIn(b'styles.css?v=20260806-1', body)
         self.assertIn(b"public-knowledge-index.js?v=20260731-6", body)
-        self.assertIn(b"app.js?v=20260812-5", body)
+        self.assertIn(b"app.js?v=20260818-6", body)
         self.assertIn(b'id="newSearchButton"', body)
 
     def test_browser_uses_same_origin_ai_endpoint(self):
@@ -800,6 +800,10 @@ class WSGITests(unittest.TestCase):
         self.assertIn(b'id="ruleManagementView"', body)
         self.assertIn(b'id="accountFormError"', body)
         self.assertIn(b'id="handoverFormError"', body)
+        self.assertIn(b'id="handoverBase"', body)
+        self.assertIn(b'id="handoverType"', body)
+        self.assertIn(b'id="handoverAssignee"', body)
+        self.assertIn("Uma única passagem para as duas bases".encode(), body)
         self.assertIn(b'id="aircraftFleetFilter"', body)
         self.assertIn(b'id="aircraftFleetStatus"', body)
         self.assertIn("<th>Ações</th>".encode(), body)
@@ -1141,6 +1145,85 @@ class ConsolidatedStorageTests(unittest.TestCase):
                 connection.close()
             self.assertTrue(all(path.exists() for path in legacy.values()))
             self.assertTrue(legacy_graph.exists())
+
+
+class HandoverWorkflowTests(unittest.TestCase):
+    def setUp(self):
+        self.operator = {
+            "id": 11,
+            "username": "operador.teste",
+            "display_name": "Operador Teste",
+            "role": "operator",
+        }
+
+    def test_legacy_rows_are_preserved_and_classified_as_general(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "handovers.db"
+            connection = sqlite3.connect(database)
+            connection.execute("""CREATE TABLE handovers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                origin_shift TEXT NOT NULL, target_shift TEXT NOT NULL,
+                message TEXT NOT NULL, priority TEXT NOT NULL, status TEXT NOT NULL,
+                author TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                completed_at TEXT
+            )""")
+            connection.executemany(
+                """INSERT INTO handovers(
+                   origin_shift,target_shift,message,priority,status,author,
+                   created_at,updated_at,completed_at
+                   ) VALUES (?,?,?,?,?,?,?,?,?)""",
+                [
+                    ("T1", "T2", "Registro antigo A", "Normal", "Pendente", "Ana", "2026-08-17T12:00:00+00:00", "2026-08-17T12:00:00+00:00", None),
+                    ("T1", "T2", "Registro antigo B", "Alta", "Concluída", "Bruno", "2026-08-17T12:10:00+00:00", "2026-08-17T13:00:00+00:00", "2026-08-17T13:00:00+00:00"),
+                ],
+            )
+            connection.commit()
+            connection.close()
+            legacy = {**server.LEGACY_DB_PATHS, "handovers": Path(directory) / "missing.db"}
+            with patch.object(server, "HANDOVERS_DB_PATH", database), patch.object(server, "LEGACY_DB_PATHS", legacy):
+                server.initialize_handovers_db()
+                result = server.list_handover_cycles()
+            self.assertEqual(sum(len(cycle["items"]) for cycle in result["cycles"]), 2)
+            self.assertTrue(all(item["base_scope"] == "Geral" for item in result["cycles"][0]["items"]))
+            self.assertEqual({item["message"] for item in result["cycles"][0]["items"]}, {"Registro antigo A", "Registro antigo B"})
+
+    def test_pending_carries_forward_but_information_does_not(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "handovers.db"
+            legacy = {**server.LEGACY_DB_PATHS, "handovers": Path(directory) / "missing.db"}
+            with patch.object(server, "HANDOVERS_DB_PATH", database), patch.object(server, "LEGACY_DB_PATHS", legacy):
+                pending = server.save_handover({
+                    "origin_shift": "T1", "target_shift": "T2", "base_scope": "SDAM",
+                    "item_type": "Pendência", "message": "Resolver slot", "priority": "Alta",
+                }, actor=self.operator)
+                information = server.save_handover({
+                    "origin_shift": "T1", "target_shift": "T2", "base_scope": "SBSJ",
+                    "item_type": "Informação", "message": "Escala já fechada", "priority": "Normal",
+                }, actor=self.operator)
+                cycle_id = pending["cycle_id"]
+                server.publish_handover_cycle(cycle_id, self.operator)
+                with self.assertRaises(ValueError):
+                    server.save_handover({
+                        **pending, "message": "Tentativa de alterar conteúdo publicado",
+                    }, pending["id"], actor=self.operator)
+                server.receive_handover_cycle(cycle_id, self.operator)
+                server.save_handover({
+                    "origin_shift": "T2", "target_shift": "T3", "base_scope": "Geral",
+                    "item_type": "Informação", "message": "Novo turno iniciado", "priority": "Normal",
+                }, actor=self.operator)
+                result = server.list_handover_cycles()
+                draft = next(cycle for cycle in result["cycles"] if cycle["state"] == "draft")
+                carried = [item for item in draft["items"] if item["carried_from_id"]]
+                self.assertEqual(len(carried), 1)
+                self.assertEqual(carried[0]["message"], "Resolver slot")
+                self.assertEqual(carried[0]["base_scope"], "SDAM")
+                self.assertNotIn(information["id"], [item["carried_from_id"] for item in draft["items"]])
+                server.transition_handover_item(carried[0]["id"], {
+                    "action": "complete", "note": "Slot confirmado com o aluno.",
+                }, self.operator)
+                final = server.list_handover_cycles()
+                self.assertEqual(final["summary"]["pending"], 0)
+                self.assertEqual(final["summary"]["completed"], 1)
 
 
 class ReportStorageTests(unittest.TestCase):
