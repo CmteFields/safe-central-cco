@@ -769,7 +769,8 @@ class WSGITests(unittest.TestCase):
         self.assertIn(b'<option selected>Aberto</option>', body)
         self.assertIn(b'styles.css?v=20260806-1', body)
         self.assertIn(b"public-knowledge-index.js?v=20260731-6", body)
-        self.assertIn(b"app.js?v=20260818-6", body)
+        self.assertIn(b"instrutores.css?v=20260819-1", body)
+        self.assertIn(b"app.js?v=20260819-1", body)
         self.assertIn(b'id="newSearchButton"', body)
 
     def test_browser_uses_same_origin_ai_endpoint(self):
@@ -789,6 +790,9 @@ class WSGITests(unittest.TestCase):
         self.assertIn(b"function startNewSearch()", body)
         self.assertIn(b'input.value = ""', body)
         self.assertIn(b'$("#newSearchButton").addEventListener("click", startNewSearch)', body)
+        self.assertIn("Histórico de passagens".encode(), body)
+        self.assertIn("Concluídas neste ciclo".encode(), body)
+        self.assertIn(b"data.active_cycle_id", body)
 
     def test_static_portal_contains_reports_section(self):
         status, _, body = self.request("/")
@@ -804,6 +808,8 @@ class WSGITests(unittest.TestCase):
         self.assertIn(b'id="handoverType"', body)
         self.assertIn(b'id="handoverAssignee"', body)
         self.assertIn("Uma única passagem para as duas bases".encode(), body)
+        self.assertIn("INFORMAÇÕES NO CICLO".encode(), body)
+        self.assertIn("CONCLUÍDAS NO CICLO".encode(), body)
         self.assertIn(b'id="aircraftFleetFilter"', body)
         self.assertIn(b'id="aircraftFleetStatus"', body)
         self.assertIn("<th>Ações</th>".encode(), body)
@@ -1224,6 +1230,78 @@ class HandoverWorkflowTests(unittest.TestCase):
                 final = server.list_handover_cycles()
                 self.assertEqual(final["summary"]["pending"], 0)
                 self.assertEqual(final["summary"]["completed"], 1)
+
+    def test_summary_is_scoped_to_the_active_cycle(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "handovers.db"
+            legacy = {**server.LEGACY_DB_PATHS, "handovers": Path(directory) / "missing.db"}
+            with patch.object(server, "HANDOVERS_DB_PATH", database), patch.object(server, "LEGACY_DB_PATHS", legacy):
+                completed = server.save_handover({
+                    "origin_shift": "T1", "target_shift": "T2", "base_scope": "SDAM",
+                    "item_type": "Pendência", "message": "Finalizar coordenação", "priority": "Alta",
+                }, actor=self.operator)
+                server.transition_handover_item(completed["id"], {
+                    "action": "complete", "note": "Coordenação finalizada.",
+                }, self.operator)
+                server.publish_handover_cycle(completed["cycle_id"], self.operator)
+                server.receive_handover_cycle(completed["cycle_id"], self.operator)
+                current = server.save_handover({
+                    "origin_shift": "T2", "target_shift": "T3", "base_scope": "Geral",
+                    "item_type": "Informação", "message": "Operação normal", "priority": "Normal",
+                }, actor=self.operator)
+
+                result = server.list_handover_cycles()
+
+                self.assertEqual(result["active_cycle_id"], current["cycle_id"])
+                self.assertEqual(result["history_total"], 1)
+                self.assertEqual(result["summary"], {
+                    "pending": 0, "in_progress": 0, "completed": 0, "information": 1,
+                })
+                self.assertTrue(next(
+                    cycle for cycle in result["cycles"] if cycle["id"] == current["cycle_id"]
+                )["is_active"])
+
+    def test_reopening_historical_item_creates_an_occurrence_in_active_draft(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "handovers.db"
+            legacy = {**server.LEGACY_DB_PATHS, "handovers": Path(directory) / "missing.db"}
+            with patch.object(server, "HANDOVERS_DB_PATH", database), patch.object(server, "LEGACY_DB_PATHS", legacy):
+                original = server.save_handover({
+                    "origin_shift": "T1", "target_shift": "T2", "base_scope": "SBSJ",
+                    "item_type": "Pendência", "message": "Confirmar abastecimento", "priority": "Crítica",
+                }, actor=self.operator)
+                server.transition_handover_item(original["id"], {
+                    "action": "complete", "note": "Abastecimento confirmado.",
+                }, self.operator)
+                server.publish_handover_cycle(original["cycle_id"], self.operator)
+                server.receive_handover_cycle(original["cycle_id"], self.operator)
+                current = server.save_handover({
+                    "origin_shift": "T2", "target_shift": "T3", "base_scope": "Geral",
+                    "item_type": "Informação", "message": "Novo ciclo", "priority": "Normal",
+                }, actor=self.operator)
+
+                reopened = server.transition_handover_item(original["id"], {
+                    "action": "reopen", "note": "Foi identificada uma nova divergência.",
+                    "origin_shift": "T2", "target_shift": "T3",
+                }, self.operator)
+
+                self.assertNotEqual(reopened["id"], original["id"])
+                self.assertEqual(reopened["cycle_id"], current["cycle_id"])
+                self.assertEqual(reopened["status"], "Pendente")
+                self.assertEqual(reopened["carried_from_id"], original["id"])
+                self.assertEqual(reopened["root_item_id"], original["root_item_id"])
+                with server.handovers_connection() as connection:
+                    stored_original = connection.execute(
+                        "SELECT status, completion_note FROM handovers WHERE id=?", (original["id"],)
+                    ).fetchone()
+                    event = connection.execute(
+                        "SELECT action FROM handover_events WHERE item_id=? ORDER BY id DESC LIMIT 1",
+                        (reopened["id"],),
+                    ).fetchone()
+                self.assertEqual(stored_original["status"], "Concluída")
+                self.assertEqual(stored_original["completion_note"], "Abastecimento confirmado.")
+                self.assertEqual(event["action"], "Pendência reaberta no ciclo atual")
+                self.assertEqual(server.list_handover_cycles()["summary"]["pending"], 1)
 
 
 class ReportStorageTests(unittest.TestCase):

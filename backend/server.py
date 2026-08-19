@@ -195,6 +195,7 @@ HANDOVER_STATUSES = {"Pendente", "Em andamento", "Concluída"}
 HANDOVER_BASES = {"Geral", "SDAM", "SBSJ"}
 HANDOVER_ITEM_TYPES = {"Pendência", "Informação"}
 HANDOVER_CYCLE_STATES = {"draft", "awaiting_receipt", "received"}
+HANDOVER_HISTORY_LIMIT = 25
 REPORT_TYPES = {"discrepancy": "Discrepância", "question": "Indicação de pergunta"}
 REPORT_PRIORITIES = {"Baixa", "Normal", "Alta", "Crítica"}
 REPORT_STATUSES = {"Aberto", "Em análise", "Resolvido", "Descartado"}
@@ -1786,23 +1787,35 @@ def list_handover_cycles() -> dict[str, Any]:
         cycle_rows = connection.execute(
             """SELECT * FROM handover_cycles ORDER BY
                CASE state WHEN 'draft' THEN 0 WHEN 'awaiting_receipt' THEN 1 ELSE 2 END,
-               updated_at DESC, id DESC LIMIT 100"""
+               updated_at DESC, id DESC LIMIT ?""",
+            (HANDOVER_HISTORY_LIMIT + 1,),
         ).fetchall()
-        item_rows = connection.execute(
-            """SELECT * FROM handovers ORDER BY
-               CASE base_scope WHEN 'Geral' THEN 0 WHEN 'SDAM' THEN 1 ELSE 2 END,
-               CASE priority WHEN 'Crítica' THEN 0 WHEN 'Alta' THEN 1
-                    WHEN 'Normal' THEN 2 ELSE 3 END, id"""
-        ).fetchall()
-        event_rows = connection.execute(
-            "SELECT * FROM handover_events ORDER BY created_at DESC, id DESC"
-        ).fetchall()
+        cycle_ids = [int(row["id"]) for row in cycle_rows]
+        item_rows: list[sqlite3.Row] = []
+        event_rows: list[sqlite3.Row] = []
+        if cycle_ids:
+            placeholders = ",".join("?" for _ in cycle_ids)
+            item_rows = connection.execute(
+                f"""SELECT * FROM handovers WHERE cycle_id IN ({placeholders}) ORDER BY
+                   CASE base_scope WHEN 'Geral' THEN 0 WHEN 'SDAM' THEN 1 ELSE 2 END,
+                   CASE priority WHEN 'Crítica' THEN 0 WHEN 'Alta' THEN 1
+                        WHEN 'Normal' THEN 2 ELSE 3 END, id""",
+                cycle_ids,
+            ).fetchall()
+            event_rows = connection.execute(
+                f"""SELECT * FROM handover_events WHERE cycle_id IN ({placeholders})
+                    ORDER BY created_at DESC, id DESC""",
+                cycle_ids,
+            ).fetchall()
         latest_rows = connection.execute(
             """SELECT h.* FROM handovers h JOIN (
                SELECT COALESCE(root_item_id, id) AS root_id, MAX(id) AS latest_id
                FROM handovers GROUP BY COALESCE(root_item_id, id)
                ) latest ON latest.latest_id=h.id"""
         ).fetchall()
+        total_cycles = int(connection.execute(
+            "SELECT COUNT(*) FROM handover_cycles"
+        ).fetchone()[0])
     items_by_cycle: dict[int, list[dict[str, Any]]] = {}
     latest_item_ids = {int(row["id"]) for row in latest_rows}
     for row in item_rows:
@@ -1822,20 +1835,36 @@ def list_handover_cycles() -> dict[str, Any]:
         "awaiting_receipt": "Aguardando recebimento",
         "received": "Recebida",
     }
+    active_row = next(
+        (row for row in cycle_rows if row["state"] in {"draft", "awaiting_receipt"}),
+        cycle_rows[0] if cycle_rows else None,
+    )
+    active_cycle_id = int(active_row["id"]) if active_row else None
     cycles = []
     for row in cycle_rows:
         cycle = dict(row)
         cycle["state_label"] = state_labels.get(cycle["state"], cycle["state"])
         cycle["items"] = items_by_cycle.get(int(row["id"]), [])
         cycle["events"] = events_by_cycle.get(int(row["id"]), [])
+        cycle["is_active"] = int(row["id"]) == active_cycle_id
         cycles.append(cycle)
+    active_rows = [
+        row for row in latest_rows
+        if active_cycle_id is not None and int(row["cycle_id"]) == active_cycle_id
+    ]
     summary = {
-        "pending": sum(row["status"] == "Pendente" and row["item_type"] == "Pendência" for row in latest_rows),
-        "in_progress": sum(row["status"] == "Em andamento" and row["item_type"] == "Pendência" for row in latest_rows),
-        "completed": sum(row["status"] == "Concluída" and row["item_type"] == "Pendência" for row in latest_rows),
-        "information": sum(row["item_type"] == "Informação" for row in latest_rows),
+        "pending": sum(row["status"] == "Pendente" and row["item_type"] == "Pendência" for row in active_rows),
+        "in_progress": sum(row["status"] == "Em andamento" and row["item_type"] == "Pendência" for row in active_rows),
+        "completed": sum(row["status"] == "Concluída" and row["item_type"] == "Pendência" for row in active_rows),
+        "information": sum(row["item_type"] == "Informação" for row in active_rows),
     }
-    return {"cycles": cycles, "summary": summary, "shifts": SHIFTS}
+    return {
+        "cycles": cycles,
+        "summary": summary,
+        "shifts": SHIFTS,
+        "active_cycle_id": active_cycle_id,
+        "history_total": max(0, total_cycles - (1 if active_cycle_id is not None else 0)),
+    }
 
 
 def save_handover(
@@ -1995,6 +2024,7 @@ def transition_handover_item(
         if item["item_type"] != "Pendência" and action != "comment":
             raise ValueError("Informações não possuem fluxo de conclusão.")
         details: dict[str, Any] = {"note": note} if note else {}
+        event_cycle_id = int(item["cycle_id"])
         if action == "assume":
             connection.execute(
                 "UPDATE handovers SET status='Em andamento', assignee=?, updated_at=? WHERE id=?",
@@ -2014,12 +2044,49 @@ def transition_handover_item(
         elif action == "reopen":
             if item["status"] != "Concluída":
                 raise ValueError("Somente uma pendência concluída pode ser reaberta.")
-            connection.execute(
-                """UPDATE handovers SET status='Pendente', completed_at=NULL, completed_by='',
-                   completion_note='', reopened_at=?, updated_at=? WHERE id=?""",
-                (timestamp, timestamp, handover_id),
-            )
-            event_action = "Pendência reaberta"
+            draft = connection.execute(
+                "SELECT * FROM handover_cycles WHERE state='draft' ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            if not draft:
+                origin = str(data.get("origin_shift", "")).strip().upper()
+                target = str(data.get("target_shift", "")).strip().upper()
+                if origin not in SHIFTS or target not in SHIFTS or origin == target:
+                    raise ValueError(
+                        "Informe a rota do turno atual para reabrir esta pendência no ciclo ativo."
+                    )
+                draft = ensure_draft_handover_cycle(connection, origin, target, actor)
+            if int(draft["id"]) != int(item["cycle_id"]):
+                cursor = connection.execute(
+                    """INSERT INTO handovers(
+                       cycle_id, origin_shift, target_shift, message, priority, status, author,
+                       created_at, updated_at, completed_at, base_scope, item_type, assignee,
+                       author_username, completed_by, completion_note, carried_from_id,
+                       root_item_id, reopened_at
+                       ) VALUES (?, ?, ?, ?, ?, 'Pendente', ?, ?, ?, NULL, ?, 'Pendência', ?,
+                                 ?, '', '', ?, ?, ?)""",
+                    (
+                        draft["id"], draft["origin_shift"], draft["target_shift"],
+                        item["message"], item["priority"], item["author"], timestamp, timestamp,
+                        item["base_scope"], item["assignee"], item["author_username"], item["id"],
+                        item["root_item_id"] or item["id"], timestamp,
+                    ),
+                )
+                handover_id = int(cursor.lastrowid)
+                connection.execute(
+                    "UPDATE handover_cycles SET updated_at=? WHERE id=?",
+                    (timestamp, draft["id"]),
+                )
+                event_action = "Pendência reaberta no ciclo atual"
+                details["carried_from_id"] = item["id"]
+                event_cycle_id = int(draft["id"])
+            else:
+                connection.execute(
+                    """UPDATE handovers SET status='Pendente', completed_at=NULL, completed_by='',
+                       completion_note='', reopened_at=?, updated_at=? WHERE id=?""",
+                    (timestamp, timestamp, handover_id),
+                )
+                event_action = "Pendência reaberta"
+                event_cycle_id = int(item["cycle_id"])
         elif action == "assign":
             connection.execute(
                 "UPDATE handovers SET assignee=?, updated_at=? WHERE id=?",
@@ -2030,7 +2097,7 @@ def transition_handover_item(
         else:
             event_action = "Comentário adicionado"
         record_handover_event(
-            connection, int(item["cycle_id"]), event_action, actor,
+            connection, event_cycle_id, event_action, actor,
             item_id=handover_id, details=details,
         )
         row = connection.execute("SELECT * FROM handovers WHERE id=?", (handover_id,)).fetchone()

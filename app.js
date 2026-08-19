@@ -92,6 +92,8 @@ let operationalBases = [];
 let basesPromise = null;
 let handovers = [];
 let handoverSummary = { pending: 0, in_progress: 0, completed: 0, information: 0 };
+let handoverActiveCycleId = null;
+let handoverHistoryTotal = 0;
 let handoversLoaded = false;
 let reports = [];
 let reportsLoaded = false;
@@ -755,18 +757,33 @@ function handoverEvents(cycle) {
   }).join("")}</div></details>`;
 }
 
-function handoverCycle(cycle, expanded) {
+function handoverItemGroup(title, items, cycle, className = "") {
+  if (!items.length) return "";
+  return `<div class="handover-item-group ${className}"><h4>${title}<span>${items.length}</span></h4>${items.map(item => handoverCard(item, cycle)).join("")}</div>`;
+}
+
+function handoverBaseSection(base, cycle) {
+  const items = cycle.items.filter(item => item.base_scope === base);
+  const openItems = items.filter(item => item.item_type === "Pendência" && item.status !== "Concluída");
+  const informationItems = items.filter(item => item.item_type === "Informação");
+  const completedItems = items.filter(item => item.item_type === "Pendência" && item.status === "Concluída");
+  const content = [
+    handoverItemGroup("Pendências abertas", openItems, cycle, "handover-open-group"),
+    handoverItemGroup("Informações do turno", informationItems, cycle, "handover-information-group"),
+    completedItems.length ? `<details class="handover-completed-group"><summary>Concluídas neste ciclo <span>${completedItems.length}</span></summary>${completedItems.map(item => handoverCard(item, cycle)).join("")}</details>` : "",
+  ].filter(Boolean).join("");
+  return `<section class="handover-base-section base-${base.toLowerCase()}"><div class="handover-base-head"><strong>${base}</strong><span>${items.length}</span></div>${content || '<div class="handover-empty">Nenhuma anotação para esta seção.</div>'}</section>`;
+}
+
+function handoverCycle(cycle, { expanded = false, history = false } = {}) {
   const canOperate = hasRole("admin", "supervisor", "operator");
   const bases = ["Geral", "SDAM", "SBSJ"];
   const controls = cycle.state === "draft" && canOperate
     ? `<button class="primary-action" data-handover-publish="${cycle.id}">Publicar passagem</button>`
     : cycle.state === "awaiting_receipt" && canOperate
       ? `<button class="primary-action" data-handover-receive="${cycle.id}">Confirmar recebimento</button>` : "";
-  const body = `<div class="handover-base-grid">${bases.map(base => {
-    const items = cycle.items.filter(item => item.base_scope === base);
-    return `<section class="handover-base-section base-${base.toLowerCase()}"><div class="handover-base-head"><strong>${base}</strong><span>${items.length}</span></div>${items.length ? items.map(item => handoverCard(item, cycle)).join("") : '<div class="handover-empty">Nenhuma anotação para esta seção.</div>'}</section>`;
-  }).join("")}</div>${handoverEvents(cycle)}`;
-  return `<article class="handover-cycle state-${cycle.state}">
+  const body = `<div class="handover-base-grid">${bases.map(base => handoverBaseSection(base, cycle)).join("")}</div>${handoverEvents(cycle)}`;
+  return `<article class="handover-cycle state-${cycle.state}${history ? " historical-cycle" : " active-cycle"}">
     <div class="handover-cycle-head"><div><div class="handover-cycle-route">${cycle.origin_shift} → ${cycle.target_shift}<span>${escapeHtml(cycle.state_label)}</span></div><p>${cycle.state === "draft" ? `Em elaboração por ${escapeHtml(cycle.created_by_name || "Operador")}` : `Publicada por ${escapeHtml(cycle.published_by_name || "Operador")} · ${formatInstructorDate(cycle.published_at)}`}${cycle.received_at ? ` · Recebida por ${escapeHtml(cycle.received_by_name)} em ${formatInstructorDate(cycle.received_at)}` : ""}</p></div><div class="handover-cycle-controls"><span>${cycle.items.length} anotação(ões)</span>${controls}</div></div>
     ${expanded ? body : `<details class="handover-history-cycle"><summary>Visualizar esta passagem</summary>${body}</details>`}
   </article>`;
@@ -785,6 +802,8 @@ function bindHandoverActions() {
 function renderHandovers() {
   const target = $("#handoverShiftFilter").value;
   const visible = handovers.filter(cycle => !target || cycle.target_shift === target);
+  const active = visible.find(cycle => cycle.is_active || cycle.id === handoverActiveCycleId);
+  const history = visible.filter(cycle => !active || cycle.id !== active.id);
   $("#handoverPendingCount").textContent = handoverSummary.pending;
   $("#handoverProgressCount").textContent = handoverSummary.in_progress;
   $("#handoverInfoCount").textContent = handoverSummary.information;
@@ -792,9 +811,12 @@ function renderHandovers() {
   const openCount = handoverSummary.pending + handoverSummary.in_progress;
   $("#handoverNavCount").textContent = openCount;
   updateNotificationBadge();
-  $("#handoverBoard").innerHTML = visible.length
-    ? visible.map((cycle, index) => handoverCycle(cycle, index === 0 || cycle.state !== "received")).join("")
-    : '<div class="table-message">Nenhuma passagem para o filtro selecionado.</div>';
+  const current = `<section class="handover-view-section handover-current-section"><div class="handover-section-heading"><div><span>AGORA</span><h2>Passagem atual</h2></div><small>Os indicadores acima consideram somente este ciclo.</small></div>${active ? handoverCycle(active, { expanded: true }) : '<div class="table-message">Nenhuma passagem atual para o destino selecionado.</div>'}</section>`;
+  const historyCount = target ? history.length : handoverHistoryTotal;
+  const archived = history.length
+    ? history.map(cycle => handoverCycle(cycle, { history: true })).join("")
+    : '<div class="table-message">Nenhuma passagem anterior para o destino selecionado.</div>';
+  $("#handoverBoard").innerHTML = `${current}<details class="handover-history"><summary><span><strong>Histórico de passagens</strong><small>Consulte ciclos anteriores sem misturá-los à operação atual.</small></span><b>${historyCount}</b></summary><div class="handover-history-list">${archived}</div></details>`;
   bindHandoverActions();
 }
 
@@ -803,6 +825,8 @@ async function loadHandovers() {
     const data = await handoverRequest();
     handovers = data.cycles || [];
     handoverSummary = data.summary || handoverSummary;
+    handoverActiveCycleId = data.active_cycle_id ?? null;
+    handoverHistoryTotal = data.history_total ?? Math.max(0, handovers.length - (handoverActiveCycleId ? 1 : 0));
     handoversLoaded = true;
     renderHandovers();
   } catch (error) {
@@ -866,7 +890,14 @@ async function transitionHandover(id, action) {
     if (["complete", "reopen", "comment"].includes(action) && !note) { toast("A observação é obrigatória."); return; }
   }
   try {
-    await handoverRequest(`/${id}/actions`, { method: "POST", body: JSON.stringify({ action, note, assignee }) });
+    const payload = { action, note, assignee };
+    if (action === "reopen") {
+      const draft = handovers.find(cycle => cycle.state === "draft");
+      const route = draft || currentHandoverRoute();
+      payload.origin_shift = route.origin_shift || route.origin;
+      payload.target_shift = route.target_shift || route.target;
+    }
+    await handoverRequest(`/${id}/actions`, { method: "POST", body: JSON.stringify(payload) });
     await loadHandovers();
     toast({ assume: "Pendência assumida.", complete: "Pendência concluída.", reopen: "Pendência reaberta.", assign: "Responsável atualizado.", comment: "Comentário registrado." }[action]);
   } catch (error) { toast(error.message); }
