@@ -769,8 +769,8 @@ class WSGITests(unittest.TestCase):
         self.assertIn(b'<option selected>Aberto</option>', body)
         self.assertIn(b'styles.css?v=20260806-1', body)
         self.assertIn(b"public-knowledge-index.js?v=20260731-6", body)
-        self.assertIn(b"instrutores.css?v=20260819-1", body)
-        self.assertIn(b"app.js?v=20260819-1", body)
+        self.assertIn(b"instrutores.css?v=20260819-2", body)
+        self.assertIn(b"app.js?v=20260819-2", body)
         self.assertIn(b'id="newSearchButton"', body)
 
     def test_browser_uses_same_origin_ai_endpoint(self):
@@ -793,6 +793,8 @@ class WSGITests(unittest.TestCase):
         self.assertIn("Histórico de passagens".encode(), body)
         self.assertIn("Concluídas neste ciclo".encode(), body)
         self.assertIn(b"data.active_cycle_id", body)
+        self.assertIn(b"function handoverBaseWarning(payload)", body)
+        self.assertIn("A mensagem menciona SDAM/Campinas".encode(), body)
 
     def test_static_portal_contains_reports_section(self):
         status, _, body = self.request("/")
@@ -810,6 +812,10 @@ class WSGITests(unittest.TestCase):
         self.assertIn("Uma única passagem para as duas bases".encode(), body)
         self.assertIn("INFORMAÇÕES NO CICLO".encode(), body)
         self.assertIn("CONCLUÍDAS NO CICLO".encode(), body)
+        self.assertIn("Onde a ação deve acontecer?".encode(), body)
+        self.assertIn("SBSJ · São José dos Campos".encode(), body)
+        self.assertIn("SDAM · Campo dos Amarais — Campinas".encode(), body)
+        self.assertIn("Geral · Duas bases ou CCO".encode(), body)
         self.assertIn(b'id="aircraftFleetFilter"', body)
         self.assertIn(b'id="aircraftFleetStatus"', body)
         self.assertIn("<th>Ações</th>".encode(), body)
@@ -884,6 +890,7 @@ class WSGITests(unittest.TestCase):
             first_records = (
                 ("/api/handovers", {
                     "origin_shift": "T1", "target_shift": "T2",
+                    "base_scope": "Geral", "item_type": "Pendência",
                     "message": "Primeira passagem", "priority": "Normal",
                     "status": "Pendente", "author": "Supervisor",
                 }),
@@ -1056,6 +1063,8 @@ class ConsolidatedStorageTests(unittest.TestCase):
                 server.save_handover({
                     "origin_shift": "T1",
                     "target_shift": "T2",
+                    "base_scope": "Geral",
+                    "item_type": "Pendência",
                     "message": "Pendência legada",
                     "priority": "Alta",
                     "status": "Pendente",
@@ -1161,6 +1170,18 @@ class HandoverWorkflowTests(unittest.TestCase):
             "display_name": "Operador Teste",
             "role": "operator",
         }
+
+    def test_new_item_requires_explicit_base_classification(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "handovers.db"
+            legacy = {**server.LEGACY_DB_PATHS, "handovers": Path(directory) / "missing.db"}
+            with patch.object(server, "HANDOVERS_DB_PATH", database), patch.object(server, "LEGACY_DB_PATHS", legacy):
+                with self.assertRaisesRegex(ValueError, "Selecione Geral, SDAM ou SBSJ"):
+                    server.save_handover({
+                        "origin_shift": "T1", "target_shift": "T2",
+                        "item_type": "Pendência", "message": "Confirmar a ação operacional",
+                        "priority": "Normal",
+                    }, actor=self.operator)
 
     def test_legacy_rows_are_preserved_and_classified_as_general(self):
         with tempfile.TemporaryDirectory() as directory:

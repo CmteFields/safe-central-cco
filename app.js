@@ -763,6 +763,11 @@ function handoverItemGroup(title, items, cycle, className = "") {
 }
 
 function handoverBaseSection(base, cycle) {
+  const baseDescriptions = {
+    Geral: "Duas bases ou CCO",
+    SDAM: "Campo dos Amarais · Campinas",
+    SBSJ: "São José dos Campos",
+  };
   const items = cycle.items.filter(item => item.base_scope === base);
   const openItems = items.filter(item => item.item_type === "Pendência" && item.status !== "Concluída");
   const informationItems = items.filter(item => item.item_type === "Informação");
@@ -772,7 +777,7 @@ function handoverBaseSection(base, cycle) {
     handoverItemGroup("Informações do turno", informationItems, cycle, "handover-information-group"),
     completedItems.length ? `<details class="handover-completed-group"><summary>Concluídas neste ciclo <span>${completedItems.length}</span></summary>${completedItems.map(item => handoverCard(item, cycle)).join("")}</details>` : "",
   ].filter(Boolean).join("");
-  return `<section class="handover-base-section base-${base.toLowerCase()}"><div class="handover-base-head"><strong>${base}</strong><span>${items.length}</span></div>${content || '<div class="handover-empty">Nenhuma anotação para esta seção.</div>'}</section>`;
+  return `<section class="handover-base-section base-${base.toLowerCase()}"><div class="handover-base-head"><div><strong>${base}</strong><small>${baseDescriptions[base]}</small></div><span>${items.length}</span></div>${content || '<div class="handover-empty">Nenhuma anotação para esta seção.</div>'}</section>`;
 }
 
 function handoverCycle(cycle, { expanded = false, history = false } = {}) {
@@ -843,7 +848,7 @@ function openHandoverDialog(item = null, cycle = null) {
   $("#handoverId").value = item?.id || "";
   $("#handoverOrigin").value = item?.origin_shift || route.origin;
   $("#handoverTarget").value = item?.target_shift || route.target;
-  $("#handoverBase").value = item?.base_scope || "Geral";
+  $("#handoverBase").value = item?.base_scope || "";
   $("#handoverType").value = item?.item_type || "Pendência";
   $("#handoverPriority").value = item?.priority || "Normal";
   $("#handoverAssignee").value = item?.assignee || "";
@@ -865,13 +870,31 @@ function handoverPayload() {
   };
 }
 
+function handoverBaseWarning(payload) {
+  if (!payload.base_scope || payload.base_scope === "Geral") return "";
+  const message = normalizeText(payload.message);
+  const mentionsSbsj = /\bsbsj\b|sao jose/.test(message);
+  const mentionsSdam = /\bsdam\b|amarais|campinas/.test(message);
+  if (mentionsSbsj === mentionsSdam) return "";
+  if (payload.base_scope === "SBSJ" && mentionsSdam) {
+    return "A mensagem menciona SDAM/Campinas, mas a ação foi classificada como SBSJ. Deseja manter essa classificação?";
+  }
+  if (payload.base_scope === "SDAM" && mentionsSbsj) {
+    return "A mensagem menciona SBSJ/São José dos Campos, mas a ação foi classificada como SDAM. Deseja manter essa classificação?";
+  }
+  return "";
+}
+
 async function saveHandover(event) {
   event.preventDefault();
   const id = $("#handoverId").value;
+  const payload = handoverPayload();
+  const baseWarning = handoverBaseWarning(payload);
+  if (baseWarning && !window.confirm(baseWarning)) return;
   const button = $("#saveHandover");
   button.disabled = true;
   try {
-    await handoverRequest(id ? `/${id}` : "", { method: id ? "PUT" : "POST", body: JSON.stringify(handoverPayload()) });
+    await handoverRequest(id ? `/${id}` : "", { method: id ? "PUT" : "POST", body: JSON.stringify(payload) });
     $("#handoverDialog").close();
     await loadHandovers();
     toast(id ? "Anotação atualizada." : "Anotação incluída na passagem em elaboração.");

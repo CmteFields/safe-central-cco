@@ -1648,7 +1648,7 @@ def validate_handover(data: dict[str, Any]) -> tuple[str, str, str, str, str, st
     target = str(data.get("target_shift", "")).strip().upper()
     message = str(data.get("message", "")).strip()
     priority = str(data.get("priority", "Normal")).strip()
-    base_scope = str(data.get("base_scope", "Geral")).strip()
+    base_scope = str(data.get("base_scope", "")).strip()
     item_type = str(data.get("item_type", "Pendência")).strip()
     assignee = str(data.get("assignee", "")).strip()
     if origin not in SHIFTS or target not in SHIFTS:

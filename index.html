@@ -10,7 +10,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css?v=20260806-1">
-  <link rel="stylesheet" href="instrutores.css?v=20260819-1">
+  <link rel="stylesheet" href="instrutores.css?v=20260819-2">
   <link rel="stylesheet" href="topbar.css?v=20260812-14">
   <link rel="stylesheet" href="auth.css?v=20260724-16">
 </head>
@@ -302,7 +302,7 @@
       <div class="form-grid">
         <label>Turno de origem<select id="handoverOrigin" required><option value="T1">T1 · 08:00–14:00</option><option value="T2">T2 · 12:00–18:00</option><option value="T3">T3 · 18:00–20:00</option></select></label>
         <label>Turno de destino<select id="handoverTarget" required><option value="T2">T2 · 12:00–18:00</option><option value="T3">T3 · 18:00–20:00</option><option value="T1">T1 · próximo dia</option></select></label>
-        <label>Seção<select id="handoverBase" required><option>Geral</option><option>SDAM</option><option>SBSJ</option></select></label>
+        <label class="handover-base-field">Onde a ação deve acontecer?<select id="handoverBase" required><option value="" selected>Selecione a abrangência</option><option value="SBSJ">SBSJ · São José dos Campos</option><option value="SDAM">SDAM · Campo dos Amarais — Campinas</option><option value="Geral">Geral · Duas bases ou CCO</option></select><small>Classifique pela base responsável por executar a ação.</small></label>
         <label>Tipo<select id="handoverType" required><option>Pendência</option><option>Informação</option></select></label>
         <label>Prioridade<select id="handoverPriority" required><option>Normal</option><option>Alta</option><option>Crítica</option><option>Baixa</option></select></label>
         <label>Responsável <span class="optional-label">(opcional)</span><input id="handoverAssignee" maxlength="100" placeholder="Nome do responsável"></label>
@@ -382,7 +382,7 @@
     <div class="dialog-head"><div><p class="eyebrow">SUPORTE AO OPERADOR</p><h2>Como podemos ajudar?</h2></div><button class="dialog-close" id="closeHelp" aria-label="Fechar">×</button></div>
     <div class="help-grid">
       <button data-help-target="regras"><span>⌕</span><div><strong>Pesquisar regras</strong><small>Consulte procedimentos e respostas armazenadas.</small></div></button>
-      <button data-help-target="passagem"><span>⇄</span><div><strong>Passagem de turno</strong><small>Registre, assuma ou conclua pendências.</small></div></button>
+      <button data-help-target="passagem"><span>⇄</span><div><strong>Passagem de turno</strong><small>Classifique pela base de execução, registre, assuma ou conclua pendências.</small></div></button>
       <button data-help-target="aeronaves"><span>✈</span><div><strong>Consultar aeronaves</strong><small>Verifique situação e restrições da frota.</small></div></button>
       <button data-help-target="atividade"><span>◉</span><div><strong>Ver atividade</strong><small>Consulte usuários online e acessos recentes.</small></div></button>
       <button data-help-target="reports"><span>⚑</span><div><strong>Enviar um report</strong><small>Reporte discrepâncias ou indique perguntas para a base.</small></div></button>
@@ -420,6 +420,6 @@
   <div class="toast" id="toast" role="status"></div>
   <script src="data/public-knowledge-index.js?v=20260731-6"></script>
   <script src="data/knowledge-index.js"></script>
-  <script src="app.js?v=20260819-1"></script>
+  <script src="app.js?v=20260819-2"></script>
 </body>
 </html>
