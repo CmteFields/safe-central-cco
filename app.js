@@ -142,6 +142,7 @@ const progressStages = [
 let suggestionItems = [];
 let activeSuggestion = -1;
 let history = [];
+let recentVisibleCount = 5;
 let archivedQuestion = "";
 let searchInProgress = false;
 let progressTimers = [];
@@ -204,18 +205,39 @@ function showView(view, name) {
 
 function renderHistory() {
   const box = $("#recentList");
-  if (!history.length) { box.innerHTML = `<div class="empty-recent">Suas consultas aparecerão aqui.</div>`; return; }
-  box.innerHTML = history.slice(0, 5).map(item => `<button class="recent-item" data-search-record="${escapeHtml(item.id)}" style="width:100%;border-left:0;border-right:0;border-bottom:0;background:none;text-align:left;cursor:pointer"><span class="recent-type">⌕</span><span class="recent-text"><strong>${escapeHtml(item.question)}</strong><small>${formatInstructorDate(item.created_at)} · ${item.response_mode === "local" ? "Índice local" : "Resposta armazenada"}</small></span><span>→</span></button>`).join("");
+  const footer = $("#recentFooter");
+  const filter = normalizeText($("#recentSearch").value.trim());
+  const filtered = filter
+    ? history.filter(item => normalizeText(item.question).includes(filter))
+    : history;
+  const visible = filter ? filtered : filtered.slice(0, recentVisibleCount);
+  if (!history.length) {
+    box.innerHTML = `<div class="empty-recent">Suas consultas aparecerão aqui.</div>`;
+    footer.classList.add("hidden");
+    return;
+  }
+  if (!visible.length) {
+    box.innerHTML = `<div class="empty-recent">Nenhuma pesquisa corresponde ao termo informado.</div>`;
+  } else {
+    box.innerHTML = visible.map(item => `<button class="recent-item" type="button" data-search-record="${escapeHtml(item.id)}"><span class="recent-type">⌕</span><span class="recent-text"><strong>${escapeHtml(item.question)}</strong><small>${formatInstructorDate(item.created_at)} · ${item.response_mode === "local" ? "Índice local" : "Resposta armazenada"}</small></span><span>→</span></button>`).join("");
+  }
   box.querySelectorAll("[data-search-record]").forEach(button => button.addEventListener("click", () => openStoredSearch(button.dataset.searchRecord)));
+  $("#recentSummary").textContent = filter
+    ? `${filtered.length} resultado${filtered.length === 1 ? "" : "s"}`
+    : `Mostrando ${Math.min(visible.length, filtered.length)} de ${filtered.length}`;
+  $("#recentShowAll").classList.toggle("hidden", Boolean(filter) || filtered.length <= 5);
+  $("#recentShowAll").textContent = recentVisibleCount >= filtered.length ? "Mostrar menos" : "Ver mais";
+  footer.classList.toggle("hidden", !filter && filtered.length <= 5);
 }
 
 async function loadSearchHistory() {
   try {
-    const response = await apiFetch(`${window.location.origin}/api/searches?limit=10`);
+    const response = await apiFetch(`${window.location.origin}/api/searches?limit=100`);
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || "Não foi possível carregar o histórico.");
     history = data.items;
     renderHistory();
+    if (input.value.trim()) renderSearchSuggestions();
   } catch (error) {
     console.info("Histórico persistente indisponível.", error.message);
     renderHistory();
@@ -335,21 +357,78 @@ function escapeHtml(value) {
   return String(value).replace(/[&<>"]/g, character => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[character]);
 }
 
+function questionSuggestionScore(label, query) {
+  const normalizedLabel = normalizeText(label);
+  const normalizedQuery = normalizeText(query);
+  if (!normalizedLabel || !normalizedQuery) return 0;
+  let score = normalizedLabel === normalizedQuery ? 160 : normalizedLabel.startsWith(normalizedQuery) ? 90 : 0;
+  const words = normalizedLabel.split(/[^a-z0-9-]+/).filter(Boolean);
+  tokenize(query).forEach(token => {
+    if (words.some(word => word.startsWith(token))) score += 18;
+    else if (normalizedLabel.includes(token)) score += 7;
+  });
+  if (!score && normalizedLabel.includes(normalizedQuery)) score = 24;
+  return score;
+}
+
+function findQuestionSuggestions(query) {
+  const candidates = [];
+  const seen = new Set();
+  const add = item => {
+    const key = normalizeText(item.label);
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    candidates.push(item);
+  };
+  history.forEach((item, position) => {
+    const score = questionSuggestionScore(item.question, query);
+    if (score) add({
+      label: item.question,
+      kind: "Pesquisa anterior",
+      action: "stored",
+      recordId: item.id,
+      score: score + Math.max(0, 12 - position),
+    });
+  });
+  knowledge.forEach((item, index) => {
+    const score = questionSuggestionScore(item.question, query);
+    if (score) add({
+      label: item.question,
+      kind: "Pergunta frequente",
+      action: "faq",
+      faqIndex: index,
+      score: score + 8,
+    });
+  });
+  return candidates.sort((a, b) => b.score - a.score || a.label.localeCompare(b.label, "pt-BR"));
+}
+
 function renderSearchSuggestions() {
   const query = input.value.trim();
   searchBox.classList.toggle("has-value", Boolean(query));
   if (query.length < 2) { closeSearchSuggestions(); return; }
-  suggestionItems = findGraphResults(query).slice(0, 6);
+  const questionSuggestions = findQuestionSuggestions(query);
+  const usedLabels = new Set(questionSuggestions.map(item => normalizeText(item.label)));
+  const graphSuggestions = findGraphResults(query)
+    .filter(item => !usedLabels.has(normalizeText(item.label)))
+    .map(item => ({ ...item, action: "query" }));
+  suggestionItems = [...questionSuggestions, ...graphSuggestions].slice(0, 7);
   activeSuggestion = -1;
   if (!suggestionItems.length) { closeSearchSuggestions(); return; }
-  searchResults.innerHTML = suggestionItems.map((item, index) => `<button class="search-result" type="button" role="option" data-result="${index}" aria-selected="false"><span class="search-result-icon">${item.kind === "Regra confirmada" ? "✓" : "▤"}</span><span class="search-result-text"><strong>${escapeHtml(item.label)}</strong><small>${escapeHtml(item.kind)}${item.code ? ` · ${escapeHtml(item.code)}` : ""}</small></span>${item.kind === "Regra confirmada" ? '<span class="search-result-score">CONFIRMADA</span>' : ""}</button>`).join("");
+  searchResults.innerHTML = suggestionItems.map((item, index) => {
+    const icon = item.kind === "Pesquisa anterior" ? "↺" : item.kind === "Pergunta frequente" ? "?" : item.kind === "Regra confirmada" ? "✓" : "▤";
+    const badge = item.kind === "Pesquisa anterior" ? "HISTÓRICO" : item.kind === "Pergunta frequente" ? "PERGUNTA" : item.kind === "Regra confirmada" ? "CONFIRMADA" : "";
+    return `<button class="search-result" type="button" role="option" data-result="${index}" aria-selected="false"><span class="search-result-icon">${icon}</span><span class="search-result-text"><strong>${escapeHtml(item.label)}</strong><small>${escapeHtml(item.kind)}${item.code ? ` · ${escapeHtml(item.code)}` : ""}</small></span>${badge ? `<span class="search-result-score">${badge}</span>` : ""}</button>`;
+  }).join("");
   searchResults.classList.remove("hidden");
+  input.setAttribute("aria-expanded", "true");
   searchResults.querySelectorAll("[data-result]").forEach(button => button.addEventListener("mousedown", event => { event.preventDefault(); selectSuggestion(Number(button.dataset.result)); }));
 }
 
 function closeSearchSuggestions() {
   searchResults.classList.add("hidden");
   searchResults.innerHTML = "";
+  input.setAttribute("aria-expanded", "false");
   suggestionItems = [];
   activeSuggestion = -1;
 }
@@ -433,7 +512,20 @@ function selectSuggestion(index) {
   const item = suggestionItems[index];
   if (!item) return;
   input.value = item.label;
+  searchBox.classList.add("has-value");
   closeSearchSuggestions();
+  if (item.action === "stored") {
+    openStoredSearch(item.recordId);
+    return;
+  }
+  if (item.action === "faq") {
+    const stored = knowledge[item.faqIndex];
+    showAnswer(stored, stored.question, {
+      storedTitle: "Pergunta frequente armazenada",
+      storedDetail: "Resposta previamente preparada e aberta sem executar uma nova consulta.",
+    });
+    return;
+  }
   search(item.label);
 }
 
@@ -1880,6 +1972,29 @@ input.addEventListener("keydown", event => {
 });
 input.addEventListener("blur", () => setTimeout(closeSearchSuggestions, 120));
 $("#clearSearch").addEventListener("click", () => { input.value = ""; searchBox.classList.remove("has-value"); closeSearchSuggestions(); input.focus(); });
+$("#toggleRecentSearch").addEventListener("click", () => {
+  const tools = $("#recentTools");
+  const opening = tools.classList.contains("hidden");
+  tools.classList.toggle("hidden", !opening);
+  $("#toggleRecentSearch").setAttribute("aria-expanded", String(opening));
+  if (opening) {
+    $("#recentSearch").focus();
+  } else {
+    $("#recentSearch").value = "";
+    renderHistory();
+  }
+});
+$("#recentSearch").addEventListener("input", renderHistory);
+$("#recentSearch").addEventListener("keydown", event => {
+  if (event.key !== "Escape") return;
+  event.preventDefault();
+  $("#toggleRecentSearch").click();
+  $("#toggleRecentSearch").focus();
+});
+$("#recentShowAll").addEventListener("click", () => {
+  recentVisibleCount = recentVisibleCount >= history.length ? 5 : Math.min(history.length, recentVisibleCount + 10);
+  renderHistory();
+});
 document.querySelectorAll("[data-faq]").forEach(button => button.addEventListener("click", () => {
   const stored = knowledge[Number(button.dataset.faq)];
   if (!stored) { toast("Resposta frequente não encontrada."); return; }

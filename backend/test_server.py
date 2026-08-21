@@ -767,11 +767,14 @@ class WSGITests(unittest.TestCase):
         self.assertIn(b"CCO - Central de conhecimento", body)
         self.assertIn(b'id="portalUpdatedAt"', body)
         self.assertIn(b'<option selected>Aberto</option>', body)
-        self.assertIn(b'styles.css?v=20260806-1', body)
+        self.assertIn(b'styles.css?v=20260821-2', body)
         self.assertIn(b"public-knowledge-index.js?v=20260731-6", body)
         self.assertIn(b"instrutores.css?v=20260819-2", body)
-        self.assertIn(b"app.js?v=20260821-1", body)
+        self.assertIn(b"app.js?v=20260821-2", body)
         self.assertIn(b'id="newSearchButton"', body)
+        self.assertIn(b'id="toggleRecentSearch"', body)
+        self.assertIn(b'id="recentSearch"', body)
+        self.assertIn(b'aria-autocomplete="list"', body)
 
     def test_browser_uses_same_origin_ai_endpoint(self):
         status, _, body = self.request("/app.js")
@@ -799,6 +802,10 @@ class WSGITests(unittest.TestCase):
         self.assertIn(b"function formDialogHasChanges(dialog)", body)
         self.assertIn(b"requestFormDialogClose(dialog)", body)
         self.assertIn("Existem alterações não salvas".encode(), body)
+        self.assertIn(b"function findQuestionSuggestions(query)", body)
+        self.assertIn(b"questionSuggestionScore", body)
+        self.assertIn(b"api/searches?limit=100", body)
+        self.assertIn(b'item.action === "stored"', body)
 
     def test_static_portal_contains_reports_section(self):
         status, _, body = self.request("/")
