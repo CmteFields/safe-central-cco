@@ -72,7 +72,7 @@ LOCAL_MODEL = (
 )
 FALLBACK_MODEL = os.environ.get("GEMINI_FALLBACK_MODEL", "gemini-3.5-flash-lite")
 EXTERNAL_MODEL = os.environ.get("GEMINI_EXTERNAL_MODEL", "gemini-3.1-pro-preview")
-RELEASE_ID = os.environ.get("SAFE_CCO_RELEASE", "2026-08-21-search-timeout-recovery-1")
+RELEASE_ID = os.environ.get("SAFE_CCO_RELEASE", "2026-08-21-rule-gap-reconciliation-1")
 PORTAL_UPDATED_AT = os.environ.get("SAFE_CCO_UPDATED_AT", "").strip() or datetime.fromtimestamp(
     max(
         path.stat().st_mtime
@@ -918,6 +918,61 @@ def initialize_rules_db() -> None:
         )
 
 
+def reconcile_approved_rule_aliases(
+    connection: sqlite3.Connection,
+    aliases: list[str],
+    document_id: str,
+    published_rule_id: str,
+) -> int:
+    """Encerra lacunas antigas que já estejam cobertas por uma regra aprovada."""
+    if not aliases:
+        return 0
+    placeholders = ",".join("?" for _ in aliases)
+    rows = connection.execute(
+        f"""SELECT * FROM rule_candidates
+            WHERE document_id='' AND status IN ('unreviewed', 'pending_approval')
+              AND normalized_question IN ({placeholders})
+            ORDER BY id""",
+        aliases,
+    ).fetchall()
+    if not rows:
+        return 0
+
+    timestamp = now_iso()
+    review_note = (
+        "Encerrada automaticamente porque a pergunta já está coberta pela regra "
+        f"aprovada {published_rule_id}, publicada pelo catálogo documental ({document_id})."
+    )
+    for row in rows:
+        connection.execute(
+            """UPDATE rule_candidates
+               SET status='rejected', review_note=?, reviewed_by_username='catalogo_local',
+                   reviewed_by_name='Catálogo documental', reviewed_at=?, updated_at=?
+               WHERE id=?""",
+            (review_note, timestamp, timestamp, row["id"]),
+        )
+        connection.execute(
+            """INSERT INTO rule_events(candidate_id, action, actor_username, actor_name, details, created_at)
+               VALUES (?, 'Revisão automática: rejected', 'catalogo_local',
+                       'Catálogo documental', ?, ?)""",
+            (
+                row["id"],
+                json.dumps(
+                    {
+                        "from": row["status"],
+                        "to": "rejected",
+                        "document_id": document_id,
+                        "published_rule_id": published_rule_id,
+                        "note": review_note,
+                    },
+                    ensure_ascii=False,
+                ),
+                timestamp,
+            ),
+        )
+    return len(rows)
+
+
 def synchronize_rules_catalog(connection: sqlite3.Connection) -> int:
     """Importa o catálogo documental sem sobrescrever uma revisão feita no Portal."""
     if not RULES_CATALOG_PATH.is_file():
@@ -981,6 +1036,15 @@ def synchronize_rules_catalog(connection: sqlite3.Connection) -> int:
                 aliases,
             ).fetchone()
             matched_question_alias = current is not None
+        if (
+            portal_status == "approved"
+            and current
+            and current["catalog_managed"]
+            and not matched_question_alias
+        ):
+            reconcile_approved_rule_aliases(
+                connection, aliases, document_id, published_rule_id
+            )
         if current and not matched_question_alias and (
             not current["catalog_managed"] or current["catalog_hash"] == catalog_hash
         ):

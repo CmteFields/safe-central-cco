@@ -1656,6 +1656,61 @@ class RuleCandidateStorageTests(unittest.TestCase):
                 self.assertEqual(approved[0]["rule_code"], "RG-011")
                 self.assertTrue(approved[0]["catalog_managed"])
 
+    def test_existing_catalog_rule_closes_later_matching_open_question(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            database = root / "rules.db"
+            catalog = root / "catalogo_regras.json"
+            with patch.object(server, "RULES_DB_PATH", database), patch.object(
+                server, "RULES_CATALOG_PATH", catalog
+            ):
+                payload = {
+                    "schema_version": 1,
+                    "updated_at": "2026-08-21T17:00:13-03:00",
+                    "items": [{
+                        "document_id": "PR-009",
+                        "published_rule_id": "RG-013",
+                        "title": "Familiarização em aeródromo antes de voo solo",
+                        "status": "aprovada",
+                        "summary": "É necessário voo anterior com instrutor.",
+                        "approved_rule_text": "O aluno precisa conhecer o aeródromo com instrutor.",
+                        "document_path": "Regras/regras_aprovadas.md",
+                        "authority": "Escola SAFE",
+                        "source_reference": "RG-013; MIP Rev. 12",
+                        "scope": "Alunos PP e PC",
+                        "question_aliases": ["Aluno de PP pode ir para qualquer destino no solo?"],
+                    }],
+                }
+                catalog.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+                server.initialize_rules_db()
+                with server.rules_connection() as connection:
+                    self.assertEqual(server.synchronize_rules_catalog(connection), 1)
+
+                gap = server.upsert_rule_candidate(
+                    "Aluno de PP pode ir para qualquer destino no solo?",
+                    "Sem resposta", "low", "unanswered", [], [], self.operator,
+                )
+
+                with server.rules_connection() as connection:
+                    self.assertEqual(server.synchronize_rules_catalog(connection), 0)
+                    closed = connection.execute(
+                        "SELECT * FROM rule_candidates WHERE id=?", (gap["id"],)
+                    ).fetchone()
+                    events = connection.execute(
+                        "SELECT * FROM rule_events WHERE candidate_id=? AND action=?",
+                        (gap["id"], "Revisão automática: rejected"),
+                    ).fetchall()
+                    self.assertEqual(server.synchronize_rules_catalog(connection), 0)
+
+                self.assertEqual(closed["status"], "rejected")
+                self.assertEqual(closed["reviewed_by_username"], "catalogo_local")
+                self.assertIn("RG-013", closed["review_note"])
+                self.assertEqual(len(events), 1)
+                approved = server.list_rule_candidates("approved")
+                self.assertEqual(len(approved), 1)
+                self.assertEqual(approved[0]["rule_code"], "RG-013")
+
     def test_repeated_question_is_deduplicated_and_prioritized(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(
             server, "RULES_DB_PATH", Path(directory) / "rules.db"
