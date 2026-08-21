@@ -59,6 +59,66 @@ function setDialogMessage(selector, message = "", kind = "error") {
   element.classList.toggle("notice", Boolean(message) && kind === "notice");
 }
 
+const formDialogSnapshots = new WeakMap();
+
+function formDialogSnapshot(form) {
+  return JSON.stringify([...form.elements]
+    .filter(control => control.matches?.("input, select, textarea"))
+    .map((control, index) => {
+      const key = control.id || control.name || `${control.tagName}-${index}`;
+      if (control.type === "checkbox" || control.type === "radio") {
+        return [key, control.type, control.checked, control.value];
+      }
+      if (control.type === "file") {
+        return [key, control.type, [...control.files].map(file => [file.name, file.size, file.lastModified])];
+      }
+      if (control instanceof HTMLSelectElement && control.multiple) {
+        return [key, "select-multiple", [...control.selectedOptions].map(option => option.value)];
+      }
+      return [key, control.type || control.tagName, control.value];
+    }));
+}
+
+function showFormDialog(dialogOrSelector) {
+  const dialog = typeof dialogOrSelector === "string" ? $(dialogOrSelector) : dialogOrSelector;
+  if (!dialog) return;
+  if (!dialog.open) dialog.showModal();
+  const form = dialog.querySelector("form");
+  if (form) formDialogSnapshots.set(dialog, formDialogSnapshot(form));
+}
+
+function formDialogHasChanges(dialog) {
+  const form = dialog?.querySelector("form");
+  const initialSnapshot = formDialogSnapshots.get(dialog);
+  return Boolean(form && initialSnapshot !== undefined && formDialogSnapshot(form) !== initialSnapshot);
+}
+
+function requestFormDialogClose(dialog) {
+  if (!dialog?.open) return true;
+  if (formDialogHasChanges(dialog)
+    && !window.confirm("Existem alterações não salvas. Deseja descartá-las e fechar?")) return false;
+  dialog.close("cancel");
+  return true;
+}
+
+function initializeFormDialogGuards() {
+  document.querySelectorAll('dialog form[method="dialog"]').forEach(form => {
+    const dialog = form.closest("dialog");
+    form.querySelectorAll('button[value="cancel"]').forEach(button => {
+      button.type = "button";
+      button.addEventListener("click", event => {
+        event.preventDefault();
+        requestFormDialogClose(dialog);
+      });
+    });
+    dialog.addEventListener("cancel", event => {
+      event.preventDefault();
+      requestFormDialogClose(dialog);
+    });
+    dialog.addEventListener("close", () => formDialogSnapshots.delete(dialog));
+  });
+}
+
 const homeView = $("#homeView");
 const answerView = $("#answerView");
 const moduleView = $("#moduleView");
@@ -655,7 +715,7 @@ async function openAircraftDialog(item = null) {
   $("#aircraftRestrictionDate").value = item?.restriction_date || "";
   $("#aircraftDialogTitle").textContent = item ? "Editar aeronave" : "Nova aeronave";
   $("#deleteAircraft").classList.toggle("hidden", !item);
-  $("#aircraftDialog").showModal();
+  showFormDialog("#aircraftDialog");
   setTimeout(() => $("#aircraftModel").focus(), 50);
 }
 
@@ -857,7 +917,7 @@ function openHandoverDialog(item = null, cycle = null) {
   $("#handoverTarget").disabled = Boolean(activeDraft || item);
   $("#handoverDialogTitle").textContent = item ? "Editar anotação" : "Nova anotação da passagem";
   $("#deleteHandover").classList.toggle("hidden", !item || cycle?.state !== "draft");
-  $("#handoverDialog").showModal();
+  showFormDialog("#handoverDialog");
   setTimeout(() => $("#handoverMessage").focus(), 50);
 }
 
@@ -1088,7 +1148,7 @@ function openReportDialog(prefill = {}, editing = null) {
   $("#reportDescription").value = prefill.description || "";
   $("#reportReference").value = prefill.reference || "";
   $("#saveReport").textContent = editing ? "Salvar alterações" : "Enviar report";
-  $("#reportDialog").showModal();
+  showFormDialog("#reportDialog");
   setTimeout(() => $("#reportTitle").focus(), 50);
 }
 
@@ -1155,7 +1215,7 @@ function openReportReview(item) {
   $("#reportRuleAction").disabled = !["Resolvido", "Descartado"].includes(item.status);
   $("#reportResolution").value = item.resolution || "";
   $("#reportReviewContext").innerHTML = `<strong>${escapeHtml(item.type_label)} · reportado por ${escapeHtml(item.reporter_name)}</strong><small>${escapeHtml(item.description)}</small>${item.reference ? `<small>Referência: ${escapeHtml(item.reference)}</small>` : ""}`;
-  $("#reportReviewDialog").showModal();
+  showFormDialog("#reportReviewDialog");
 }
 
 async function saveReportReview(event) {
@@ -1209,7 +1269,7 @@ function openReportDetails(item) {
   const events = item.events.length ? item.events.map(event => `<div class="report-event"><span>${escapeHtml(event.action)}</span><small>${escapeHtml(event.actor_name)} · ${formatInstructorDate(event.created_at)}</small></div>`).join("") : '<p class="report-empty-detail">Sem eventos.</p>';
   $("#reportDetailContent").innerHTML = `<div class="report-detail-summary"><p>${escapeHtml(item.description)}</p>${item.reference ? `<small>Referência: ${escapeHtml(item.reference)}</small>` : ""}${item.assignee_name ? `<small>Responsável: ${escapeHtml(item.assignee_name)}</small>` : ""}${reportRuleBadge(item)}</div><section><h3>Comentários</h3>${comments}</section><section><h3>Anexos</h3>${attachments}</section><section><h3>Auditoria</h3>${events}</section>`;
   document.querySelectorAll("[data-report-attachment-delete]").forEach(button => button.addEventListener("click", () => removeReportAttachment(Number(button.dataset.reportAttachmentDelete))));
-  $("#reportDetailDialog").showModal();
+  showFormDialog("#reportDetailDialog");
 }
 
 async function addCurrentReportComment() {
@@ -1415,7 +1475,7 @@ function openRuleReview(id) {
   $("#ruleEffectiveUntil").value = item.effective_until || "";
   $("#ruleSupersedes").value = item.supersedes || "";
   $("#ruleReviewNote").value = item.review_note || "";
-  $("#ruleReviewDialog").showModal();
+  showFormDialog("#ruleReviewDialog");
 }
 
 async function saveRuleReview(event) {
@@ -1540,12 +1600,13 @@ function applyCurrentUser(user, csrf) {
   $("#accountDialogRole").textContent = `${user.role_label} · ${user.username}`;
   $("#closeAccount").classList.toggle("hidden", user.must_change_password);
   if (user.must_change_password) {
+    $("#changePasswordForm").reset();
     setDialogMessage(
       "#accountFormError",
       "Esta é uma senha temporária. Informe-a como senha atual e escolha a nova senha para liberar o portal.",
       "notice",
     );
-    $("#accountDialog").showModal();
+    showFormDialog("#accountDialog");
   } else {
     setDialogMessage("#accountFormError");
     bootstrapPortal();
@@ -1734,7 +1795,7 @@ function openUserDialog(user = null, editToken = "") {
   $("#resetUserPassword").classList.toggle("hidden", !user);
   $("#userUsername").required = !user;
   $("#userPassword").required = !user;
-  $("#userDialog").showModal();
+  showFormDialog("#userDialog");
 }
 
 async function saveUser(event) {
@@ -1802,6 +1863,8 @@ function openModule(key) {
   $("#moduleIcon").textContent = info[0]; $("#moduleTitle").textContent = info[1]; $("#moduleDescription").textContent = info[2];
   showView(moduleView, info[1]);
 }
+
+initializeFormDialogGuards();
 
 searchBox.addEventListener("submit", event => {
   event.preventDefault();
@@ -1971,14 +2034,17 @@ $("#resetUserPassword").addEventListener("click", async () => {
 });
 $("#accountButton").addEventListener("click", () => {
   setDialogMessage("#accountFormError");
-  $("#accountDialog").showModal();
+  $("#changePasswordForm").reset();
+  showFormDialog("#accountDialog");
 });
 $("#closeAccount").addEventListener("click", () => {
-  if (!currentUser?.must_change_password) $("#accountDialog").close();
+  if (!currentUser?.must_change_password) requestFormDialogClose($("#accountDialog"));
 });
 $("#accountDialog").addEventListener("cancel", event => {
-  if (currentUser?.must_change_password) event.preventDefault();
+  event.preventDefault();
+  if (!currentUser?.must_change_password) requestFormDialogClose(event.currentTarget);
 });
+$("#accountDialog").addEventListener("close", () => formDialogSnapshots.delete($("#accountDialog")));
 $("#changePasswordForm").addEventListener("submit", async event => {
   event.preventDefault();
   const button = $("#saveOwnPassword");
