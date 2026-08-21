@@ -770,7 +770,7 @@ class WSGITests(unittest.TestCase):
         self.assertIn(b'styles.css?v=20260806-1', body)
         self.assertIn(b"public-knowledge-index.js?v=20260731-6", body)
         self.assertIn(b"instrutores.css?v=20260819-2", body)
-        self.assertIn(b"app.js?v=20260819-2", body)
+        self.assertIn(b"app.js?v=20260821-1", body)
         self.assertIn(b'id="newSearchButton"', body)
 
     def test_browser_uses_same_origin_ai_endpoint(self):
@@ -795,6 +795,10 @@ class WSGITests(unittest.TestCase):
         self.assertIn(b"data.active_cycle_id", body)
         self.assertIn(b"function handoverBaseWarning(payload)", body)
         self.assertIn("A mensagem menciona SDAM/Campinas".encode(), body)
+        self.assertIn(b"function initializeFormDialogGuards()", body)
+        self.assertIn(b"function formDialogHasChanges(dialog)", body)
+        self.assertIn(b"requestFormDialogClose(dialog)", body)
+        self.assertIn("Existem alterações não salvas".encode(), body)
 
     def test_static_portal_contains_reports_section(self):
         status, _, body = self.request("/")
