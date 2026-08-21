@@ -9,7 +9,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css?v=20260806-1">
+  <link rel="stylesheet" href="styles.css?v=20260821-2">
   <link rel="stylesheet" href="instrutores.css?v=20260819-2">
   <link rel="stylesheet" href="topbar.css?v=20260812-14">
   <link rel="stylesheet" href="auth.css?v=20260724-16">
@@ -82,7 +82,7 @@
           <div class="search-copy"><span class="spark">✦</span><div><h2>O que você precisa saber?</h2><p>Consulte regras, procedimentos e informações operacionais da SAFE.</p></div></div>
           <form class="search-box" id="searchForm">
             <span class="magnifier">⌕</span>
-            <input id="searchInput" autocomplete="off" placeholder="Ex.: Quantos voos o aluno pode fazer sem a banca?" aria-label="Pergunta para a base de conhecimento">
+            <input id="searchInput" autocomplete="off" placeholder="Ex.: Quantos voos o aluno pode fazer sem a banca?" aria-label="Pergunta para a base de conhecimento" aria-autocomplete="list" aria-controls="searchResults" aria-expanded="false">
             <button class="clear-search" id="clearSearch" type="button" aria-label="Limpar pesquisa">×</button>
             <kbd>ENTER</kbd>
             <button type="submit">Consultar</button>
@@ -112,8 +112,12 @@
 
         <div class="rules-dashboard">
           <section class="panel dashboard-recent">
-            <div class="panel-head"><div><h2>Últimas pesquisas</h2><p>Histórico recente neste dispositivo</p></div><span class="dashboard-icon">⌕</span></div>
+            <div class="panel-head"><div><h2>Últimas pesquisas</h2><p>Histórico armazenado no portal</p></div><button class="recent-search-toggle" id="toggleRecentSearch" type="button" aria-label="Pesquisar no histórico" aria-expanded="false">⌕</button></div>
+            <div class="recent-tools hidden" id="recentTools">
+              <label class="recent-search-field"><span>⌕</span><input id="recentSearch" type="search" autocomplete="off" placeholder="Buscar uma pesquisa anterior…" aria-label="Buscar no histórico de pesquisas"></label>
+            </div>
             <div id="recentList"></div>
+            <div class="recent-footer hidden" id="recentFooter"><small id="recentSummary"></small><button class="text-button" id="recentShowAll" type="button">Ver mais</button></div>
           </section>
           <section class="panel dashboard-restrictions">
             <div class="panel-head"><div><h2>Aeronaves com restrição</h2><p>Somente aeronaves ativas fora de operação ou em manutenção</p></div><button class="text-button" id="openAircraftDashboard">Ver frota →</button></div>
@@ -420,6 +424,6 @@
   <div class="toast" id="toast" role="status"></div>
   <script src="data/public-knowledge-index.js?v=20260731-6"></script>
   <script src="data/knowledge-index.js"></script>
-  <script src="app.js?v=20260821-1"></script>
+  <script src="app.js?v=20260821-2"></script>
 </body>
 </html>
