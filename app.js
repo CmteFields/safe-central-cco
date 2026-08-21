@@ -27,6 +27,7 @@ const knowledge = [
 
 const graphIndex = window.SAFE_KNOWLEDGE_INDEX || { meta: {}, claims: [], documents: [] };
 const API_URL = window.SAFE_CCO_API_URL || `${window.location.origin}/api/ask`;
+const ASK_TIMEOUT_MS = 125000;
 const nativeFetch = window.fetch.bind(window);
 let currentUser = null;
 let csrfToken = "";
@@ -308,6 +309,11 @@ function preferredClaimIds(query) {
   if (text.includes("monitor") && text.includes("nav") && hasAny(["fase ap", "aperfeicoamento", "ap01", "ap02", "ap03", "ap04", "ap05"])) {
     prefer("claim_mgop_monitoria_nav_durante_fase_ap");
   }
+  const aerodromeContext = hasAny(["aerodrom", "destino", "localidade", "naveg"])
+    || /\b(?:sb|sd)[a-z]{2}\b/.test(text);
+  if (text.includes("solo") && aerodromeContext) {
+    prefer("claim_rg013_familiarizacao_aerodromo_antes_voo_solo");
+  }
   if (text.includes("nav03") && text.includes("nav02") && hasAny(["antes", "ordem", "sequencia", "adiant", "preced"])) {
     prefer("claim_ppap001k_nav03_pode_anteceder_nav02");
   } else if (text.includes("sequencia") && hasAny(["ppa", "pp", "missoes", "missao"])) {
@@ -581,7 +587,7 @@ function apiResultAnswer(query, result) {
 
 async function askApi(query) {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 150000);
+  const timeout = setTimeout(() => controller.abort(), ASK_TIMEOUT_MS);
   try {
     const response = await apiFetch(API_URL, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ question: query }), signal: controller.signal });
     const data = await response.json();
@@ -669,9 +675,11 @@ async function search(query) {
       else localResult = { question: query, answer: `<p>Não encontrei uma regra confirmada para esta pergunta no índice atual.</p><div class="answer-highlight"><strong>Não tome uma decisão apenas com esta resposta.</strong> Consulte a documentação oficial ou encaminhe a dúvida para revisão.</div>`, source: "Nenhuma fonte confirmada localizada", detail: "Consulta pendente de ampliação da base", relations: [["STATUS", "Conhecimento ainda não indexado", "Requer análise documental"], ["PRÓXIMA AÇÃO", "Consultar documentação oficial", "Validação humana necessária"]] };
     }
     await finishSearchProgress(true);
-    await saveLocalSearchRecord(query, localResult);
     showAnswer(localResult, query);
-    loadSearchHistory();
+    // A API principal pode continuar ocupando o worker mesmo depois do aborto no
+    // navegador. Não bloqueie a tela esperando uma segunda requisição ao mesmo
+    // servidor; a persistência e a atualização do histórico podem concluir depois.
+    void saveLocalSearchRecord(query, localResult).then(loadSearchHistory);
   } finally {
     submitButton.disabled = false;
     submitButton.textContent = originalLabel;

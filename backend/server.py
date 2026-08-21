@@ -72,7 +72,7 @@ LOCAL_MODEL = (
 )
 FALLBACK_MODEL = os.environ.get("GEMINI_FALLBACK_MODEL", "gemini-3.5-flash-lite")
 EXTERNAL_MODEL = os.environ.get("GEMINI_EXTERNAL_MODEL", "gemini-3.1-pro-preview")
-RELEASE_ID = os.environ.get("SAFE_CCO_RELEASE", "2026-08-21-search-history-suggestions-2")
+RELEASE_ID = os.environ.get("SAFE_CCO_RELEASE", "2026-08-21-search-timeout-recovery-1")
 PORTAL_UPDATED_AT = os.environ.get("SAFE_CCO_UPDATED_AT", "").strip() or datetime.fromtimestamp(
     max(
         path.stat().st_mtime
@@ -122,6 +122,13 @@ LEGACY_DB_PATHS = {
 }
 WEB_GROUNDING_ENABLED = os.environ.get("SAFE_CCO_WEB_GROUNDING", "1").lower() in {"1", "true", "yes"}
 GEMINI_TRANSIENT_RETRIES = max(0, int(os.environ.get("GEMINI_TRANSIENT_RETRIES", "3")))
+GEMINI_HTTP_TIMEOUT_SECONDS = max(
+    5.0, float(os.environ.get("GEMINI_HTTP_TIMEOUT_SECONDS", "30"))
+)
+GEMINI_ANSWER_BUDGET_SECONDS = max(
+    GEMINI_HTTP_TIMEOUT_SECONDS,
+    float(os.environ.get("GEMINI_ANSWER_BUDGET_SECONDS", "110")),
+)
 MAX_QUESTION_LENGTH = 1200
 PORTAL_STORAGE_LOCK = threading.RLock()
 WRITE_LOCK = PORTAL_STORAGE_LOCK
@@ -243,6 +250,7 @@ PPA_MISSION_ORDER_RULE_ID = "claim_ppap001k_nav03_pode_anteceder_nav02"
 PP_NAV_MONITORING_RULE_ID = "claim_mgop_monitoria_nav_durante_fase_ap"
 BASE_TRANSFER_RULE_ID = "claim_rg006_troca_base_aluno"
 BARS_PRIORITY_RULE_ID = "claim_rg010_prioridade_barras_missoes_criticas"
+SOLO_AERODROME_FAMILIARIZATION_RULE_ID = "claim_rg013_familiarizacao_aerodromo_antes_voo_solo"
 SOLO_RECENCY_RULE_ID = "claim_bops054_sem_solo_30_dias_novo_endosso"
 READAPTATION_RULE_ID = "claim_bops054_readaptacao_90_dias"
 ROLES = {"admin", "supervisor", "operator", "viewer"}
@@ -3064,6 +3072,16 @@ def content_course(label: str, metadata: str = "") -> str:
 
 
 def course_compatible(course: str, label: str, metadata: str = "") -> bool:
+    metadata_norm = normalize(metadata)
+    explicit_audience = (
+        bool(course)
+        and re.search(
+            rf"(?:^|[^a-z0-9])alunos?[_ -]?{re.escape(course)}(?:$|[^a-z0-9])",
+            metadata_norm,
+        )
+    )
+    if explicit_audience:
+        return True
     identified = content_course(label, metadata)
     return not course or not identified or course == identified
 
@@ -3165,6 +3183,12 @@ def canonical_intent_rule_ids(value: str) -> list[str]:
         "fase ap", "aperfeicoamento", "ap01", "ap02", "ap03", "ap04", "ap05",
     )):
         prefer(PP_NAV_MONITORING_RULE_ID)
+
+    aerodrome_context = any(term in normalized for term in (
+        "aerodrom", "destino", "localidade", "naveg",
+    )) or bool(re.search(r"\b(?:sb|sd)[a-z]{2}\b", normalized))
+    if "solo" in normalized and aerodrome_context:
+        prefer(SOLO_AERODROME_FAMILIARIZATION_RULE_ID)
 
     asks_nav_order = "nav03" in normalized and "nav02" in normalized and any(
         term in normalized for term in ("antes", "ordem", "sequencia", "adiant", "preced")
@@ -3563,6 +3587,30 @@ class GeminiModelQuotaUnavailableError(RuntimeError):
     """O modelo não possui cota disponível e deve ser substituído imediatamente."""
 
 
+class GeminiDeadlineExceededError(RuntimeError):
+    """Interrompe novas tentativas quando o orçamento total da consulta termina."""
+
+
+def gemini_timeout(deadline: float | None = None) -> float:
+    """Limita cada chamada externa e respeita o orçamento total da resposta."""
+    if deadline is None:
+        return GEMINI_HTTP_TIMEOUT_SECONDS
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise GeminiDeadlineExceededError(
+            "A análise da IA excedeu o tempo máximo da consulta; a dúvida seguirá para revisão humana."
+        )
+    return max(0.1, min(GEMINI_HTTP_TIMEOUT_SECONDS, remaining))
+
+
+def sleep_before_gemini_retry(delay: float, deadline: float | None = None) -> None:
+    if deadline is not None and time.monotonic() + delay >= deadline:
+        raise GeminiDeadlineExceededError(
+            "A análise da IA excedeu o tempo máximo da consulta; a dúvida seguirá para revisão humana."
+        )
+    time.sleep(delay)
+
+
 def semantic_claim_catalog() -> list[dict[str, Any]]:
     """Catálogo compacto e confirmado usado somente para seleção semântica de evidências."""
     entries: list[dict[str, Any]] = []
@@ -3610,7 +3658,9 @@ def semantic_claim_catalog() -> list[dict[str, Any]]:
     return entries
 
 
-def call_gemini_claim_selector(question: str, catalog: list[dict[str, Any]]) -> list[str]:
+def call_gemini_claim_selector(
+    question: str, catalog: list[dict[str, Any]], *, deadline: float | None = None
+) -> list[str]:
     """Seleciona semanticamente regras existentes; nunca cria nem redige uma regra."""
     key = gemini_key()
     if not key:
@@ -3661,8 +3711,9 @@ CONFIRA NOVAMENTE A INTENÇÃO DA PERGUNTA: {question}
         data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
         headers={"Content-Type": "application/json", "x-goog-api-key": key}, method="POST",
     )
+    request_timeout = gemini_timeout(deadline)
     try:
-        with urllib.request.urlopen(request, timeout=90) as response:
+        with urllib.request.urlopen(request, timeout=request_timeout) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as error:
         detail = error.read().decode("utf-8", errors="replace")[:500]
@@ -3680,7 +3731,9 @@ CONFIRA NOVAMENTE A INTENÇÃO DA PERGUNTA: {question}
     return [str(item_id) for item_id in selected if str(item_id) in valid_ids][:8]
 
 
-def call_gemini_query_expander(question: str) -> list[str]:
+def call_gemini_query_expander(
+    question: str, *, deadline: float | None = None
+) -> list[str]:
     """Traduz linguagem natural em termos de busca, sem responder nem criar regras."""
     key = gemini_key()
     if not key:
@@ -3717,7 +3770,7 @@ PERGUNTA: {question}
         headers={"Content-Type": "application/json", "x-goog-api-key": key}, method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=90) as response:
+        with urllib.request.urlopen(request, timeout=gemini_timeout(deadline)) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as error:
         detail = error.read().decode("utf-8", errors="replace")[:500]
@@ -3764,13 +3817,15 @@ def semantic_catalog_shortlist(
     return sorted(catalog, key=rank, reverse=True)[:limit]
 
 
-def semantic_retrieve_with_retry(question: str, limit: int = 8) -> list[dict[str, Any]]:
+def semantic_retrieve_with_retry(
+    question: str, limit: int = 8, *, deadline: float | None = None
+) -> list[dict[str, Any]]:
     catalog = semantic_claim_catalog()
     for attempt in range(GEMINI_TRANSIENT_RETRIES + 1):
         try:
-            expanded_terms = call_gemini_query_expander(question)
+            expanded_terms = call_gemini_query_expander(question, deadline=deadline)
             shortlist = semantic_catalog_shortlist(question, expanded_terms, catalog)
-            selected_ids = call_gemini_claim_selector(question, shortlist)
+            selected_ids = call_gemini_claim_selector(question, shortlist, deadline=deadline)
             by_id = {item["id"]: item for item in catalog}
             return [
                 {**by_id[item_id], "score": 240 - index}
@@ -3781,7 +3836,7 @@ def semantic_retrieve_with_retry(question: str, limit: int = 8) -> list[dict[str
             if attempt >= GEMINI_TRANSIENT_RETRIES:
                 raise
             delay = min(8.0, 2.0 ** attempt) + random.uniform(0.0, 0.5)
-            time.sleep(delay)
+            sleep_before_gemini_retry(delay, deadline)
     return []
 
 
@@ -3812,6 +3867,8 @@ def call_gemini(
     evidence: list[dict[str, Any]],
     grounded: bool = False,
     model: str | None = None,
+    *,
+    deadline: float | None = None,
 ) -> dict[str, Any]:
     key = gemini_key()
     if not key:
@@ -3877,8 +3934,9 @@ PERGUNTA: {question}
         data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
         headers={"Content-Type": "application/json", "x-goog-api-key": key}, method="POST",
     )
+    request_timeout = gemini_timeout(deadline)
     try:
-        with urllib.request.urlopen(request, timeout=90) as response:
+        with urllib.request.urlopen(request, timeout=request_timeout) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as error:
         detail = error.read().decode("utf-8", errors="replace")[:500]
@@ -3890,7 +3948,9 @@ PERGUNTA: {question}
         error_type = GeminiTemporaryError if error.code in {429, 500, 502, 503, 504} else RuntimeError
         raise error_type(f"Gemini respondeu HTTP {error.code}: {detail}") from error
     except TimeoutError as error:
-        raise RuntimeError("Gemini excedeu o tempo de resposta de 90 segundos.") from error
+        raise RuntimeError(
+            f"Gemini excedeu o tempo de resposta de {request_timeout:g} segundos."
+        ) from error
     candidate = payload["candidates"][0]
     text = next(
         str(part["text"]).strip()
@@ -3938,22 +3998,28 @@ def call_gemini_with_retry(
     evidence: list[dict[str, Any]],
     grounded: bool = False,
     model: str | None = None,
+    *,
+    deadline: float | None = None,
 ) -> dict[str, Any]:
     for attempt in range(GEMINI_TRANSIENT_RETRIES + 1):
         try:
             if model is None:
-                return call_gemini(question, evidence, grounded=grounded)
-            return call_gemini(question, evidence, grounded=grounded, model=model)
+                return call_gemini(
+                    question, evidence, grounded=grounded, deadline=deadline
+                )
+            return call_gemini(
+                question, evidence, grounded=grounded, model=model, deadline=deadline
+            )
         except GeminiTemporaryError:
             if attempt >= GEMINI_TRANSIENT_RETRIES:
                 raise
             delay = min(8.0, 2.0 ** attempt) + random.uniform(0.0, 0.5)
-            time.sleep(delay)
+            sleep_before_gemini_retry(delay, deadline)
     raise RuntimeError("Falha inesperada ao repetir a consulta Gemini.")
 
 
 def call_grounded_gemini_with_fallback(
-    question: str, evidence: list[dict[str, Any]]
+    question: str, evidence: list[dict[str, Any]], *, deadline: float | None = None
 ) -> dict[str, Any]:
     """Pesquisa fontes oficiais usando o Pro e, se indisponível, modelos Flash compatíveis."""
     errors = []
@@ -3961,7 +4027,7 @@ def call_grounded_gemini_with_fallback(
     for selected_model in models:
         try:
             return call_gemini_with_retry(
-                question, evidence, grounded=True, model=selected_model
+                question, evidence, grounded=True, model=selected_model, deadline=deadline
             )
         except Exception as error:
             errors.append(f"{selected_model}: {type(error).__name__}")
@@ -4237,12 +4303,15 @@ def answer_question(
     capture_candidate: bool = True,
     save_history: bool = True,
 ) -> dict[str, Any]:
+    gemini_deadline = time.monotonic() + GEMINI_ANSWER_BUDGET_SECONDS
     local_errors = []
     evidence = retrieve(question)
     canonical_result = deterministic_local_result(evidence, question)
     if not canonical_result and gemini_key():
         try:
-            semantic_evidence = semantic_retrieve_with_retry(question)
+            semantic_evidence = semantic_retrieve_with_retry(
+                question, deadline=gemini_deadline
+            )
             if semantic_evidence:
                 semantic_ids = {item["id"] for item in semantic_evidence}
                 evidence = (semantic_evidence + [
@@ -4255,11 +4324,15 @@ def answer_question(
         local_result = canonical_result
     else:
         try:
-            local_result = call_gemini_with_retry(question, evidence)
+            local_result = call_gemini_with_retry(
+                question, evidence, deadline=gemini_deadline
+            )
         except Exception as error:
             local_errors.append(str(error))
             try:
-                local_result = call_gemini_with_retry(question, evidence, model=FALLBACK_MODEL)
+                local_result = call_gemini_with_retry(
+                    question, evidence, model=FALLBACK_MODEL, deadline=gemini_deadline
+                )
             except Exception as fallback_error:
                 local_errors.append(str(fallback_error))
                 local_result = canonical_result or {
@@ -4296,7 +4369,9 @@ def answer_question(
         knowledge_status = "unreviewed"
         if WEB_GROUNDING_ENABLED:
             try:
-                external_result = call_grounded_gemini_with_fallback(question, evidence)
+                external_result = call_grounded_gemini_with_fallback(
+                    question, evidence, deadline=gemini_deadline
+                )
                 external_sources = external_result.get("_web_sources", [])
                 if external_result.get("answer") and external_sources:
                     result = external_result

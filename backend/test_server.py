@@ -360,6 +360,34 @@ class RetrievalTests(unittest.TestCase):
             self.assertEqual(result["sources"][0]["id"], "claim_mip_acompanhante_proibido_solo_pp")
             self.assertIn("não pode levar a mãe", result["answer"].casefold())
 
+    def test_rg013_requires_prior_instructor_flight_for_planned_solo_aerodrome(self):
+        variants = [
+            "Aluno de PP pode ir para qualquer destino no solo?",
+            "Aluno de PC pode voar solo para um aeródromo que ainda não conhece?",
+            "Precisa ter ido com instrutor antes de navegar solo para SBGW?",
+        ]
+        for question in variants:
+            with self.subTest(question=question), patch.object(
+                server, "call_gemini_with_retry"
+            ) as answer_gemini, patch.object(
+                server, "semantic_retrieve_with_retry"
+            ) as semantic_selector, patch.object(
+                server, "record_learning", return_value="query_rg013"
+            ), patch.object(server, "upsert_rule_candidate") as create_gap:
+                result = server.answer_question(
+                    question, capture_candidate=True, save_history=False
+                )
+
+            answer_gemini.assert_not_called()
+            semantic_selector.assert_not_called()
+            create_gap.assert_not_called()
+            self.assertEqual(
+                result["sources"][0]["id"],
+                "claim_rg013_familiarizacao_aerodromo_antes_voo_solo",
+            )
+            self.assertEqual(result["knowledge_status"], "approved")
+            self.assertIn("mesmo aeródromo com instrutor a bordo", result["answer"])
+
     def test_family_may_watch_first_solo_from_ground_without_boarding(self):
         variants = [
             "Minha família pode acompanhar o primeiro voo solo?",
@@ -770,7 +798,7 @@ class WSGITests(unittest.TestCase):
         self.assertIn(b'styles.css?v=20260821-2', body)
         self.assertIn(b"public-knowledge-index.js?v=20260731-6", body)
         self.assertIn(b"instrutores.css?v=20260819-2", body)
-        self.assertIn(b"app.js?v=20260821-2", body)
+        self.assertIn(b"app.js?v=20260821-3", body)
         self.assertIn(b'id="newSearchButton"', body)
         self.assertIn(b'id="toggleRecentSearch"', body)
         self.assertIn(b'id="recentSearch"', body)
@@ -806,6 +834,9 @@ class WSGITests(unittest.TestCase):
         self.assertIn(b"questionSuggestionScore", body)
         self.assertIn(b"api/searches?limit=100", body)
         self.assertIn(b'item.action === "stored"', body)
+        self.assertIn(b"const ASK_TIMEOUT_MS = 125000", body)
+        self.assertIn(b"void saveLocalSearchRecord(query, localResult).then(loadSearchHistory)", body)
+        self.assertNotIn(b"await saveLocalSearchRecord(query, localResult)", body)
 
     def test_static_portal_contains_reports_section(self):
         status, _, body = self.request("/")
@@ -1830,7 +1861,7 @@ class RuleCandidateStorageTests(unittest.TestCase):
             "id": "claim_local", "kind": "confirmed_claim", "label": "Regra insuficiente",
             "code": "MGOP", "source": "MGOP", "location": "Seção 1", "score": 1, "excerpt": "",
         }]), patch.object(server, "WEB_GROUNDING_ENABLED", True):
-            def fake_gemini(question, evidence, grounded=False, model=None):
+            def fake_gemini(question, evidence, grounded=False, model=None, deadline=None):
                 if not grounded:
                     return {
                         "answer": "A base não é conclusiva.", "confidence": "low",
@@ -2021,6 +2052,41 @@ class RuleCandidateStorageTests(unittest.TestCase):
         self.assertEqual(result, expected)
         self.assertEqual(mocked_call.call_count, 2)
         mocked_sleep.assert_called_once_with(1.0)
+
+    def test_gemini_timeout_respects_per_call_limit_and_total_deadline(self):
+        with patch.object(server, "GEMINI_HTTP_TIMEOUT_SECONDS", 30.0), patch.object(
+            server.time, "monotonic", return_value=100.0
+        ):
+            self.assertEqual(server.gemini_timeout(), 30.0)
+            self.assertEqual(server.gemini_timeout(112.5), 12.5)
+            with self.assertRaises(server.GeminiDeadlineExceededError):
+                server.gemini_timeout(100.0)
+
+    def test_answer_question_uses_one_budget_for_all_gemini_stages(self):
+        with patch.object(server.time, "monotonic", return_value=100.0), patch.object(
+            server, "GEMINI_ANSWER_BUDGET_SECONDS", 110.0
+        ), patch.object(server, "retrieve", return_value=[]), patch.object(
+            server, "gemini_key", return_value="configured"
+        ), patch.object(
+            server, "semantic_retrieve_with_retry", return_value=[]
+        ) as semantic, patch.object(
+            server, "call_gemini_with_retry", side_effect=RuntimeError("indisponível")
+        ) as local, patch.object(
+            server, "call_grounded_gemini_with_fallback", side_effect=RuntimeError("indisponível")
+        ) as grounded, patch.object(
+            server, "record_learning", return_value="query_budget"
+        ), patch.object(
+            server, "upsert_rule_candidate", return_value={"id": 25}
+        ):
+            result = server.answer_question(
+                "Pergunta ainda sem resposta", self.supervisor, save_history=False
+            )
+
+        self.assertEqual(semantic.call_args.kwargs["deadline"], 210.0)
+        self.assertTrue(all(call.kwargs["deadline"] == 210.0 for call in local.call_args_list))
+        self.assertEqual(grounded.call_args.kwargs["deadline"], 210.0)
+        self.assertTrue(result["provisional"])
+        self.assertEqual(result["candidate_id"], 25)
 
     def test_zero_model_quota_skips_retry_and_grounding_uses_flash_fallback(self):
         quota_error = server.urllib.error.HTTPError(
