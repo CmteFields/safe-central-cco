@@ -72,7 +72,7 @@ LOCAL_MODEL = (
 )
 FALLBACK_MODEL = os.environ.get("GEMINI_FALLBACK_MODEL", "gemini-3.5-flash-lite")
 EXTERNAL_MODEL = os.environ.get("GEMINI_EXTERNAL_MODEL", "gemini-3.1-pro-preview")
-RELEASE_ID = os.environ.get("SAFE_CCO_RELEASE", "2026-08-22-report-inva-bases-1")
+RELEASE_ID = os.environ.get("SAFE_CCO_RELEASE", "2026-08-22-handover-shift-sequence-1")
 PORTAL_UPDATED_AT = os.environ.get("SAFE_CCO_UPDATED_AT", "").strip() or datetime.fromtimestamp(
     max(
         path.stat().st_mtime
@@ -197,11 +197,12 @@ SHIFTS = {
     "T2": "12:00–18:00",
     "T3": "18:00–20:00",
 }
+SHIFT_SEQUENCE = tuple(SHIFTS)
 HANDOVER_PRIORITIES = {"Baixa", "Normal", "Alta", "Crítica"}
 HANDOVER_STATUSES = {"Pendente", "Em andamento", "Concluída"}
 HANDOVER_BASES = {"Geral", "SDAM", "SBSJ"}
 HANDOVER_ITEM_TYPES = {"Pendência", "Informação"}
-HANDOVER_CYCLE_STATES = {"draft", "awaiting_receipt", "received"}
+HANDOVER_CYCLE_STATES = {"draft", "awaiting_receipt", "received", "cancelled"}
 HANDOVER_HISTORY_LIMIT = 25
 REPORT_TYPES = {"discrepancy": "Discrepância", "question": "Indicação de pergunta"}
 REPORT_PRIORITIES = {"Baixa", "Normal", "Alta", "Crítica"}
@@ -1716,6 +1717,62 @@ def handover_dict(row: sqlite3.Row) -> dict[str, Any]:
     }
 
 
+def next_handover_shift(shift: str) -> str:
+    if shift not in SHIFT_SEQUENCE:
+        raise ValueError("Turno operacional inválido.")
+    return SHIFT_SEQUENCE[(SHIFT_SEQUENCE.index(shift) + 1) % len(SHIFT_SEQUENCE)]
+
+
+def skipped_handover_shifts(origin: str, target: str) -> list[str]:
+    skipped: list[str] = []
+    candidate = next_handover_shift(origin)
+    while candidate != target:
+        skipped.append(candidate)
+        candidate = next_handover_shift(candidate)
+    return skipped
+
+
+def scheduled_handover_shift(moment: datetime | None = None) -> str:
+    current = (moment or datetime.now(timezone.utc)).astimezone(
+        timezone(timedelta(hours=-3))
+    )
+    minutes = current.hour * 60 + current.minute
+    if 8 * 60 <= minutes < 14 * 60:
+        return "T1"
+    if 14 * 60 <= minutes < 18 * 60:
+        return "T2"
+    return "T3"
+
+
+def handover_operational_state(connection: sqlite3.Connection) -> dict[str, Any]:
+    active = connection.execute(
+        """SELECT * FROM handover_cycles
+           WHERE state IN ('draft', 'awaiting_receipt')
+           ORDER BY CASE state WHEN 'draft' THEN 0 ELSE 1 END, id DESC LIMIT 1"""
+    ).fetchone()
+    latest_received = connection.execute(
+        """SELECT * FROM handover_cycles WHERE state='received'
+           ORDER BY COALESCE(received_at, updated_at) DESC, id DESC LIMIT 1"""
+    ).fetchone()
+    if active:
+        current_shift = str(active["origin_shift"])
+        source = "active_cycle"
+    elif latest_received:
+        current_shift = str(latest_received["target_shift"])
+        source = "last_received_cycle"
+    else:
+        current_shift = scheduled_handover_shift()
+        source = "schedule_fallback"
+    return {
+        "current_shift": current_shift,
+        "next_shift": next_handover_shift(current_shift),
+        "source": source,
+        "active_cycle_id": int(active["id"]) if active else None,
+        "active_cycle_state": str(active["state"]) if active else None,
+        "last_received_cycle_id": int(latest_received["id"]) if latest_received else None,
+    }
+
+
 def validate_handover(data: dict[str, Any]) -> tuple[str, str, str, str, str, str, str]:
     origin = str(data.get("origin_shift", "")).strip().upper()
     target = str(data.get("target_shift", "")).strip().upper()
@@ -1769,8 +1826,12 @@ def carry_open_handover_items(connection: sqlite3.Connection, cycle_id: int) -> 
     rows = connection.execute(
         """SELECT h.* FROM handovers h
            JOIN (
-               SELECT COALESCE(root_item_id, id) AS root_id, MAX(id) AS latest_id
-               FROM handovers GROUP BY COALESCE(root_item_id, id)
+               SELECT COALESCE(source.root_item_id, source.id) AS root_id,
+                      MAX(source.id) AS latest_id
+               FROM handovers source
+               JOIN handover_cycles source_cycle ON source_cycle.id=source.cycle_id
+               WHERE source_cycle.state IN ('awaiting_receipt', 'received')
+               GROUP BY COALESCE(source.root_item_id, source.id)
            ) latest ON latest.latest_id=h.id
            JOIN handover_cycles c ON c.id=h.cycle_id
            WHERE h.item_type='Pendência' AND h.status IN ('Pendente', 'Em andamento')
@@ -1827,6 +1888,15 @@ def ensure_draft_handover_cycle(
         raise ValueError(
             f"Confirme o recebimento da passagem {awaiting['origin_shift']} → {awaiting['target_shift']} antes de iniciar outra."
         )
+    operational = handover_operational_state(connection)
+    if (
+        operational["source"] == "last_received_cycle"
+        and origin != operational["current_shift"]
+    ):
+        raise ValueError(
+            f"O turno operacional atual é {operational['current_shift']}. "
+            "Inicie a nova passagem a partir dele."
+        )
     timestamp = now_iso()
     username, name = handover_actor(actor)
     cursor = connection.execute(
@@ -1837,7 +1907,33 @@ def ensure_draft_handover_cycle(
         (origin, target, timestamp[:10], username, name, timestamp, timestamp),
     )
     cycle_id = int(cursor.lastrowid)
-    record_handover_event(connection, cycle_id, "Passagem iniciada", actor)
+    expected_target = next_handover_shift(origin)
+    skipped = skipped_handover_shifts(origin, target)
+    record_handover_event(
+        connection,
+        cycle_id,
+        "Passagem iniciada",
+        actor,
+        details={
+            "origin_shift": origin,
+            "target_shift": target,
+            "expected_target_shift": expected_target,
+            "route_kind": "skip" if skipped else "sequential",
+            "skipped_shifts": skipped,
+        },
+    )
+    if skipped:
+        record_handover_event(
+            connection,
+            cycle_id,
+            "Salto de turno registrado",
+            actor,
+            details={
+                "origin_shift": origin,
+                "target_shift": target,
+                "skipped_shifts": skipped,
+            },
+        )
     carry_open_handover_items(connection, cycle_id)
     return connection.execute("SELECT * FROM handover_cycles WHERE id=?", (cycle_id,)).fetchone()
 
@@ -1857,9 +1953,11 @@ def list_handovers() -> list[dict[str, Any]]:
 def list_handover_cycles() -> dict[str, Any]:
     initialize_handovers_db()
     with handovers_connection() as connection:
+        operational = handover_operational_state(connection)
         cycle_rows = connection.execute(
             """SELECT * FROM handover_cycles ORDER BY
-               CASE state WHEN 'draft' THEN 0 WHEN 'awaiting_receipt' THEN 1 ELSE 2 END,
+               CASE state WHEN 'draft' THEN 0 WHEN 'awaiting_receipt' THEN 1
+                    WHEN 'received' THEN 2 ELSE 3 END,
                updated_at DESC, id DESC LIMIT ?""",
             (HANDOVER_HISTORY_LIMIT + 1,),
         ).fetchall()
@@ -1907,10 +2005,11 @@ def list_handover_cycles() -> dict[str, Any]:
         "draft": "Em elaboração",
         "awaiting_receipt": "Aguardando recebimento",
         "received": "Recebida",
+        "cancelled": "Encerrada sem publicação",
     }
     active_row = next(
         (row for row in cycle_rows if row["state"] in {"draft", "awaiting_receipt"}),
-        cycle_rows[0] if cycle_rows else None,
+        next((row for row in cycle_rows if row["state"] == "received"), None),
     )
     active_cycle_id = int(active_row["id"]) if active_row else None
     cycles = []
@@ -1920,6 +2019,12 @@ def list_handover_cycles() -> dict[str, Any]:
         cycle["items"] = items_by_cycle.get(int(row["id"]), [])
         cycle["events"] = events_by_cycle.get(int(row["id"]), [])
         cycle["is_active"] = int(row["id"]) == active_cycle_id
+        skipped = skipped_handover_shifts(
+            str(row["origin_shift"]), str(row["target_shift"])
+        )
+        cycle["expected_target_shift"] = next_handover_shift(str(row["origin_shift"]))
+        cycle["skipped_shifts"] = skipped
+        cycle["route_kind"] = "skip" if skipped else "sequential"
         cycles.append(cycle)
     active_rows = [
         row for row in latest_rows
@@ -1937,6 +2042,23 @@ def list_handover_cycles() -> dict[str, Any]:
         "shifts": SHIFTS,
         "active_cycle_id": active_cycle_id,
         "history_total": max(0, total_cycles - (1 if active_cycle_id is not None else 0)),
+        "operational_shift": operational["current_shift"],
+        "operational_shift_source": operational["source"],
+        "suggested_route": {
+            "origin_shift": operational["current_shift"],
+            "target_shift": operational["next_shift"],
+        },
+        "draft_cycle_id": next(
+            (int(row["id"]) for row in cycle_rows if row["state"] == "draft"), None
+        ),
+        "awaiting_receipt_cycle_id": next(
+            (
+                int(row["id"])
+                for row in cycle_rows
+                if row["state"] == "awaiting_receipt"
+            ),
+            None,
+        ),
     }
 
 
@@ -2066,6 +2188,36 @@ def receive_handover_cycle(cycle_id: int, actor: dict[str, Any]) -> dict[str, An
         )
         record_handover_event(connection, cycle_id, "Recebimento confirmado", actor)
     return next(item for item in list_handover_cycles()["cycles"] if item["id"] == cycle_id)
+
+
+def cancel_handover_cycle(cycle_id: int, actor: dict[str, Any]) -> dict[str, Any]:
+    initialize_handovers_db()
+    with HANDOVERS_LOCK, handovers_connection() as connection:
+        cycle = connection.execute(
+            "SELECT * FROM handover_cycles WHERE id=?", (cycle_id,)
+        ).fetchone()
+        if not cycle:
+            raise LookupError("Passagem de turno não encontrada.")
+        if cycle["state"] != "draft":
+            raise ValueError("Somente um rascunho pode ser encerrado sem publicação.")
+        timestamp = now_iso()
+        connection.execute(
+            "UPDATE handover_cycles SET state='cancelled', updated_at=? WHERE id=?",
+            (timestamp, cycle_id),
+        )
+        record_handover_event(
+            connection,
+            cycle_id,
+            "Rascunho encerrado sem publicação",
+            actor,
+            details={
+                "origin_shift": cycle["origin_shift"],
+                "target_shift": cycle["target_shift"],
+            },
+        )
+    return next(
+        item for item in list_handover_cycles()["cycles"] if item["id"] == cycle_id
+    )
 
 
 def transition_handover_item(
@@ -4862,16 +5014,20 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(403, {"error": "Perfil de consulta não pode registrar passagens."}); return
                 self.send_json(201, save_handover(data, actor=user))
                 return
-            handover_cycle_action = re.fullmatch(r"/api/handovers/cycles/(\d+)/(publish|receive)", self.path)
+            handover_cycle_action = re.fullmatch(
+                r"/api/handovers/cycles/(\d+)/(publish|receive|cancel)", self.path
+            )
             if handover_cycle_action:
                 if user["role"] not in {"admin", "supervisor", "operator"}:
                     self.send_json(403, {"error": "Perfil de consulta não pode operar passagens."}); return
                 cycle_id = int(handover_cycle_action.group(1))
-                saved = (
-                    publish_handover_cycle(cycle_id, user)
-                    if handover_cycle_action.group(2) == "publish"
-                    else receive_handover_cycle(cycle_id, user)
-                )
+                action = handover_cycle_action.group(2)
+                if action == "publish":
+                    saved = publish_handover_cycle(cycle_id, user)
+                elif action == "receive":
+                    saved = receive_handover_cycle(cycle_id, user)
+                else:
+                    saved = cancel_handover_cycle(cycle_id, user)
                 self.send_json(200, saved)
                 return
             handover_item_action = re.fullmatch(r"/api/handovers/(\d+)/actions", self.path)

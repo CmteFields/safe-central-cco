@@ -3,6 +3,7 @@ import sqlite3
 import tempfile
 import unittest
 from contextlib import ExitStack
+from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
 from unittest.mock import patch
@@ -1395,6 +1396,121 @@ class HandoverWorkflowTests(unittest.TestCase):
                 self.assertEqual(stored_original["completion_note"], "Abastecimento confirmado.")
                 self.assertEqual(event["action"], "Pendência reaberta no ciclo atual")
                 self.assertEqual(server.list_handover_cycles()["summary"]["pending"], 1)
+
+    def test_operational_shift_follows_received_destination(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "handovers.db"
+            legacy = {**server.LEGACY_DB_PATHS, "handovers": Path(directory) / "missing.db"}
+            with patch.object(server, "HANDOVERS_DB_PATH", database), patch.object(server, "LEGACY_DB_PATHS", legacy):
+                first = server.save_handover({
+                    "origin_shift": "T1", "target_shift": "T2", "base_scope": "Geral",
+                    "item_type": "Informação", "message": "Operação do T1 concluída",
+                    "priority": "Normal",
+                }, actor=self.operator)
+                server.publish_handover_cycle(first["cycle_id"], self.operator)
+                server.receive_handover_cycle(first["cycle_id"], self.operator)
+
+                state = server.list_handover_cycles()
+
+                self.assertEqual(state["operational_shift"], "T2")
+                self.assertEqual(state["operational_shift_source"], "last_received_cycle")
+                self.assertEqual(state["suggested_route"], {
+                    "origin_shift": "T2", "target_shift": "T3",
+                })
+                with self.assertRaisesRegex(ValueError, "turno operacional atual é T2"):
+                    server.save_handover({
+                        "origin_shift": "T1", "target_shift": "T3", "base_scope": "Geral",
+                        "item_type": "Informação", "message": "Origem incorreta",
+                        "priority": "Normal",
+                    }, actor=self.operator)
+
+    def test_skipping_a_shift_is_allowed_and_audited(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "handovers.db"
+            legacy = {**server.LEGACY_DB_PATHS, "handovers": Path(directory) / "missing.db"}
+            with patch.object(server, "HANDOVERS_DB_PATH", database), patch.object(server, "LEGACY_DB_PATHS", legacy):
+                first = server.save_handover({
+                    "origin_shift": "T1", "target_shift": "T2", "base_scope": "Geral",
+                    "item_type": "Informação", "message": "Primeiro ciclo",
+                    "priority": "Normal",
+                }, actor=self.operator)
+                server.publish_handover_cycle(first["cycle_id"], self.operator)
+                server.receive_handover_cycle(first["cycle_id"], self.operator)
+                skipped = server.save_handover({
+                    "origin_shift": "T2", "target_shift": "T1", "base_scope": "SBSJ",
+                    "item_type": "Pendência", "message": "Passagem direta para o T1",
+                    "priority": "Alta",
+                }, actor=self.operator)
+
+                state = server.list_handover_cycles()
+                cycle = next(item for item in state["cycles"] if item["id"] == skipped["cycle_id"])
+                self.assertEqual(cycle["route_kind"], "skip")
+                self.assertEqual(cycle["expected_target_shift"], "T3")
+                self.assertEqual(cycle["skipped_shifts"], ["T3"])
+                with server.handovers_connection() as connection:
+                    event = connection.execute(
+                        """SELECT details FROM handover_events
+                           WHERE cycle_id=? AND action='Salto de turno registrado'""",
+                        (skipped["cycle_id"],),
+                    ).fetchone()
+                self.assertEqual(json.loads(event["details"])["skipped_shifts"], ["T3"])
+
+    def test_cancelled_draft_is_preserved_without_advancing_shift(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "handovers.db"
+            legacy = {**server.LEGACY_DB_PATHS, "handovers": Path(directory) / "missing.db"}
+            with patch.object(server, "HANDOVERS_DB_PATH", database), patch.object(server, "LEGACY_DB_PATHS", legacy):
+                first = server.save_handover({
+                    "origin_shift": "T1", "target_shift": "T2", "base_scope": "Geral",
+                    "item_type": "Pendência", "message": "Pendência original",
+                    "priority": "Normal",
+                }, actor=self.operator)
+                server.publish_handover_cycle(first["cycle_id"], self.operator)
+                server.receive_handover_cycle(first["cycle_id"], self.operator)
+                draft = server.save_handover({
+                    "origin_shift": "T2", "target_shift": "T3", "base_scope": "SDAM",
+                    "item_type": "Pendência", "message": "Rascunho preservado",
+                    "priority": "Normal",
+                }, actor=self.operator)
+
+                cancelled = server.cancel_handover_cycle(draft["cycle_id"], self.operator)
+                state = server.list_handover_cycles()
+
+                self.assertEqual(cancelled["state"], "cancelled")
+                self.assertIsNone(state["draft_cycle_id"])
+                self.assertEqual(state["operational_shift"], "T2")
+                replacement = server.save_handover({
+                    "origin_shift": "T2", "target_shift": "T1", "base_scope": "Geral",
+                    "item_type": "Informação", "message": "Novo ciclo após encerrar rascunho",
+                    "priority": "Normal",
+                }, actor=self.operator)
+                self.assertNotEqual(replacement["cycle_id"], draft["cycle_id"])
+                with server.handovers_connection() as connection:
+                    preserved = connection.execute(
+                        "SELECT message FROM handovers WHERE id=?", (draft["id"],)
+                    ).fetchone()
+                    carried = connection.execute(
+                        """SELECT message, carried_from_id FROM handovers
+                           WHERE cycle_id=? AND message='Pendência original'""",
+                        (replacement["cycle_id"],),
+                    ).fetchall()
+                self.assertEqual(preserved["message"], "Rascunho preservado")
+                self.assertEqual(len(carried), 1)
+                self.assertEqual(carried[0]["carried_from_id"], first["id"])
+
+    def test_schedule_fallback_uses_operational_utc_minus_three(self):
+        self.assertEqual(
+            server.scheduled_handover_shift(datetime(2026, 8, 22, 13, tzinfo=timezone.utc)),
+            "T1",
+        )
+        self.assertEqual(
+            server.scheduled_handover_shift(datetime(2026, 8, 22, 18, tzinfo=timezone.utc)),
+            "T2",
+        )
+        self.assertEqual(
+            server.scheduled_handover_shift(datetime(2026, 8, 22, 22, tzinfo=timezone.utc)),
+            "T3",
+        )
 
 
 class ReportStorageTests(unittest.TestCase):

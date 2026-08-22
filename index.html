@@ -166,13 +166,14 @@
       <section class="page hidden" id="handoverView">
         <div class="instructors-head">
           <div><p class="eyebrow">OPERAÇÃO · CONTINUIDADE</p><h1>Passagem de turno</h1><p>Uma única passagem para as duas bases, organizada em Geral, SDAM e SBSJ.</p></div>
-          <button class="primary-button" id="addHandover">+ Nova anotação</button>
+          <button class="primary-button" id="addHandover" disabled>Carregando turno…</button>
         </div>
         <div class="shift-strip" aria-label="Horários dos turnos">
           <div><span>T1</span><strong>08:00–14:00</strong></div>
           <div><span>T2</span><strong>12:00–18:00</strong></div>
           <div><span>T3</span><strong>18:00–20:00</strong></div>
         </div>
+        <div class="handover-operational-shift"><span>Turno operacional atual</span><strong id="handoverCurrentShift">—</strong><small>O próximo turno é sugerido automaticamente; saltos continuam permitidos.</small></div>
         <div class="handover-summary">
           <div><small>PENDENTES</small><strong id="handoverPendingCount">0</strong></div>
           <div><small>EM ANDAMENTO</small><strong id="handoverProgressCount">0</strong></div>
@@ -305,7 +306,7 @@
       <input type="hidden" id="handoverId">
       <div class="form-grid">
         <label>Turno de origem<select id="handoverOrigin" required><option value="T1">T1 · 08:00–14:00</option><option value="T2">T2 · 12:00–18:00</option><option value="T3">T3 · 18:00–20:00</option></select></label>
-        <label>Turno de destino<select id="handoverTarget" required><option value="T2">T2 · 12:00–18:00</option><option value="T3">T3 · 18:00–20:00</option><option value="T1">T1 · próximo dia</option></select></label>
+        <label>Turno de destino<select id="handoverTarget" required><option value="T2">T2 · 12:00–18:00</option><option value="T3">T3 · 18:00–20:00</option><option value="T1">T1 · 08:00–14:00</option></select><small id="handoverRouteHint" class="handover-route-hint"></small></label>
         <label class="handover-base-field">Onde a ação deve acontecer?<select id="handoverBase" required><option value="" selected>Selecione a abrangência</option><option value="SBSJ">SBSJ · São José dos Campos</option><option value="SDAM">SDAM · Campo dos Amarais — Campinas</option><option value="Geral">Geral · Duas bases ou CCO</option></select><small>Classifique pela base responsável por executar a ação.</small></label>
         <label>Tipo<select id="handoverType" required><option>Pendência</option><option>Informação</option></select></label>
         <label>Prioridade<select id="handoverPriority" required><option>Normal</option><option>Alta</option><option>Crítica</option><option>Baixa</option></select></label>

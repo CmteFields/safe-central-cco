@@ -157,6 +157,10 @@ let handoverSummary = { pending: 0, in_progress: 0, completed: 0, information: 0
 let handoverActiveCycleId = null;
 let handoverHistoryTotal = 0;
 let handoversLoaded = false;
+let handoverOperationalShift = null;
+let handoverSuggestedRoute = null;
+let handoverDraftCycleId = null;
+let handoverAwaitingReceiptCycleId = null;
 let reports = [];
 let reportsLoaded = false;
 let reportAssignees = [];
@@ -868,11 +872,35 @@ async function handoverRequest(path = "", options = {}) {
 }
 
 function currentHandoverRoute() {
+  if (handoverSuggestedRoute?.origin_shift && handoverSuggestedRoute?.target_shift) {
+    return { origin: handoverSuggestedRoute.origin_shift, target: handoverSuggestedRoute.target_shift };
+  }
   const now = new Date();
   const minutes = now.getHours() * 60 + now.getMinutes();
   if (minutes < 14 * 60) return { origin: "T1", target: "T2" };
   if (minutes < 18 * 60) return { origin: "T2", target: "T3" };
   return { origin: "T3", target: "T1" };
+}
+
+function nextHandoverShift(shift) {
+  return { T1: "T2", T2: "T3", T3: "T1" }[shift] || "";
+}
+
+function skippedHandoverShift(origin, target) {
+  const expected = nextHandoverShift(origin);
+  return expected && target !== expected ? expected : "";
+}
+
+function updateHandoverRouteHint() {
+  const origin = $("#handoverOrigin").value;
+  const target = $("#handoverTarget").value;
+  const skipped = skippedHandoverShift(origin, target);
+  const hint = $("#handoverRouteHint");
+  if (!hint) return;
+  hint.classList.toggle("route-skip", Boolean(skipped));
+  hint.textContent = skipped
+    ? `Salto permitido: ${skipped} será pulado e ficará registrado na auditoria.`
+    : `Sequência normal: ${origin} → ${target}.`;
 }
 
 function findHandoverItem(id) {
@@ -944,12 +972,15 @@ function handoverCycle(cycle, { expanded = false, history = false } = {}) {
   const canOperate = hasRole("admin", "supervisor", "operator");
   const bases = ["Geral", "SDAM", "SBSJ"];
   const controls = cycle.state === "draft" && canOperate
-    ? `<button class="primary-action" data-handover-publish="${cycle.id}">Publicar passagem</button>`
+    ? `<button data-handover-cancel="${cycle.id}">Encerrar rascunho</button><button class="primary-action" data-handover-publish="${cycle.id}">Publicar passagem</button>`
     : cycle.state === "awaiting_receipt" && canOperate
       ? `<button class="primary-action" data-handover-receive="${cycle.id}">Confirmar recebimento</button>` : "";
   const body = `<div class="handover-base-grid">${bases.map(base => handoverBaseSection(base, cycle)).join("")}</div>${handoverEvents(cycle)}`;
+  const routeNote = cycle.route_kind === "skip"
+    ? `<small class="handover-route-skip">Salto permitido · ${cycle.skipped_shifts.join(", ")} pulado</small>`
+    : "";
   return `<article class="handover-cycle state-${cycle.state}${history ? " historical-cycle" : " active-cycle"}">
-    <div class="handover-cycle-head"><div><div class="handover-cycle-route">${cycle.origin_shift} → ${cycle.target_shift}<span>${escapeHtml(cycle.state_label)}</span></div><p>${cycle.state === "draft" ? `Em elaboração por ${escapeHtml(cycle.created_by_name || "Operador")}` : `Publicada por ${escapeHtml(cycle.published_by_name || "Operador")} · ${formatInstructorDate(cycle.published_at)}`}${cycle.received_at ? ` · Recebida por ${escapeHtml(cycle.received_by_name)} em ${formatInstructorDate(cycle.received_at)}` : ""}</p></div><div class="handover-cycle-controls"><span>${cycle.items.length} anotação(ões)</span>${controls}</div></div>
+    <div class="handover-cycle-head"><div><div class="handover-cycle-route">${cycle.origin_shift} → ${cycle.target_shift}<span>${escapeHtml(cycle.state_label)}</span></div>${routeNote}<p>${cycle.state === "draft" ? `Em elaboração por ${escapeHtml(cycle.created_by_name || "Operador")} · iniciada em ${formatInstructorDate(cycle.created_at)}` : cycle.state === "cancelled" ? `Rascunho preservado no histórico · ${formatInstructorDate(cycle.updated_at)}` : `Publicada por ${escapeHtml(cycle.published_by_name || "Operador")} · ${formatInstructorDate(cycle.published_at)}`}${cycle.received_at ? ` · Recebida por ${escapeHtml(cycle.received_by_name)} em ${formatInstructorDate(cycle.received_at)}` : ""}</p></div><div class="handover-cycle-controls"><span>${cycle.items.length} anotação(ões)</span>${controls}</div></div>
     ${expanded ? body : `<details class="handover-history-cycle"><summary>Visualizar esta passagem</summary>${body}</details>`}
   </article>`;
 }
@@ -962,6 +993,7 @@ function bindHandoverActions() {
   document.querySelectorAll("[data-handover-action]").forEach(button => button.addEventListener("click", () => transitionHandover(Number(button.dataset.handoverId), button.dataset.handoverAction)));
   document.querySelectorAll("[data-handover-publish]").forEach(button => button.addEventListener("click", () => publishHandover(Number(button.dataset.handoverPublish))));
   document.querySelectorAll("[data-handover-receive]").forEach(button => button.addEventListener("click", () => receiveHandover(Number(button.dataset.handoverReceive))));
+  document.querySelectorAll("[data-handover-cancel]").forEach(button => button.addEventListener("click", () => cancelHandover(Number(button.dataset.handoverCancel))));
 }
 
 function renderHandovers() {
@@ -969,6 +1001,18 @@ function renderHandovers() {
   const visible = handovers.filter(cycle => !target || cycle.target_shift === target);
   const active = visible.find(cycle => cycle.is_active || cycle.id === handoverActiveCycleId);
   const history = visible.filter(cycle => !active || cycle.id !== active.id);
+  const addButton = $("#addHandover");
+  const draft = handovers.find(cycle => cycle.id === handoverDraftCycleId || cycle.state === "draft");
+  const awaitingReceipt = handovers.find(cycle => cycle.id === handoverAwaitingReceiptCycleId || cycle.state === "awaiting_receipt");
+  if (addButton) {
+    addButton.disabled = Boolean(awaitingReceipt);
+    addButton.textContent = awaitingReceipt
+      ? "Aguardando recebimento"
+      : draft ? "+ Nova anotação" : "Iniciar nova passagem";
+  }
+  if ($("#handoverCurrentShift")) {
+    $("#handoverCurrentShift").textContent = handoverOperationalShift || "—";
+  }
   $("#handoverPendingCount").textContent = handoverSummary.pending;
   $("#handoverProgressCount").textContent = handoverSummary.in_progress;
   $("#handoverInfoCount").textContent = handoverSummary.information;
@@ -992,6 +1036,10 @@ async function loadHandovers() {
     handoverSummary = data.summary || handoverSummary;
     handoverActiveCycleId = data.active_cycle_id ?? null;
     handoverHistoryTotal = data.history_total ?? Math.max(0, handovers.length - (handoverActiveCycleId ? 1 : 0));
+    handoverOperationalShift = data.operational_shift || null;
+    handoverSuggestedRoute = data.suggested_route || null;
+    handoverDraftCycleId = data.draft_cycle_id ?? null;
+    handoverAwaitingReceiptCycleId = data.awaiting_receipt_cycle_id ?? null;
     handoversLoaded = true;
     renderHandovers();
   } catch (error) {
@@ -1013,10 +1061,15 @@ function openHandoverDialog(item = null, cycle = null) {
   $("#handoverPriority").value = item?.priority || "Normal";
   $("#handoverAssignee").value = item?.assignee || "";
   $("#handoverMessage").value = item?.message || "";
-  $("#handoverOrigin").disabled = Boolean(activeDraft || item);
+  $("#handoverOrigin").disabled = true;
   $("#handoverTarget").disabled = Boolean(activeDraft || item);
-  $("#handoverDialogTitle").textContent = item ? "Editar anotação" : "Nova anotação da passagem";
+  $("#handoverDialogTitle").textContent = item
+    ? "Editar anotação"
+    : activeDraft
+      ? `Nova anotação · ${activeDraft.origin_shift} → ${activeDraft.target_shift}`
+      : `Iniciar passagem do ${route.origin}`;
   $("#deleteHandover").classList.toggle("hidden", !item || cycle?.state !== "draft");
+  updateHandoverRouteHint();
   showFormDialog("#handoverDialog");
   setTimeout(() => $("#handoverMessage").focus(), 50);
 }
@@ -1095,6 +1148,12 @@ async function publishHandover(id) {
 async function receiveHandover(id) {
   if (!window.confirm("Confirmar o recebimento desta passagem de turno?")) return;
   try { await handoverRequest(`/cycles/${id}/receive`, { method: "POST", body: "{}" }); await loadHandovers(); toast("Recebimento confirmado."); }
+  catch (error) { toast(error.message); }
+}
+
+async function cancelHandover(id) {
+  if (!window.confirm("Encerrar este rascunho sem publicar? As anotações serão preservadas no histórico.")) return;
+  try { await handoverRequest(`/cycles/${id}/cancel`, { method: "POST", body: "{}" }); await loadHandovers(); toast("Rascunho encerrado e preservado no histórico."); }
   catch (error) { toast(error.message); }
 }
 
@@ -2033,6 +2092,7 @@ $("#refreshActivity").addEventListener("click", () => loadPortalActivity(true));
 $("#addHandover").addEventListener("click", () => openHandoverDialog());
 $("#handoverShiftFilter").addEventListener("change", renderHandovers);
 $("#handoverForm").addEventListener("submit", saveHandover);
+$("#handoverTarget").addEventListener("change", updateHandoverRouteHint);
 $("#deleteHandover").addEventListener("click", removeHandover);
 $("#addReport").addEventListener("click", () => openReportDialog());
 $("#reportTypeFilter").addEventListener("change", renderReports);
