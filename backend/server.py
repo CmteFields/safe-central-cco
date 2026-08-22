@@ -72,7 +72,7 @@ LOCAL_MODEL = (
 )
 FALLBACK_MODEL = os.environ.get("GEMINI_FALLBACK_MODEL", "gemini-3.5-flash-lite")
 EXTERNAL_MODEL = os.environ.get("GEMINI_EXTERNAL_MODEL", "gemini-3.1-pro-preview")
-RELEASE_ID = os.environ.get("SAFE_CCO_RELEASE", "2026-08-22-rg014-translado-bases-1")
+RELEASE_ID = os.environ.get("SAFE_CCO_RELEASE", "2026-08-22-report-inva-bases-1")
 PORTAL_UPDATED_AT = os.environ.get("SAFE_CCO_UPDATED_AT", "").strip() or datetime.fromtimestamp(
     max(
         path.stat().st_mtime
@@ -3174,11 +3174,15 @@ def tokens(value: str) -> list[str]:
         ])
     base_context = (
         "base" in normalized
-        or bool(re.search(r"\b(?:sjk|cpq)\b", normalized))
+        or bool(re.search(r"\b(?:sjk|cpq|sbsj|sdam)\b", normalized))
         or "sao jose" in normalized
         or "campinas" in normalized
     )
-    if base_context and any(term in normalized for term in ("troc", "mud", "transfer", "alter", "migr")):
+    if base_context and any(term in normalized for term in (
+        "troc", "mud", "transfer", "alter", "migr", "altern",
+        "diferentes bases", "mais de uma base", "ambas as bases", "duas bases",
+        "entre as bases", "entre bases", "outra base",
+    )):
         expansions.extend(["troca", "base", "aluno"])
     return list(dict.fromkeys(items + expansions))
 
@@ -3254,12 +3258,14 @@ def canonical_intent_rule_ids(value: str) -> list[str]:
 
     base_context = (
         "base" in normalized
-        or bool(re.search(r"\b(?:sjk|cpq)\b", normalized))
+        or bool(re.search(r"\b(?:sjk|cpq|sbsj|sdam)\b", normalized))
         or "sao jose" in normalized
         or "campinas" in normalized
     )
     if not transfer_cost_intent and base_context and any(term in normalized for term in (
-        "troc", "mud", "transfer", "alter", "migr",
+        "troc", "mud", "transfer", "alter", "migr", "altern",
+        "diferentes bases", "mais de uma base", "ambas as bases", "duas bases",
+        "entre as bases", "entre bases", "outra base",
     )):
         prefer(BASE_TRANSFER_RULE_ID)
 
