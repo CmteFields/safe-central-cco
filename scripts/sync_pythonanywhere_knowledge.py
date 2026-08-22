@@ -15,6 +15,8 @@ import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
+from deploy_pythonanywhere_portal import deploy_portal
+
 
 ROOT = Path(__file__).resolve().parents[2]
 MANDATORY_FILES = (
@@ -117,6 +119,11 @@ def main() -> None:
     parser.add_argument("--host", default=os.environ.get("PYTHONANYWHERE_HOST", "www.pythonanywhere.com"))
     parser.add_argument("--username", default=os.environ.get("PYTHONANYWHERE_USERNAME", "CCOFields"))
     parser.add_argument("--domain", default=os.environ.get("PYTHONANYWHERE_DOMAIN", "ccofields.pythonanywhere.com"))
+    parser.add_argument(
+        "--deploy-portal",
+        action="store_true",
+        help="Publica também o código do Portal por release atômico e valida /api/health.",
+    )
     args = parser.parse_args()
 
     if args.build_only:
@@ -132,12 +139,19 @@ def main() -> None:
         bundle = Path(temporary) / "knowledge-bundle.zip"
         manifest = build_bundle(bundle)
         upload_bundle(bundle, token, args.host, args.username, remote_path)
-    reload_webapp(token, args.host, args.username, args.domain)
-    print(json.dumps({
+    portal = None
+    if args.deploy_portal:
+        portal = deploy_portal(token, args.host, args.username, args.domain)
+    else:
+        reload_webapp(token, args.host, args.username, args.domain)
+    result = {
         "status": "synchronized",
         "files": len(manifest["files"]),
         "domain": args.domain,
-    }, ensure_ascii=False))
+    }
+    if portal:
+        result["portal"] = portal
+    print(json.dumps(result, ensure_ascii=False))
 
 
 if __name__ == "__main__":
