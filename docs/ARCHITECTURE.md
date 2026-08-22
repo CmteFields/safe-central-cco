@@ -42,6 +42,15 @@ A recuperação pesquisa título, escopo e conteúdo integral de `operator_answe
 
 Quando o PythonAnywhere usa um pacote privado mais antigo, `operatorAnswer` do índice público versionado complementa o claim privado pelo mesmo ID. Essa sobreposição altera somente a apresentação canônica, não o status, a fonte ou o conteúdo normativo do claim. A operação completa exige o pacote privado instalado e `/api/health` com `knowledge` igual a `private_bundle` ou `configured_root`; `public_index` é apenas contingência resumida. O endpoint informa se a Gemini está configurada e os nomes dos modelos ativos, sem expor a chave, os caminhos ou outros segredos. Falhas reais das chamadas são devolvidas somente a Supervisor e Administrador na própria resposta da consulta.
 
+No PythonAnywhere, a publicação automatizada usa exclusivamente a API oficial.
+Os arquivos públicos necessários à execução são enviados para uma release
+imutável identificada pelo commit do `PortalCCO`; dados operacionais e segredos
+permanecem nos diretórios persistentes externos à release. O WSGI só é apontado
+para a nova release depois que todos os arquivos foram enviados. Após a recarga,
+`/api/health` deve confirmar o `RELEASE_ID`; caso contrário, o WSGI anterior é
+restaurado e a aplicação é recarregada novamente. Esse fluxo elimina a
+dependência de console ou navegador para implantações rotineiras.
+
 ## Feedback de progresso da consulta
 
 Ao iniciar uma busca, `app.js` exibe um painel acessível com as etapas de recebimento, consulta à base, análise de evidências e preparação da resposta. Como `/api/ask` ainda responde em uma única requisição HTTP, essas etapas representam feedback visual baseado no tempo decorrido, e não eventos transmitidos pelo backend.

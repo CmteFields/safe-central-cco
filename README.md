@@ -89,8 +89,11 @@ decisão e sua trilha de auditoria.
 ### Sincronização automática da base privada
 
 O comando `scripts/sync_pythonanywhere_knowledge.py` empacota o grafo, as regras,
-as consultas aprendidas e suas fontes, envia o pacote pela API oficial do
-PythonAnywhere e recarrega o Portal. O token não é salvo no projeto.
+as consultas aprendidas e suas fontes e envia o pacote pela API oficial do
+PythonAnywhere. Com `--deploy-portal`, ele também publica o código em uma
+release imutável, troca o WSGI de forma atômica, recarrega o Portal e confere
+`/api/health`. Em caso de falha, o WSGI anterior é restaurado. O token não é
+salvo no projeto e o navegador não é necessário.
 
 Configure uma única vez no Windows:
 
@@ -106,6 +109,12 @@ a reconstrução e a validação. Para sincronizar sem reconstruir:
 
 ```powershell
 python PortalCCO/scripts/sync_pythonanywhere_knowledge.py
+```
+
+Para sincronizar conhecimento e código em uma única execução:
+
+```powershell
+python PortalCCO/scripts/sync_pythonanywhere_knowledge.py --deploy-portal
 ```
 
 O backend detecta e instala automaticamente a versão mais recente de
