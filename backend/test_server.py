@@ -388,6 +388,34 @@ class RetrievalTests(unittest.TestCase):
             self.assertEqual(result["knowledge_status"], "approved")
             self.assertIn("mesmo aeródromo com instrutor a bordo", result["answer"])
 
+    def test_rg014_routes_aircraft_transfer_return_costs_without_new_gap(self):
+        variants = [
+            "Aluno que fizer translado entre as bases, a escola arca com algum custo?",
+            "Quem paga o ônibus depois do translado da aeronave entre bases?",
+            "Se houver problema técnico no translado, quem paga o retorno do aluno e do INVA?",
+            "Se o retorno for impedido por meteorologia, quem paga as despesas do instrutor?",
+        ]
+        for question in variants:
+            with self.subTest(question=question), patch.object(
+                server, "call_gemini_with_retry"
+            ) as answer_gemini, patch.object(
+                server, "semantic_retrieve_with_retry"
+            ) as semantic_selector, patch.object(
+                server, "record_learning", return_value="query_rg014"
+            ), patch.object(server, "upsert_rule_candidate") as create_gap:
+                result = server.answer_question(
+                    question, capture_candidate=True, save_history=False
+                )
+
+            answer_gemini.assert_not_called()
+            semantic_selector.assert_not_called()
+            create_gap.assert_not_called()
+            self.assertEqual(result["sources"][0]["code"], "RG-014")
+            self.assertEqual(result["knowledge_status"], "approved")
+            self.assertEqual(result["model_used"], "local-deterministic")
+            self.assertIn("ônibus", result["answer"])
+            self.assertIn("meteorologia ou navegação", result["answer"])
+
     def test_family_may_watch_first_solo_from_ground_without_boarding(self):
         variants = [
             "Minha família pode acompanhar o primeiro voo solo?",

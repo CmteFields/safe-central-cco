@@ -72,7 +72,7 @@ LOCAL_MODEL = (
 )
 FALLBACK_MODEL = os.environ.get("GEMINI_FALLBACK_MODEL", "gemini-3.5-flash-lite")
 EXTERNAL_MODEL = os.environ.get("GEMINI_EXTERNAL_MODEL", "gemini-3.1-pro-preview")
-RELEASE_ID = os.environ.get("SAFE_CCO_RELEASE", "2026-08-21-rule-gap-reconciliation-1")
+RELEASE_ID = os.environ.get("SAFE_CCO_RELEASE", "2026-08-22-rg014-translado-bases-1")
 PORTAL_UPDATED_AT = os.environ.get("SAFE_CCO_UPDATED_AT", "").strip() or datetime.fromtimestamp(
     max(
         path.stat().st_mtime
@@ -251,6 +251,7 @@ PP_NAV_MONITORING_RULE_ID = "claim_mgop_monitoria_nav_durante_fase_ap"
 BASE_TRANSFER_RULE_ID = "claim_rg006_troca_base_aluno"
 BARS_PRIORITY_RULE_ID = "claim_rg010_prioridade_barras_missoes_criticas"
 SOLO_AERODROME_FAMILIARIZATION_RULE_ID = "claim_rg013_familiarizacao_aerodromo_antes_voo_solo"
+AIRCRAFT_TRANSFER_COST_RULE_ID = "claim_rg014_custos_retorno_translado_bases"
 SOLO_RECENCY_RULE_ID = "claim_bops054_sem_solo_30_dias_novo_endosso"
 READAPTATION_RULE_ID = "claim_bops054_readaptacao_90_dias"
 ROLES = {"admin", "supervisor", "operator", "viewer"}
@@ -3195,6 +3196,26 @@ def instructor_allocation_intent(value: str) -> bool:
     return mentions_instructor and asks_allocation
 
 
+def aircraft_transfer_cost_intent(value: str) -> bool:
+    normalized = normalize(value)
+    asks_cost = any(term in normalized for term in (
+        "paga", "pagamento", "custo", "despesa", "arca", "custe",
+        "onibus", "transporte",
+    ))
+    transfer_or_return = (
+        "translado" in normalized
+        or ("transfer" in normalized and "aeronave" in normalized)
+        or (
+            "retorno" in normalized
+            and any(term in normalized for term in (
+                "aeronave", "base", "aluno", "inva", "instrutor",
+                "meteorologia", "navegacao", "problema tecnico",
+            ))
+        )
+    )
+    return asks_cost and transfer_or_return
+
+
 def canonical_intent_rule_ids(value: str) -> list[str]:
     """Mapeia intenções operacionais conhecidas às respostas canônicas aprovadas.
 
@@ -3227,13 +3248,17 @@ def canonical_intent_rule_ids(value: str) -> list[str]:
     if instructor_allocation_intent(normalized):
         prefer(INSTRUCTOR_ALLOCATION_RULE_ID)
 
+    transfer_cost_intent = aircraft_transfer_cost_intent(normalized)
+    if transfer_cost_intent:
+        prefer(AIRCRAFT_TRANSFER_COST_RULE_ID)
+
     base_context = (
         "base" in normalized
         or bool(re.search(r"\b(?:sjk|cpq)\b", normalized))
         or "sao jose" in normalized
         or "campinas" in normalized
     )
-    if base_context and any(term in normalized for term in (
+    if not transfer_cost_intent and base_context and any(term in normalized for term in (
         "troc", "mud", "transfer", "alter", "migr",
     )):
         prefer(BASE_TRANSFER_RULE_ID)
@@ -3356,6 +3381,7 @@ def retrieve_dynamic_rules(question: str) -> list[dict[str, Any]]:
             "excerpt": label,
             "operator_answer": label,
         })
+    results.sort(key=lambda item: (-item["score"], item["code"], item["label"].casefold()))
     return results
 
 
