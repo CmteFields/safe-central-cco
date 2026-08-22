@@ -237,6 +237,8 @@ class RetrievalTests(unittest.TestCase):
             "É permitido mudar a base do aluno?",
             "Posso transferir meu curso para outra base?",
             "Aluno PP pode mudar de SJK para CPQ?",
+            "Aluno de INVA pode realizar missões em diferentes bases?",
+            "Durante o curso de INVA posso alternar entre SBSJ e SDAM?",
         ]
         for question in variants:
             with self.subTest(question=question), patch.object(
