@@ -195,6 +195,7 @@ class RetrievalTests(unittest.TestCase):
 
     def test_instructor_choice_variants_recover_canonical_cco_answer(self):
         variants = [
+            "Aluno pode escolher instrutor?",
             "Posso escolher o INVA para voar?",
             "Posso pedir para voar com um instrutor específico?",
             "Combinei o voo diretamente com o INVA. Já está confirmado?",
@@ -213,8 +214,15 @@ class RetrievalTests(unittest.TestCase):
                         question, capture_candidate=False, save_history=False
                     )
                 gemini.assert_not_called()
-                self.assertIn("exclusivamente pelo CCO", result["answer"])
-                self.assertIn("não garante a escolha", result["answer"])
+                self.assertIn(
+                    "não deve haver indicação, solicitação ou combinação direta",
+                    result["answer"],
+                )
+                self.assertIn("operacoes@voesafe.com.br", result["answer"])
+                self.assertIn(
+                    "O CCO não está autorizado a atender esse tipo de solicitação",
+                    result["answer"],
+                )
                 self.assertEqual(result["knowledge_status"], "approved")
                 self.assertEqual(result["model_used"], "local-deterministic")
 
