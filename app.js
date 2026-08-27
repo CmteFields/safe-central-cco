@@ -882,6 +882,7 @@ async function loadStandardMessages() {
     standardMessages = data.items;
     standardMessageCategories = data.categories;
     standardMessagesLoaded = true;
+    fillStandardMessageCategoryFilter();
     renderStandardMessages();
   } catch (error) {
     $("#standardMessageBoard").innerHTML = `<div class="table-message">Não foi possível carregar as mensagens padrão.</div>`;
@@ -889,11 +890,20 @@ async function loadStandardMessages() {
   }
 }
 
+function fillStandardMessageCategoryFilter() {
+  const select = $("#standardMessageCategoryFilter");
+  const current = select.value;
+  select.innerHTML = `<option value="">Todas as categorias</option>${standardMessageCategories.map(category => `<option value="${escapeHtml(category)}">${escapeHtml(category)}</option>`).join("")}`;
+  select.value = current;
+}
+
 function renderStandardMessages() {
   const query = normalizeText($("#standardMessageSearch").value.trim());
+  const categoryFilter = $("#standardMessageCategoryFilter").value;
   const canManage = hasRole("admin");
   const visible = standardMessages.filter(item => {
     if (!item.active && !canManage) return false;
+    if (categoryFilter && item.category !== categoryFilter) return false;
     if (!query) return true;
     return normalizeText(`${item.category} ${item.title} ${item.body}`).includes(query);
   });
@@ -902,14 +912,14 @@ function renderStandardMessages() {
     $("#standardMessageBoard").innerHTML = `<div class="table-message">Nenhuma mensagem padrão encontrada.</div>`;
     return;
   }
-  const groups = standardMessageCategories
-    .map(category => ({ category, items: visible.filter(item => item.category === category) }))
-    .filter(group => group.items.length);
-  $("#standardMessageBoard").innerHTML = groups.map(group => `
-    <section class="handover-base-section">
-      <div class="handover-base-head"><div><strong>${escapeHtml(group.category)}</strong></div><span>${group.items.length}</span></div>
+  const columns = standardMessageCategories
+    .filter(category => !categoryFilter || category === categoryFilter)
+    .map(category => ({ category, items: visible.filter(item => item.category === category) }));
+  $("#standardMessageBoard").innerHTML = `<div class="standard-message-grid">${columns.map(column => `
+    <section class="standard-message-column">
+      <div class="handover-base-head"><div><strong>${escapeHtml(column.category)}</strong></div><span>${column.items.length}</span></div>
       <div class="standard-message-list">
-        ${group.items.map(item => `
+        ${column.items.length ? column.items.map(item => `
           <article class="rule-review-card standard-message-card${item.active ? "" : " standard-message-inactive"}">
             <div class="rule-review-head">
               <strong>${escapeHtml(item.title)}</strong>
@@ -920,9 +930,9 @@ function renderStandardMessages() {
               <button class="primary-button compact-button" type="button" data-copy-message="${item.id}">Copiar</button>
               ${canManage ? `<button class="secondary-button compact-button" type="button" data-edit-message="${item.id}">Editar</button>` : ""}
             </div>
-          </article>`).join("")}
+          </article>`).join("") : `<div class="standard-message-empty">Nenhuma mensagem nesta categoria.</div>`}
       </div>
-    </section>`).join("");
+    </section>`).join("")}</div>`;
   document.querySelectorAll("[data-copy-message]").forEach(button => button.addEventListener("click", () => copyStandardMessage(Number(button.dataset.copyMessage))));
   document.querySelectorAll("[data-edit-message]").forEach(button => button.addEventListener("click", () => openStandardMessageDialog(standardMessages.find(item => item.id === Number(button.dataset.editMessage)))));
 }
@@ -2221,6 +2231,7 @@ $("#aircraftForm").addEventListener("submit", saveAircraft);
 $("#deleteAircraft").addEventListener("click", removeAircraft);
 $("#addStandardMessage").addEventListener("click", () => openStandardMessageDialog());
 $("#standardMessageSearch").addEventListener("input", renderStandardMessages);
+$("#standardMessageCategoryFilter").addEventListener("change", renderStandardMessages);
 $("#standardMessageForm").addEventListener("submit", saveStandardMessage);
 $("#deleteStandardMessage").addEventListener("click", removeStandardMessage);
 $("#refreshActivity").addEventListener("click", () => loadPortalActivity(true));
