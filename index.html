@@ -10,7 +10,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css?v=20260821-2">
-  <link rel="stylesheet" href="instrutores.css?v=20260819-2">
+  <link rel="stylesheet" href="instrutores.css?v=20260827-1">
   <link rel="stylesheet" href="topbar.css?v=20260812-14">
   <link rel="stylesheet" href="auth.css?v=20260724-16">
 </head>
@@ -45,6 +45,7 @@
         <button class="nav-item" data-view="reports" id="reportsNavItem"><span class="nav-icon">⚑</span>Reports<span class="handover-nav-count report-nav-count" id="reportNavCount">0</span></button>
         <button class="nav-item" data-view="passagem"><span class="nav-icon">⇄</span>Passagem de turno<span class="handover-nav-count" id="handoverNavCount">0</span></button>
         <button class="nav-item" data-view="aeronaves"><span class="nav-icon">✈</span>Aeronaves</button>
+        <button class="nav-item" data-view="mensagens-padrao"><span class="nav-icon">✉</span>Mensagens padrão de gerência</button>
         <button class="nav-item" data-view="atividade"><span class="nav-icon">◉</span>Atividade do portal<span class="handover-nav-count activity-nav-count" id="activityNavCount">0</span></button>
         <button class="nav-item hidden" data-view="usuarios" id="usersNavItem"><span class="nav-icon">♙</span>Usuários e permissões</button>
       </nav>
@@ -161,6 +162,18 @@
             <tbody id="aircraftRows"><tr><td colspan="8" class="table-message">Carregando banco de aeronaves…</td></tr></tbody>
           </table>
         </div>
+      </section>
+
+      <section class="page hidden" id="standardMessagesView">
+        <div class="instructors-head">
+          <div><p class="eyebrow">OPERAÇÃO · COMUNICAÇÃO</p><h1>Mensagens padrão de gerência</h1><p>Respostas padronizadas para uso rápido com alunos e instrutores, organizadas por categoria.</p></div>
+          <button class="primary-button hidden" id="addStandardMessage">+ Nova mensagem</button>
+        </div>
+        <div class="instructor-toolbar">
+          <label class="table-search"><span>⌕</span><input id="standardMessageSearch" type="search" placeholder="Buscar mensagem, categoria ou título…"></label>
+          <span class="instructor-total" id="standardMessageTotal">Carregando…</span>
+        </div>
+        <div class="handover-board" id="standardMessageBoard"><div class="table-message">Carregando mensagens padrão…</div></div>
       </section>
 
       <section class="page hidden" id="handoverView">
@@ -300,6 +313,19 @@
       <div class="dialog-actions"><button type="button" class="danger-button hidden" id="deleteAircraft">Excluir</button><span></span><button value="cancel" class="secondary-button">Cancelar</button><button type="submit" class="primary-button" id="saveAircraft">Salvar alterações</button></div>
     </form>
   </dialog>
+  <dialog class="instructor-dialog" id="standardMessageDialog">
+    <form method="dialog" id="standardMessageForm">
+      <div class="dialog-head"><div><p class="eyebrow">MENSAGENS PADRÃO DE GERÊNCIA</p><h2 id="standardMessageDialogTitle">Nova mensagem</h2></div><button class="dialog-close" value="cancel" aria-label="Fechar">×</button></div>
+      <input type="hidden" id="standardMessageId">
+      <div class="form-grid">
+        <label>Categoria<select id="standardMessageCategory" required></select></label>
+        <label class="wide">Título<input id="standardMessageTitle" maxlength="200" required></label>
+        <label class="wide">Texto da mensagem<textarea id="standardMessageBody" maxlength="4000" rows="8" required></textarea></label>
+      </div>
+      <div class="dialog-error hidden" id="standardMessageFormError" role="alert"></div>
+      <div class="dialog-actions"><button type="button" class="danger-button hidden" id="deleteStandardMessage">Excluir</button><span></span><button value="cancel" class="secondary-button">Cancelar</button><button type="submit" class="primary-button" id="saveStandardMessage">Salvar mensagem</button></div>
+    </form>
+  </dialog>
   <dialog class="instructor-dialog handover-dialog" id="handoverDialog">
     <form method="dialog" id="handoverForm">
       <div class="dialog-head"><div><p class="eyebrow">CONTINUIDADE OPERACIONAL</p><h2 id="handoverDialogTitle">Nova anotação da passagem</h2></div><button class="dialog-close" value="cancel" aria-label="Fechar">×</button></div>
@@ -425,6 +451,6 @@
   <div class="toast" id="toast" role="status"></div>
   <script src="data/public-knowledge-index.js?v=20260731-6"></script>
   <script src="data/knowledge-index.js"></script>
-  <script src="app.js?v=20260821-3"></script>
+  <script src="app.js?v=20260827-1"></script>
 </body>
 </html>

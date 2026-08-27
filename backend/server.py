@@ -110,6 +110,9 @@ APPROVED_RULES_EXPORT_PATH = Path(
     os.environ.get("SAFE_APPROVED_RULES_EXPORT_PATH", DATA_DIR / "approved-rules-export.json")
 ).resolve()
 LEARNING_DB_PATH = Path(os.environ.get("SAFE_LEARNING_DB_PATH", PORTAL_DB_PATH)).resolve()
+STANDARD_MESSAGES_DB_PATH = Path(
+    os.environ.get("SAFE_STANDARD_MESSAGES_DB_PATH", PORTAL_DB_PATH)
+).resolve()
 LEGACY_DB_PATHS = {
     "auth": DATA_DIR / "auth.db",
     "search_history": DATA_DIR / "search_history.db",
@@ -140,6 +143,7 @@ REPORTS_LOCK = PORTAL_STORAGE_LOCK
 SEARCH_HISTORY_LOCK = PORTAL_STORAGE_LOCK
 AUTH_LOCK = PORTAL_STORAGE_LOCK
 RULES_LOCK = PORTAL_STORAGE_LOCK
+STANDARD_MESSAGES_LOCK = PORTAL_STORAGE_LOCK
 DATABASE_CONFIGURATION_LOCK = threading.Lock()
 CONFIGURED_DATABASES: set[Path] = set()
 STOPWORDS = {"a", "as", "o", "os", "de", "da", "das", "do", "dos", "e", "em", "na", "no", "para", "por", "com", "um", "uma", "que", "pode", "como", "safe", "fazer", "concluir", "quantos"}
@@ -223,6 +227,55 @@ MAX_REPORT_ATTACHMENTS = 5
 MAX_REPORT_ATTACHMENT_BYTES = 2 * 1024 * 1024
 AIRCRAFT_FLEET_STATUSES = {"Ativa", "Inativa"}
 AIRCRAFT_OPERATIONAL_STATUSES = {"Operacional", "Fora de Operação", "Em Manutenção"}
+STANDARD_MESSAGE_CATEGORIES = (
+    "Alocação de Instrutores/INVA",
+    "Escala/Slots",
+    "Solicitação a Instrutor",
+)
+STANDARD_MESSAGE_SEED = [
+    (
+        "Alocação de Instrutores/INVA",
+        "Critério de alocação de INVA (RG-009)",
+        "O CCO adota o regime de alocação de instrutores conforme escala, ranking, programação e "
+        "sequência da instrução. Por esse motivo, não deve haver indicação, solicitação ou "
+        "combinação direta com o aluno para escolha ou alocação de um INVA específico.\n\n"
+        "Caso o aluno deseje voar com um instrutor específico, ou tenha qualquer dificuldade com "
+        "determinado INVA, deverá solicitar diretamente à Gerência de Operações pelo e-mail "
+        "operacoes@voesafe.com.br\n\n"
+        "O CCO não está autorizado a atender esse tipo de solicitação, e toda alocação deve seguir "
+        "exclusivamente os critérios operacionais definidos.",
+    ),
+    (
+        "Escala/Slots",
+        "Solicitação de troca de agendamento",
+        "Olá! Vimos que você tem um agendamento em [data] às [horário]. Teria disponibilidade para "
+        "trocar para [novo dia], no mesmo horário? Seria para uma otimização de escala.",
+    ),
+    (
+        "Escala/Slots",
+        "Cancelamento de slot por manutenção",
+        "Bom dia, tudo bem?\n"
+        "Verificamos que você tem um slot agendado na [barra] para [data], às [horário]. "
+        "Infelizmente, teremos que cancelar seu slot devido a uma manutenção não programada.\n"
+        "Pedimos desculpas pelo transtorno e reforçamos que essas manutenções são necessárias para "
+        "garantir a segurança de nossos alunos e funcionários.\n"
+        "Contamos com a sua compreensão e permanecemos à disposição para qualquer esclarecimento.",
+    ),
+    (
+        "Escala/Slots",
+        "Escala atualizada, slot pendente por manutenção",
+        "Bom dia! Escala atualizada. Porém, o slot está aguardando confirmação por conta da "
+        "manutenção do [aeronave/prefixo].",
+    ),
+    (
+        "Solicitação a Instrutor",
+        "Disponibilidade para atividade extra",
+        "Bom dia, tudo bem?\n"
+        "Gostaria de saber, por gentileza, se você teria disponibilidade para aplicar [atividade] "
+        "em [data], às [horário].\n"
+        "Desde já, agradeço!",
+    ),
+]
 RULE_CANDIDATE_STATUS_LABELS = {
     "unreviewed": "Não revisada",
     "pending_approval": "Pendente de aprovação",
@@ -3185,6 +3238,109 @@ def delete_aircraft(aircraft_id: int) -> None:
             raise LookupError("Aeronave não encontrada.")
 
 
+@contextmanager
+def standard_message_connection():
+    connection = open_database(STANDARD_MESSAGES_DB_PATH)
+    try:
+        yield connection
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
+def initialize_standard_messages_db() -> None:
+    with STANDARD_MESSAGES_LOCK, standard_message_connection() as connection:
+        connection.execute("""CREATE TABLE IF NOT EXISTS standard_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            category TEXT NOT NULL,
+            title TEXT NOT NULL,
+            body TEXT NOT NULL,
+            active INTEGER NOT NULL DEFAULT 1,
+            created_by TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )""")
+        if connection.execute("SELECT COUNT(*) FROM standard_messages").fetchone()[0] == 0:
+            timestamp = now_iso()
+            connection.executemany(
+                """INSERT INTO standard_messages(category, title, body, active, created_by, created_at, updated_at)
+                   VALUES (?, ?, ?, 1, 'seed', ?, ?)""",
+                [(*item, timestamp, timestamp) for item in STANDARD_MESSAGE_SEED],
+            )
+
+
+def standard_message_dict(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": row["id"], "category": row["category"], "title": row["title"],
+        "body": row["body"], "active": bool(row["active"]),
+        "created_by": row["created_by"], "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def validate_standard_message(data: dict[str, Any]) -> tuple[str, str, str, int]:
+    category = str(data.get("category", "")).strip()
+    title = str(data.get("title", "")).strip()
+    body = str(data.get("body", "")).strip()
+    active = 1 if data.get("active", True) else 0
+    if not category or not title or not body:
+        raise ValueError("Preencha categoria, título e texto da mensagem.")
+    if category not in STANDARD_MESSAGE_CATEGORIES:
+        raise ValueError("Selecione uma categoria válida.")
+    if len(title) > 200:
+        raise ValueError("O título deve ter no máximo 200 caracteres.")
+    if len(body) > 4000:
+        raise ValueError("O texto da mensagem deve ter no máximo 4000 caracteres.")
+    return category, title, body, active
+
+
+def list_standard_messages() -> list[dict[str, Any]]:
+    initialize_standard_messages_db()
+    with standard_message_connection() as connection:
+        rows = connection.execute(
+            "SELECT * FROM standard_messages ORDER BY category, title"
+        ).fetchall()
+    return [standard_message_dict(row) for row in rows]
+
+
+def save_standard_message(data: dict[str, Any], message_id: int | None = None) -> dict[str, Any]:
+    initialize_standard_messages_db()
+    category, title, body, active = validate_standard_message(data)
+    timestamp = now_iso()
+    created_by = str(data.get("created_by") or "").strip() or None
+    with STANDARD_MESSAGES_LOCK, standard_message_connection() as connection:
+        if message_id is None:
+            cursor = connection.execute(
+                """INSERT INTO standard_messages(category, title, body, active, created_by, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (category, title, body, active, created_by, timestamp, timestamp),
+            )
+            message_id = cursor.lastrowid
+        else:
+            cursor = connection.execute(
+                """UPDATE standard_messages SET category=?, title=?, body=?, active=?, updated_at=?
+                   WHERE id=?""",
+                (category, title, body, active, timestamp, message_id),
+            )
+            if not cursor.rowcount:
+                raise LookupError("Mensagem padrão não encontrada.")
+        row = connection.execute(
+            "SELECT * FROM standard_messages WHERE id=?", (message_id,)
+        ).fetchone()
+    return standard_message_dict(row)
+
+
+def delete_standard_message(message_id: int) -> None:
+    initialize_standard_messages_db()
+    with STANDARD_MESSAGES_LOCK, standard_message_connection() as connection:
+        cursor = connection.execute("DELETE FROM standard_messages WHERE id=?", (message_id,))
+        if not cursor.rowcount:
+            raise LookupError("Mensagem padrão não encontrada.")
+
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -4878,6 +5034,12 @@ class Handler(BaseHTTPRequestHandler):
         if urllib.parse.urlparse(self.path).path == "/api/aircraft":
             self.send_json(200, {"items": list_aircraft()})
             return
+        if urllib.parse.urlparse(self.path).path == "/api/standard-messages":
+            self.send_json(200, {
+                "items": list_standard_messages(),
+                "categories": list(STANDARD_MESSAGE_CATEGORIES),
+            })
+            return
         if urllib.parse.urlparse(self.path).path == "/api/bases":
             self.send_json(200, {"items": list_bases()})
             return
@@ -5008,6 +5170,11 @@ class Handler(BaseHTTPRequestHandler):
                 if user["role"] not in {"admin", "supervisor"}:
                     self.send_json(403, {"error": "Somente Supervisor ou Administrador pode alterar aeronaves."}); return
                 self.send_json(201, save_aircraft(data))
+                return
+            if self.path == "/api/standard-messages":
+                if user["role"] != "admin":
+                    self.send_json(403, {"error": "Apenas administradores podem criar mensagens padrão."}); return
+                self.send_json(201, save_standard_message({**data, "created_by": user["username"]}))
                 return
             if self.path == "/api/handovers":
                 if user["role"] not in {"admin", "supervisor", "operator"}:
@@ -5170,6 +5337,23 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as error:
                 self.send_json(500, {"error": str(error)})
             return
+        standard_message_match = re.fullmatch(
+            r"/api/standard-messages/(\d+)", urllib.parse.urlparse(self.path).path
+        )
+        if standard_message_match:
+            if user["role"] != "admin":
+                self.send_json(403, {"error": "Apenas administradores podem alterar mensagens padrão."}); return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                data = json.loads(self.rfile.read(min(length, 16_384)).decode("utf-8"))
+                self.send_json(200, save_standard_message(data, int(standard_message_match.group(1))))
+            except (ValueError, json.JSONDecodeError) as error:
+                self.send_json(400, {"error": str(error)})
+            except LookupError as error:
+                self.send_json(404, {"error": str(error)})
+            except Exception as error:
+                self.send_json(500, {"error": str(error)})
+            return
         match = re.fullmatch(r"/api/instructors/(\d+)", urllib.parse.urlparse(self.path).path)
         if not match:
             self.send_json(404, {"error": "Rota não encontrada."}); return
@@ -5225,6 +5409,20 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(403, {"error": "Somente Supervisor ou Administrador pode excluir aeronaves."}); return
             try:
                 delete_aircraft(int(aircraft_match.group(1)))
+                self.send_json(200, {"ok": True})
+            except LookupError as error:
+                self.send_json(404, {"error": str(error)})
+            except Exception as error:
+                self.send_json(500, {"error": str(error)})
+            return
+        standard_message_match = re.fullmatch(
+            r"/api/standard-messages/(\d+)", urllib.parse.urlparse(self.path).path
+        )
+        if standard_message_match:
+            if user["role"] != "admin":
+                self.send_json(403, {"error": "Apenas administradores podem excluir mensagens padrão."}); return
+            try:
+                delete_standard_message(int(standard_message_match.group(1)))
                 self.send_json(200, {"ok": True})
             except LookupError as error:
                 self.send_json(404, {"error": str(error)})

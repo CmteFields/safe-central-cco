@@ -124,6 +124,7 @@ const homeView = $("#homeView");
 const answerView = $("#answerView");
 const moduleView = $("#moduleView");
 const aircraftView = $("#aircraftView");
+const standardMessagesView = $("#standardMessagesView");
 const handoverView = $("#handoverView");
 const reportsView = $("#reportsView");
 const ruleManagementView = $("#ruleManagementView");
@@ -150,6 +151,9 @@ let progressTimers = [];
 let progressClock = null;
 let aircraft = [];
 let aircraftLoaded = false;
+let standardMessages = [];
+let standardMessageCategories = [];
+let standardMessagesLoaded = false;
 let operationalBases = [];
 let basesPromise = null;
 let handovers = [];
@@ -199,7 +203,7 @@ function renderBaseSelect(select, includeUnassigned, selected = "") {
 }
 
 function showView(view, name) {
-  [homeView, answerView, moduleView, aircraftView, handoverView, reportsView, ruleManagementView, usersView, activityView].forEach(item => item.classList.add("hidden"));
+  [homeView, answerView, moduleView, aircraftView, standardMessagesView, handoverView, reportsView, ruleManagementView, usersView, activityView].forEach(item => item.classList.add("hidden"));
   view.classList.remove("hidden");
   $("#pageName").textContent = name;
   currentActivityArea = name;
@@ -858,6 +862,127 @@ async function removeAircraft() {
     aircraft = aircraft.filter(value => value.id !== id);
     fillAircraftFilters(); renderAircraft(); $("#aircraftDialog").close(); toast("Aeronave excluída.");
   } catch (error) { setDialogMessage("#aircraftFormError", error.message); }
+  finally { button.disabled = false; }
+}
+
+async function standardMessageRequest(path = "", options = {}) {
+  const response = await apiFetch(`${window.location.origin}/api/standard-messages${path}`, {
+    ...options,
+    headers: options.body ? { "Content-Type": "application/json", ...(options.headers || {}) } : options.headers,
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || `Erro HTTP ${response.status}`);
+  return data;
+}
+
+async function loadStandardMessages() {
+  $("#standardMessageBoard").innerHTML = `<div class="table-message">Carregando mensagens padrão…</div>`;
+  try {
+    const data = await standardMessageRequest();
+    standardMessages = data.items;
+    standardMessageCategories = data.categories;
+    standardMessagesLoaded = true;
+    renderStandardMessages();
+  } catch (error) {
+    $("#standardMessageBoard").innerHTML = `<div class="table-message">Não foi possível carregar as mensagens padrão.</div>`;
+    toast(error.message);
+  }
+}
+
+function renderStandardMessages() {
+  const query = normalizeText($("#standardMessageSearch").value.trim());
+  const canManage = hasRole("admin");
+  const visible = standardMessages.filter(item => {
+    if (!item.active && !canManage) return false;
+    if (!query) return true;
+    return normalizeText(`${item.category} ${item.title} ${item.body}`).includes(query);
+  });
+  $("#standardMessageTotal").textContent = `${visible.length} de ${standardMessages.length} mensage${standardMessages.length === 1 ? "m" : "ns"}`;
+  if (!visible.length) {
+    $("#standardMessageBoard").innerHTML = `<div class="table-message">Nenhuma mensagem padrão encontrada.</div>`;
+    return;
+  }
+  const groups = standardMessageCategories
+    .map(category => ({ category, items: visible.filter(item => item.category === category) }))
+    .filter(group => group.items.length);
+  $("#standardMessageBoard").innerHTML = groups.map(group => `
+    <section class="handover-base-section">
+      <div class="handover-base-head"><div><strong>${escapeHtml(group.category)}</strong></div><span>${group.items.length}</span></div>
+      <div class="standard-message-list">
+        ${group.items.map(item => `
+          <article class="rule-review-card standard-message-card${item.active ? "" : " standard-message-inactive"}">
+            <div class="rule-review-head">
+              <strong>${escapeHtml(item.title)}</strong>
+              ${!item.active ? `<span class="rule-kind unreviewed">INATIVA</span>` : ""}
+            </div>
+            <p class="standard-message-body">${escapeHtml(item.body)}</p>
+            <div class="rule-card-actions">
+              <button class="primary-button compact-button" type="button" data-copy-message="${item.id}">Copiar</button>
+              ${canManage ? `<button class="secondary-button compact-button" type="button" data-edit-message="${item.id}">Editar</button>` : ""}
+            </div>
+          </article>`).join("")}
+      </div>
+    </section>`).join("");
+  document.querySelectorAll("[data-copy-message]").forEach(button => button.addEventListener("click", () => copyStandardMessage(Number(button.dataset.copyMessage))));
+  document.querySelectorAll("[data-edit-message]").forEach(button => button.addEventListener("click", () => openStandardMessageDialog(standardMessages.find(item => item.id === Number(button.dataset.editMessage)))));
+}
+
+async function copyStandardMessage(id) {
+  const item = standardMessages.find(value => value.id === id);
+  if (!item) return;
+  try {
+    await navigator.clipboard.writeText(item.body);
+    toast("Mensagem copiada para a área de transferência.");
+  } catch (error) {
+    toast("Não foi possível copiar automaticamente. Selecione o texto manualmente.");
+  }
+}
+
+function openStandardMessageDialog(item = null) {
+  $("#standardMessageForm").reset();
+  setDialogMessage("#standardMessageFormError");
+  $("#standardMessageId").value = item?.id || "";
+  $("#standardMessageCategory").innerHTML = standardMessageCategories.map(category => `<option value="${escapeHtml(category)}">${escapeHtml(category)}</option>`).join("");
+  $("#standardMessageCategory").value = item?.category || standardMessageCategories[0] || "";
+  $("#standardMessageTitle").value = item?.title || "";
+  $("#standardMessageBody").value = item?.body || "";
+  $("#standardMessageDialogTitle").textContent = item ? "Editar mensagem" : "Nova mensagem";
+  $("#deleteStandardMessage").classList.toggle("hidden", !item);
+  showFormDialog("#standardMessageDialog");
+  setTimeout(() => $("#standardMessageTitle").focus(), 50);
+}
+
+async function saveStandardMessage(event) {
+  event.preventDefault();
+  const id = $("#standardMessageId").value;
+  const payload = {
+    category: $("#standardMessageCategory").value,
+    title: $("#standardMessageTitle").value,
+    body: $("#standardMessageBody").value,
+  };
+  const button = $("#saveStandardMessage");
+  button.disabled = true;
+  try {
+    const saved = await standardMessageRequest(id ? `/${id}` : "", { method: id ? "PUT" : "POST", body: JSON.stringify(payload) });
+    const index = standardMessages.findIndex(item => item.id === saved.id);
+    if (index >= 0) standardMessages[index] = saved; else standardMessages.push(saved);
+    renderStandardMessages(); $("#standardMessageDialog").close();
+    toast(id ? "Mensagem atualizada com sucesso." : "Mensagem cadastrada com sucesso.");
+  } catch (error) { setDialogMessage("#standardMessageFormError", error.message); }
+  finally { button.disabled = false; }
+}
+
+async function removeStandardMessage() {
+  const id = Number($("#standardMessageId").value);
+  const item = standardMessages.find(value => value.id === id);
+  if (!item || !window.confirm(`Excluir a mensagem "${item.title}"?`)) return;
+  const button = $("#deleteStandardMessage");
+  button.disabled = true;
+  try {
+    await standardMessageRequest(`/${id}`, { method: "DELETE" });
+    standardMessages = standardMessages.filter(value => value.id !== id);
+    renderStandardMessages(); $("#standardMessageDialog").close(); toast("Mensagem excluída.");
+  } catch (error) { setDialogMessage("#standardMessageFormError", error.message); }
   finally { button.disabled = false; }
 }
 
@@ -1752,6 +1877,7 @@ function applyCurrentUser(user, csrf) {
   $("#ruleManagementNav").classList.toggle("hidden", !hasRole("admin", "supervisor"));
   $("#reportsNavItem").classList.toggle("hidden", user.role === "viewer");
   $("#addAircraft").classList.toggle("hidden", !hasRole("admin", "supervisor"));
+  $("#addStandardMessage").classList.toggle("hidden", !hasRole("admin"));
   $("#addHandover").classList.toggle("hidden", user.role === "viewer");
   $("#addReport").classList.toggle("hidden", user.role === "viewer");
   $("#reportAnswerIssue").classList.toggle("hidden", user.role === "viewer");
@@ -1990,6 +2116,11 @@ function openModule(key) {
     if (!aircraftLoaded) loadAircraft();
     return;
   }
+  if (key === "mensagens-padrao") {
+    showView(standardMessagesView, "Mensagens padrão de gerência");
+    if (!standardMessagesLoaded) loadStandardMessages();
+    return;
+  }
   if (key === "atividade") {
     showView(activityView, "Atividade do portal");
     loadPortalActivity(true);
@@ -2088,6 +2219,10 @@ $("#aircraftFleetFilter").addEventListener("change", renderAircraft);
 $("#aircraftStatusFilter").addEventListener("change", renderAircraft);
 $("#aircraftForm").addEventListener("submit", saveAircraft);
 $("#deleteAircraft").addEventListener("click", removeAircraft);
+$("#addStandardMessage").addEventListener("click", () => openStandardMessageDialog());
+$("#standardMessageSearch").addEventListener("input", renderStandardMessages);
+$("#standardMessageForm").addEventListener("submit", saveStandardMessage);
+$("#deleteStandardMessage").addEventListener("click", removeStandardMessage);
 $("#refreshActivity").addEventListener("click", () => loadPortalActivity(true));
 $("#addHandover").addEventListener("click", () => openHandoverDialog());
 $("#handoverShiftFilter").addEventListener("change", renderHandovers);

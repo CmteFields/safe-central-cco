@@ -836,8 +836,8 @@ class WSGITests(unittest.TestCase):
         self.assertIn(b'<option selected>Aberto</option>', body)
         self.assertIn(b'styles.css?v=20260821-2', body)
         self.assertIn(b"public-knowledge-index.js?v=20260731-6", body)
-        self.assertIn(b"instrutores.css?v=20260819-2", body)
-        self.assertIn(b"app.js?v=20260821-3", body)
+        self.assertIn(b"instrutores.css?v=20260827-1", body)
+        self.assertIn(b"app.js?v=20260827-1", body)
         self.assertIn(b'id="newSearchButton"', body)
         self.assertIn(b'id="toggleRecentSearch"', body)
         self.assertIn(b'id="recentSearch"', body)
@@ -910,6 +910,18 @@ class WSGITests(unittest.TestCase):
         self.assertIn(b'id="activityView"', body)
         self.assertIn(b'id="activityRows"', body)
         self.assertIn("Acessos e atividade de uso monitorados".encode(), body)
+
+    def test_static_portal_contains_standard_messages_section(self):
+        status, _, body = self.request("/")
+        self.assertEqual(status, "200 OK")
+        self.assertIn(b'data-view="mensagens-padrao"', body)
+        self.assertIn(b'id="standardMessagesView"', body)
+        self.assertIn(b'id="addStandardMessage"', body)
+        self.assertIn(b'id="standardMessageSearch"', body)
+        self.assertIn(b'id="standardMessageDialog"', body)
+        self.assertIn(b'id="standardMessageCategory"', body)
+        self.assertIn(b'id="deleteStandardMessage"', body)
+        self.assertIn("Mensagens padrão de gerência".encode(), body)
 
     def test_temporary_password_and_first_writes_through_wsgi(self):
         with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
@@ -1080,6 +1092,55 @@ class OperationalStorageTests(unittest.TestCase):
             self.assertEqual(server.list_search_history()[0]["id"], record_id)
 
 
+class StandardMessagesStorageTests(unittest.TestCase):
+    def test_seeds_default_messages_on_first_access(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            server, "STANDARD_MESSAGES_DB_PATH", Path(directory) / "standard_messages.db"
+        ):
+            items = server.list_standard_messages()
+            self.assertEqual(len(items), len(server.STANDARD_MESSAGE_SEED))
+            categories = {item["category"] for item in items}
+            self.assertTrue(categories.issubset(set(server.STANDARD_MESSAGE_CATEGORIES)))
+            self.assertTrue(any("operacoes@voesafe.com.br" in item["body"] for item in items))
+
+    def test_save_update_and_delete_round_trip(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            server, "STANDARD_MESSAGES_DB_PATH", Path(directory) / "standard_messages.db"
+        ):
+            created = server.save_standard_message({
+                "category": "Escala/Slots", "title": "Teste", "body": "Corpo de teste",
+            })
+            self.assertEqual(created["category"], "Escala/Slots")
+            self.assertTrue(created["active"])
+
+            updated = server.save_standard_message({
+                "category": "Escala/Slots", "title": "Teste editado", "body": "Corpo editado",
+            }, created["id"])
+            self.assertEqual(updated["title"], "Teste editado")
+
+            server.delete_standard_message(created["id"])
+            remaining_ids = {item["id"] for item in server.list_standard_messages()}
+            self.assertNotIn(created["id"], remaining_ids)
+
+    def test_rejects_invalid_category(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            server, "STANDARD_MESSAGES_DB_PATH", Path(directory) / "standard_messages.db"
+        ):
+            with self.assertRaises(ValueError):
+                server.save_standard_message({
+                    "category": "Categoria inexistente", "title": "Teste", "body": "Corpo",
+                })
+
+    def test_update_of_missing_message_raises_lookup_error(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            server, "STANDARD_MESSAGES_DB_PATH", Path(directory) / "standard_messages.db"
+        ):
+            with self.assertRaises(LookupError):
+                server.save_standard_message({
+                    "category": "Escala/Slots", "title": "Teste", "body": "Corpo",
+                }, 999999)
+
+
 class ConsolidatedStorageTests(unittest.TestCase):
     def test_central_database_uses_network_filesystem_safe_journal(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1115,6 +1176,7 @@ class ConsolidatedStorageTests(unittest.TestCase):
             server.SEARCH_HISTORY_DB_PATH,
             server.RULES_DB_PATH,
             server.LEARNING_DB_PATH,
+            server.STANDARD_MESSAGES_DB_PATH,
         }, {server.PORTAL_DB_PATH})
 
     def test_initialization_migrates_all_legacy_stores_without_deleting_them(self):
