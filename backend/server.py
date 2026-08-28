@@ -72,7 +72,7 @@ LOCAL_MODEL = (
 )
 FALLBACK_MODEL = os.environ.get("GEMINI_FALLBACK_MODEL", "gemini-3.5-flash-lite")
 EXTERNAL_MODEL = os.environ.get("GEMINI_EXTERNAL_MODEL", "gemini-3.1-pro-preview")
-RELEASE_ID = os.environ.get("SAFE_CCO_RELEASE", "2026-08-27-shift-handover-continuity")
+RELEASE_ID = os.environ.get("SAFE_CCO_RELEASE", "2026-08-28-information-resolution")
 PORTAL_UPDATED_AT = os.environ.get("SAFE_CCO_UPDATED_AT", "").strip() or datetime.fromtimestamp(
     max(
         path.stat().st_mtime
@@ -2297,9 +2297,9 @@ def transition_handover_item(
     action = str(data.get("action", "")).strip()
     note = str(data.get("note", "")).strip()
     assignee = str(data.get("assignee", "")).strip()
-    if action not in {"assume", "complete", "reopen", "assign", "comment"}:
+    if action not in {"assume", "complete", "reopen", "resolve", "unresolve", "assign", "comment"}:
         raise ValueError("Ação de passagem de turno inválida.")
-    if action in {"complete", "reopen", "comment"} and not note:
+    if action in {"complete", "reopen", "comment", "resolve", "unresolve"} and not note:
         raise ValueError("Registre uma observação para esta ação.")
     if len(note) > 2000 or len(assignee) > 100:
         raise ValueError("Observação ou responsável excede o limite permitido.")
@@ -2316,8 +2316,10 @@ def transition_handover_item(
         ).fetchone()
         if newer:
             raise ValueError("Use a ocorrência mais recente desta pendência para registrar a ação.")
-        if item["item_type"] != "Pendência" and action != "comment":
-            raise ValueError("Informações não possuem fluxo de conclusão.")
+        if item["item_type"] != "Pendência" and action not in {"comment", "resolve", "unresolve"}:
+            raise ValueError("Informações só podem ser comentadas ou marcadas como resolvidas.")
+        if item["item_type"] == "Pendência" and action in {"resolve", "unresolve"}:
+            raise ValueError("Use concluir ou reabrir para pendências.")
         details: dict[str, Any] = {"note": note} if note else {}
         event_cycle_id = int(item["cycle_id"])
         if action == "assume":
@@ -2387,6 +2389,24 @@ def transition_handover_item(
                 )
                 event_action = "Pendência reaberta"
                 event_cycle_id = int(item["cycle_id"])
+        elif action == "resolve":
+            if item["completion_note"]:
+                raise ValueError("Esta informação já foi marcada como resolvida.")
+            connection.execute(
+                """UPDATE handovers SET completed_at=?, completed_by=?, completion_note=?,
+                   updated_at=? WHERE id=?""",
+                (timestamp, name, note, timestamp, handover_id),
+            )
+            event_action = "Informação marcada como resolvida"
+        elif action == "unresolve":
+            if not item["completion_note"]:
+                raise ValueError("Esta informação ainda não foi marcada como resolvida.")
+            connection.execute(
+                """UPDATE handovers SET completed_at=NULL, completed_by='', completion_note='',
+                   updated_at=? WHERE id=?""",
+                (timestamp, handover_id),
+            )
+            event_action = "Informação reaberta"
         elif action == "assign":
             connection.execute(
                 "UPDATE handovers SET assignee=?, updated_at=? WHERE id=?",

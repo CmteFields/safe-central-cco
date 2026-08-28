@@ -1080,6 +1080,10 @@ function handoverCard(item, cycle) {
     if (["Pendente", "Em andamento"].includes(item.status)) actions.push(handoverActionButton("complete", item.id, "Concluir", "advance"));
     if (item.status === "Concluída") actions.push(handoverActionButton("reopen", item.id, "Reabrir"));
     actions.push(handoverActionButton("assign", item.id, "Responsável"));
+  } else if (canTransition) {
+    actions.push(item.completion_note
+      ? handoverActionButton("unresolve", item.id, "Reabrir")
+      : handoverActionButton("resolve", item.id, "Marcar como resolvido", "advance"));
   }
   if (canTransition) actions.push(handoverActionButton("comment", item.id, "Comentar"));
   const aging = handoverAgingLevel(item);
@@ -1091,7 +1095,7 @@ function handoverCard(item, cycle) {
     <div class="handover-card-top"><button type="button" class="handover-ticket" data-handover-timeline="${ticketId}" title="Ver linha do tempo">PT-${ticketId}</button><span class="handover-type type-${normalizeText(item.item_type)}">${escapeHtml(item.item_type)}</span><span class="priority-label">${escapeHtml(item.priority)}</span><span class="handover-status status-${normalizeText(item.status)}">${escapeHtml(item.status)}</span>${agingBadge}<span class="handover-card-time">${formatInstructorDate(item.updated_at)}</span></div>
     <p>${escapeHtml(item.message)}</p>
     <div class="handover-item-meta"><span>Deixado por <strong>${escapeHtml(item.author)}</strong></span>${item.assignee ? `<span>Responsável: <strong>${escapeHtml(item.assignee)}</strong></span>` : ""}${item.carried_from_id ? '<span class="carried-tag">↻ Pendência trazida da passagem anterior</span>' : ""}${item.carry_count > 0 ? `<span class="carried-tag">↻ carregada ${item.carry_count}x desde ${formatInstructorDate(item.first_created_at)}</span>` : ""}</div>
-    ${item.completion_note ? `<div class="handover-completion"><strong>Conclusão por ${escapeHtml(item.completed_by)} · ${formatInstructorDate(item.completed_at)}</strong>${escapeHtml(item.completion_note)}</div>` : ""}
+    ${item.completion_note ? `<div class="handover-completion"><strong>${item.item_type === "Pendência" ? "Conclusão" : "Resolução"} por ${escapeHtml(item.completed_by)} · ${formatInstructorDate(item.completed_at)}</strong>${escapeHtml(item.completion_note)}</div>` : ""}
     ${actions.length ? `<div class="handover-card-actions">${actions.join("")}</div>` : ""}
   </article>`;
 }
@@ -1328,14 +1332,18 @@ async function saveHandover(event) {
 }
 
 async function transitionHandover(id, action) {
-  const labels = { complete: "Informe como a pendência foi concluída:", reopen: "Informe por que a pendência será reaberta:", comment: "Digite o comentário:", assign: "Informe o responsável (deixe vazio para remover):" };
+  const labels = {
+    complete: "Informe como a pendência foi concluída:", reopen: "Informe por que a pendência será reaberta:",
+    resolve: "Informe como esta informação foi resolvida:", unresolve: "Informe por que está reabrindo esta informação:",
+    comment: "Digite o comentário:", assign: "Informe o responsável (deixe vazio para remover):",
+  };
   let note = "";
   let assignee = "";
   if (labels[action]) {
     const value = window.prompt(labels[action]);
     if (value === null) return;
     if (action === "assign") assignee = value.trim(); else note = value.trim();
-    if (["complete", "reopen", "comment"].includes(action) && !note) { toast("A observação é obrigatória."); return; }
+    if (["complete", "reopen", "resolve", "unresolve", "comment"].includes(action) && !note) { toast("A observação é obrigatória."); return; }
   }
   try {
     const payload = { action, note, assignee };
@@ -1347,7 +1355,11 @@ async function transitionHandover(id, action) {
     }
     await handoverRequest(`/${id}/actions`, { method: "POST", body: JSON.stringify(payload) });
     await loadHandovers();
-    toast({ assume: "Pendência assumida.", complete: "Pendência concluída.", reopen: "Pendência reaberta.", assign: "Responsável atualizado.", comment: "Comentário registrado." }[action]);
+    toast({
+      assume: "Pendência assumida.", complete: "Pendência concluída.", reopen: "Pendência reaberta.",
+      resolve: "Informação marcada como resolvida.", unresolve: "Informação reaberta.",
+      assign: "Responsável atualizado.", comment: "Comentário registrado.",
+    }[action]);
   } catch (error) { toast(error.message); }
 }
 

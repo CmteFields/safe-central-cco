@@ -837,7 +837,7 @@ class WSGITests(unittest.TestCase):
         self.assertIn(b'styles.css?v=20260821-2', body)
         self.assertIn(b"public-knowledge-index.js?v=20260731-6", body)
         self.assertIn(b"instrutores.css?v=20260827-3", body)
-        self.assertIn(b"app.js?v=20260827-3", body)
+        self.assertIn(b"app.js?v=20260828-1", body)
         self.assertIn(b'id="newSearchButton"', body)
         self.assertIn(b'id="toggleRecentSearch"', body)
         self.assertIn(b'id="recentSearch"', body)
@@ -1555,6 +1555,50 @@ class HandoverWorkflowTests(unittest.TestCase):
 
                 with self.assertRaises(LookupError):
                     server.handover_item_timeline(999999)
+
+    def test_information_items_can_be_resolved_and_reopened_but_not_completed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "handovers.db"
+            legacy = {**server.LEGACY_DB_PATHS, "handovers": Path(directory) / "missing.db"}
+            with patch.object(server, "HANDOVERS_DB_PATH", database), patch.object(server, "LEGACY_DB_PATHS", legacy):
+                info = server.save_handover({
+                    "origin_shift": "T1", "target_shift": "T2", "base_scope": "Geral",
+                    "item_type": "Informação", "message": "Verificar disponibilidade de instrutores",
+                    "priority": "Normal",
+                }, actor=self.operator)
+
+                with self.assertRaisesRegex(ValueError, "só podem ser comentadas ou marcadas como resolvidas"):
+                    server.transition_handover_item(info["id"], {"action": "assume"}, self.operator)
+
+                with self.assertRaisesRegex(ValueError, "Registre uma observação"):
+                    server.transition_handover_item(info["id"], {"action": "resolve"}, self.operator)
+
+                resolved = server.transition_handover_item(info["id"], {
+                    "action": "resolve", "note": "Confirmado com os dois instrutores.",
+                }, self.operator)
+                self.assertEqual(resolved["completed_by"], self.operator["display_name"])
+                self.assertEqual(resolved["completion_note"], "Confirmado com os dois instrutores.")
+                self.assertIsNotNone(resolved["completed_at"])
+
+                with self.assertRaisesRegex(ValueError, "já foi marcada como resolvida"):
+                    server.transition_handover_item(info["id"], {
+                        "action": "resolve", "note": "De novo.",
+                    }, self.operator)
+
+                reopened = server.transition_handover_item(info["id"], {
+                    "action": "unresolve", "note": "Precisa reconfirmar após mudança de escala.",
+                }, self.operator)
+                self.assertEqual(reopened["completion_note"], "")
+                self.assertIsNone(reopened["completed_at"])
+
+                pending = server.save_handover({
+                    "origin_shift": "T1", "target_shift": "T2", "base_scope": "Geral",
+                    "item_type": "Pendência", "message": "Trocar pneu", "priority": "Normal",
+                }, actor=self.operator)
+                with self.assertRaisesRegex(ValueError, "Use concluir ou reabrir"):
+                    server.transition_handover_item(pending["id"], {
+                        "action": "resolve", "note": "Tentativa indevida.",
+                    }, self.operator)
 
     def test_summary_is_scoped_to_the_active_cycle(self):
         with tempfile.TemporaryDirectory() as directory:
