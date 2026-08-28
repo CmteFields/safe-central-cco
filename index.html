@@ -341,12 +341,11 @@
       <div class="dialog-head"><div><p class="eyebrow">CONTINUIDADE OPERACIONAL</p><h2 id="handoverDialogTitle">Nova anotação da passagem</h2></div><button class="dialog-close" value="cancel" aria-label="Fechar">×</button></div>
       <input type="hidden" id="handoverId">
       <div class="form-grid">
-        <label>Turno de origem<select id="handoverOrigin" required><option value="T1">T1 · 08:00–14:00</option><option value="T2">T2 · 12:00–18:00</option><option value="T3">T3 · 18:00–20:00</option></select></label>
-        <label>Turno de destino<select id="handoverTarget" required><option value="T2">T2 · 12:00–18:00</option><option value="T3">T3 · 18:00–20:00</option><option value="T1">T1 · 08:00–14:00</option></select><small id="handoverRouteHint" class="handover-route-hint"></small></label>
+        <div class="handover-ticket-context"><small>Turno operacional atual</small><strong id="handoverTicketShift">—</strong><span>O ticket vale imediatamente para o turno atual. O destino será definido na passagem.</span></div>
         <label class="handover-base-field">Onde a ação deve acontecer?<select id="handoverBase" required><option value="" selected>Selecione a abrangência</option><option value="SBSJ">SBSJ · São José dos Campos</option><option value="SDAM">SDAM · Campo dos Amarais — Campinas</option><option value="Geral">Geral · Duas bases ou CCO</option></select><small>Classifique pela base responsável por executar a ação.</small></label>
         <label>Tipo<select id="handoverType" required><option>Pendência</option><option>Informação</option></select></label>
         <label>Prioridade<select id="handoverPriority" required><option>Normal</option><option>Alta</option><option>Crítica</option><option>Baixa</option></select></label>
-        <label>Responsável <span class="optional-label">(opcional)</span><input id="handoverAssignee" maxlength="100" placeholder="Nome do responsável"></label>
+        <label>Responsável<input id="handoverAssignee" maxlength="100" readonly aria-readonly="true"></label>
         <label class="wide">Mensagem / ação necessária<textarea id="handoverMessage" maxlength="2000" rows="5" required placeholder="Descreva objetivamente o que o próximo turno precisa verificar ou executar."></textarea></label>
       </div>
       <div class="dialog-error hidden" id="handoverFormError" role="alert"></div>

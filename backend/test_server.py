@@ -890,6 +890,10 @@ class WSGITests(unittest.TestCase):
         self.assertIn(b'id="handoverBase"', body)
         self.assertIn(b'id="handoverType"', body)
         self.assertIn(b'id="handoverAssignee"', body)
+        self.assertIn(b'id="handoverTicketShift"', body)
+        self.assertIn(b'id="handoverAssignee" maxlength="100" readonly', body)
+        self.assertNotIn(b'id="handoverOrigin"', body)
+        self.assertNotIn(b'id="handoverTarget"', body)
         self.assertIn("Uma única passagem para as duas bases".encode(), body)
         self.assertIn("INFORMAÇÕES NO CICLO".encode(), body)
         self.assertIn("CONCLUÍDAS NO CICLO".encode(), body)
@@ -1362,6 +1366,12 @@ class ConsolidatedStorageTests(unittest.TestCase):
 
 class HandoverWorkflowTests(unittest.TestCase):
     def setUp(self):
+        self.original_scheduled_handover_shift = server.scheduled_handover_shift
+        self.scheduled_shift_patch = patch.object(
+            server, "scheduled_handover_shift", lambda moment=None: "T1"
+        )
+        self.scheduled_shift_patch.start()
+        self.addCleanup(self.scheduled_shift_patch.stop)
         self.operator = {
             "id": 11,
             "username": "operador.teste",
@@ -1443,12 +1453,23 @@ class HandoverWorkflowTests(unittest.TestCase):
                 self.assertEqual(carried[0]["message"], "Resolver slot")
                 self.assertEqual(carried[0]["base_scope"], "SDAM")
                 self.assertNotIn(information["id"], [item["carried_from_id"] for item in draft["items"]])
+                active_messages = [item["message"] for item in result["active_tickets"]]
+                self.assertEqual(active_messages.count("Resolver slot"), 1)
+                self.assertIn("Escala já fechada", active_messages)
+                self.assertIn("Novo turno iniciado", active_messages)
+                self.assertEqual(result["active_ticket_summary"], {
+                    "pending": 1, "in_progress": 0, "information": 2, "total": 3,
+                })
                 server.transition_handover_item(carried[0]["id"], {
                     "action": "complete", "note": "Slot confirmado com o aluno.",
                 }, self.operator)
                 final = server.list_handover_cycles()
                 self.assertEqual(final["summary"]["pending"], 0)
                 self.assertEqual(final["summary"]["completed"], 1)
+                self.assertEqual(
+                    {item["message"] for item in final["active_tickets"]},
+                    {"Escala já fechada", "Novo turno iniciado"},
+                )
 
     def test_assume_is_rejected_once_item_is_no_longer_pendente(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1493,6 +1514,13 @@ class HandoverWorkflowTests(unittest.TestCase):
                 self.assertEqual(carried["carry_count"], 1)
                 self.assertEqual(historical["carry_count"], 1)
                 self.assertEqual(carried["first_created_at"], original["created_at"])
+                projected = [
+                    item for item in result["active_tickets"]
+                    if item["ticket_id"] == original["id"]
+                ]
+                self.assertEqual(len(projected), 1)
+                self.assertEqual(projected[0]["id"], carried["id"])
+                self.assertEqual(projected[0]["cycle_state"], "draft")
 
     def test_shift_mismatch_flag_reflects_clock_vs_last_received(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1566,6 +1594,8 @@ class HandoverWorkflowTests(unittest.TestCase):
                     "item_type": "Informação", "message": "Verificar disponibilidade de instrutores",
                     "priority": "Normal",
                 }, actor=self.operator)
+                initial = server.list_handover_cycles()
+                self.assertEqual([item["id"] for item in initial["active_tickets"]], [info["id"]])
 
                 with self.assertRaisesRegex(ValueError, "só podem ser comentadas ou marcadas como resolvidas"):
                     server.transition_handover_item(info["id"], {"action": "assume"}, self.operator)
@@ -1579,6 +1609,7 @@ class HandoverWorkflowTests(unittest.TestCase):
                 self.assertEqual(resolved["completed_by"], self.operator["display_name"])
                 self.assertEqual(resolved["completion_note"], "Confirmado com os dois instrutores.")
                 self.assertIsNotNone(resolved["completed_at"])
+                self.assertEqual(server.list_handover_cycles()["active_tickets"], [])
 
                 with self.assertRaisesRegex(ValueError, "já foi marcada como resolvida"):
                     server.transition_handover_item(info["id"], {
@@ -1590,6 +1621,8 @@ class HandoverWorkflowTests(unittest.TestCase):
                 }, self.operator)
                 self.assertEqual(reopened["completion_note"], "")
                 self.assertIsNone(reopened["completed_at"])
+                reopened_projection = server.list_handover_cycles()["active_tickets"]
+                self.assertEqual([item["id"] for item in reopened_projection], [info["id"]])
 
                 pending = server.save_handover({
                     "origin_shift": "T1", "target_shift": "T2", "base_scope": "Geral",
@@ -1599,6 +1632,74 @@ class HandoverWorkflowTests(unittest.TestCase):
                     server.transition_handover_item(pending["id"], {
                         "action": "resolve", "note": "Tentativa indevida.",
                     }, self.operator)
+
+    def test_open_information_remains_projected_after_its_cycle_leaves_history_window(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "handovers.db"
+            legacy = {**server.LEGACY_DB_PATHS, "handovers": Path(directory) / "missing.db"}
+            with patch.object(server, "HANDOVERS_DB_PATH", database), patch.object(server, "LEGACY_DB_PATHS", legacy):
+                original = server.save_handover({
+                    "origin_shift": "T1", "target_shift": "T2", "base_scope": "SBSJ",
+                    "item_type": "Informação", "message": "Acompanhar manutenção prolongada",
+                    "priority": "Alta",
+                }, actor=self.operator)
+                server.publish_handover_cycle(original["cycle_id"], self.operator)
+                server.receive_handover_cycle(original["cycle_id"], self.operator)
+                origin = "T2"
+                for index in range(server.HANDOVER_HISTORY_LIMIT + 2):
+                    target = server.next_handover_shift(origin)
+                    helper = server.save_handover({
+                        "origin_shift": origin, "target_shift": target, "base_scope": "Geral",
+                        "item_type": "Informação", "message": f"Ciclo auxiliar {index}",
+                        "priority": "Baixa",
+                    }, actor=self.operator)
+                    server.transition_handover_item(helper["id"], {
+                        "action": "resolve", "note": "Ciclo encerrado para o teste.",
+                    }, self.operator)
+                    server.publish_handover_cycle(helper["cycle_id"], self.operator)
+                    server.receive_handover_cycle(helper["cycle_id"], self.operator)
+                    origin = target
+
+                result = server.list_handover_cycles()
+                returned_cycle_ids = {cycle["id"] for cycle in result["cycles"]}
+                self.assertNotIn(original["cycle_id"], returned_cycle_ids)
+                self.assertEqual(len(result["active_tickets"]), 1)
+                self.assertEqual(result["active_tickets"][0]["id"], original["id"])
+                self.assertEqual(result["active_ticket_summary"]["total"], 1)
+
+    def test_new_ticket_uses_operational_shift_and_authenticated_operator(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "handovers.db"
+            legacy = {**server.LEGACY_DB_PATHS, "handovers": Path(directory) / "missing.db"}
+            with patch.object(server, "HANDOVERS_DB_PATH", database), patch.object(server, "LEGACY_DB_PATHS", legacy):
+                ticket = server.save_handover({
+                    "origin_shift": "T3", "target_shift": "T1", "base_scope": "Geral",
+                    "item_type": "Pendência", "message": "Conferir escala",
+                    "priority": "Normal", "assignee": "Nome informado pelo navegador",
+                }, actor=self.operator)
+
+                self.assertEqual(ticket["origin_shift"], "T1")
+                self.assertEqual(ticket["target_shift"], "T2")
+                self.assertEqual(ticket["assignee"], self.operator["display_name"])
+
+                updated_cycle = server.update_handover_cycle_target(
+                    ticket["cycle_id"], "T3", self.operator
+                )
+                self.assertEqual(updated_cycle["target_shift"], "T3")
+                self.assertEqual(updated_cycle["route_kind"], "skip")
+                self.assertEqual(updated_cycle["skipped_shifts"], ["T2"])
+                self.assertTrue(all(
+                    item["target_shift"] == "T3" for item in updated_cycle["items"]
+                ))
+
+                second = server.save_handover({
+                    "base_scope": "SBSJ", "item_type": "Informação",
+                    "message": "Ticket adicional", "priority": "Baixa",
+                }, actor=self.operator)
+                self.assertEqual(second["cycle_id"], ticket["cycle_id"])
+                self.assertEqual(second["origin_shift"], "T1")
+                self.assertEqual(second["target_shift"], "T3")
+                self.assertEqual(second["assignee"], self.operator["display_name"])
 
     def test_summary_is_scoped_to_the_active_cycle(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1670,7 +1771,14 @@ class HandoverWorkflowTests(unittest.TestCase):
                 self.assertEqual(stored_original["status"], "Concluída")
                 self.assertEqual(stored_original["completion_note"], "Abastecimento confirmado.")
                 self.assertEqual(event["action"], "Pendência reaberta no ciclo atual")
-                self.assertEqual(server.list_handover_cycles()["summary"]["pending"], 1)
+                current_state = server.list_handover_cycles()
+                self.assertEqual(current_state["summary"]["pending"], 1)
+                projected = [
+                    item for item in current_state["active_tickets"]
+                    if item["ticket_id"] == original["id"]
+                ]
+                self.assertEqual(len(projected), 1)
+                self.assertEqual(projected[0]["id"], reopened["id"])
 
     def test_operational_shift_follows_received_destination(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1692,12 +1800,13 @@ class HandoverWorkflowTests(unittest.TestCase):
                 self.assertEqual(state["suggested_route"], {
                     "origin_shift": "T2", "target_shift": "T3",
                 })
-                with self.assertRaisesRegex(ValueError, "turno operacional atual é T2"):
-                    server.save_handover({
-                        "origin_shift": "T1", "target_shift": "T3", "base_scope": "Geral",
-                        "item_type": "Informação", "message": "Origem incorreta",
-                        "priority": "Normal",
-                    }, actor=self.operator)
+                current = server.save_handover({
+                    "origin_shift": "T1", "target_shift": "T1", "base_scope": "Geral",
+                    "item_type": "Informação", "message": "Ticket do turno atual",
+                    "priority": "Normal",
+                }, actor=self.operator)
+                self.assertEqual(current["origin_shift"], "T2")
+                self.assertEqual(current["target_shift"], "T3")
 
     def test_skipping_a_shift_is_allowed_and_audited(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1716,6 +1825,7 @@ class HandoverWorkflowTests(unittest.TestCase):
                     "item_type": "Pendência", "message": "Passagem direta para o T1",
                     "priority": "Alta",
                 }, actor=self.operator)
+                server.update_handover_cycle_target(skipped["cycle_id"], "T1", self.operator)
 
                 state = server.list_handover_cycles()
                 cycle = next(item for item in state["cycles"] if item["id"] == skipped["cycle_id"])
@@ -1774,18 +1884,21 @@ class HandoverWorkflowTests(unittest.TestCase):
                 self.assertEqual(carried[0]["carried_from_id"], first["id"])
 
     def test_schedule_fallback_uses_operational_utc_minus_three(self):
-        self.assertEqual(
-            server.scheduled_handover_shift(datetime(2026, 8, 22, 13, tzinfo=timezone.utc)),
-            "T1",
-        )
-        self.assertEqual(
-            server.scheduled_handover_shift(datetime(2026, 8, 22, 18, tzinfo=timezone.utc)),
-            "T2",
-        )
-        self.assertEqual(
-            server.scheduled_handover_shift(datetime(2026, 8, 22, 22, tzinfo=timezone.utc)),
-            "T3",
-        )
+        with patch.object(
+            server, "scheduled_handover_shift", self.original_scheduled_handover_shift
+        ):
+            self.assertEqual(
+                server.scheduled_handover_shift(datetime(2026, 8, 22, 13, tzinfo=timezone.utc)),
+                "T1",
+            )
+            self.assertEqual(
+                server.scheduled_handover_shift(datetime(2026, 8, 22, 18, tzinfo=timezone.utc)),
+                "T2",
+            )
+            self.assertEqual(
+                server.scheduled_handover_shift(datetime(2026, 8, 22, 22, tzinfo=timezone.utc)),
+                "T3",
+            )
 
 
 class ReportStorageTests(unittest.TestCase):

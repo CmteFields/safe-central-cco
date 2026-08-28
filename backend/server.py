@@ -2036,10 +2036,13 @@ def list_handover_cycles() -> dict[str, Any]:
                 cycle_ids,
             ).fetchall()
         latest_rows = connection.execute(
-            """SELECT h.* FROM handovers h JOIN (
+            """SELECT h.*, c.state AS cycle_state,
+               c.operation_date AS cycle_operation_date
+               FROM handovers h JOIN (
                SELECT COALESCE(root_item_id, id) AS root_id, MAX(id) AS latest_id
                FROM handovers GROUP BY COALESCE(root_item_id, id)
-               ) latest ON latest.latest_id=h.id"""
+               ) latest ON latest.latest_id=h.id
+               JOIN handover_cycles c ON c.id=h.cycle_id"""
         ).fetchall()
         root_stat_rows = connection.execute(
             """SELECT COALESCE(root_item_id, id) AS root_id, COUNT(*) AS occurrence_count,
@@ -2061,6 +2064,36 @@ def list_handover_cycles() -> dict[str, Any]:
         item["carry_count"] = max(0, int(stats["occurrence_count"]) - 1) if stats else 0
         item["first_created_at"] = stats["first_created_at"] if stats else row["created_at"]
         items_by_cycle.setdefault(int(row["cycle_id"]), []).append(item)
+    active_tickets: list[dict[str, Any]] = []
+    for row in latest_rows:
+        is_open_pending = (
+            row["item_type"] == "Pendência"
+            and row["status"] in {"Pendente", "Em andamento"}
+        )
+        is_open_information = (
+            row["item_type"] == "Informação"
+            and not row["completed_at"]
+        )
+        if not (is_open_pending or is_open_information):
+            continue
+        item = handover_dict(row)
+        root_id = int(row["root_item_id"] or row["id"])
+        stats = root_stats.get(root_id)
+        item["is_latest_root"] = True
+        item["ticket_id"] = root_id
+        item["carry_count"] = max(0, int(stats["occurrence_count"]) - 1) if stats else 0
+        item["first_created_at"] = stats["first_created_at"] if stats else row["created_at"]
+        item["cycle_state"] = row["cycle_state"]
+        item["cycle_operation_date"] = row["cycle_operation_date"]
+        active_tickets.append(item)
+    base_rank = {"Geral": 0, "SDAM": 1, "SBSJ": 2}
+    priority_rank = {"Crítica": 0, "Alta": 1, "Normal": 2, "Baixa": 3}
+    active_tickets.sort(key=lambda item: (
+        base_rank.get(str(item["base_scope"]), 9),
+        priority_rank.get(str(item["priority"]), 9),
+        str(item["first_created_at"]),
+        int(item["id"]),
+    ))
     events_by_cycle: dict[int, list[dict[str, Any]]] = {}
     for row in event_rows:
         event = dict(row)
@@ -2104,9 +2137,25 @@ def list_handover_cycles() -> dict[str, Any]:
         "completed": sum(row["status"] == "Concluída" and row["item_type"] == "Pendência" for row in active_rows),
         "information": sum(row["item_type"] == "Informação" for row in active_rows),
     }
+    active_ticket_summary = {
+        "pending": sum(
+            item["item_type"] == "Pendência" and item["status"] == "Pendente"
+            for item in active_tickets
+        ),
+        "in_progress": sum(
+            item["item_type"] == "Pendência" and item["status"] == "Em andamento"
+            for item in active_tickets
+        ),
+        "information": sum(
+            item["item_type"] == "Informação" for item in active_tickets
+        ),
+        "total": len(active_tickets),
+    }
     return {
         "cycles": cycles,
         "summary": summary,
+        "active_tickets": active_tickets,
+        "active_ticket_summary": active_ticket_summary,
         "shifts": SHIFTS,
         "active_cycle_id": active_cycle_id,
         "history_total": max(0, total_cycles - (1 if active_cycle_id is not None else 0)),
@@ -2137,12 +2186,26 @@ def save_handover(
     actor: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     initialize_handovers_db()
-    values = validate_handover(data)
     timestamp = now_iso()
-    origin, target, message, priority, base_scope, item_type, assignee = values
     username, author = handover_actor(actor, data)
     with HANDOVERS_LOCK, handovers_connection() as connection:
         if handover_id is None:
+            draft = connection.execute(
+                "SELECT * FROM handover_cycles WHERE state='draft' ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            if draft:
+                origin, target = str(draft["origin_shift"]), str(draft["target_shift"])
+            else:
+                operational = handover_operational_state(connection)
+                origin = str(operational["current_shift"])
+                target = str(operational["next_shift"])
+            values = validate_handover({
+                **data,
+                "origin_shift": origin,
+                "target_shift": target,
+                "assignee": author,
+            })
+            origin, target, message, priority, base_scope, item_type, assignee = values
             cycle = ensure_draft_handover_cycle(connection, origin, target, actor)
             status = "Pendente" if item_type == "Pendência" else "Informação"
             cursor = connection.execute(
@@ -2180,8 +2243,13 @@ def save_handover(
                 raise ValueError("Após a publicação, o conteúdo original não pode ser alterado.")
             if int(current["carried_from_id"] or 0):
                 raise ValueError("Pendências carregadas mantêm o texto original; use comentários para complementar.")
-            if current["origin_shift"] != origin or current["target_shift"] != target:
-                raise ValueError("Os turnos da passagem em elaboração não podem ser alterados por item.")
+            values = validate_handover({
+                **data,
+                "origin_shift": current["origin_shift"],
+                "target_shift": current["target_shift"],
+                "assignee": current["assignee"],
+            })
+            origin, target, message, priority, base_scope, item_type, assignee = values
             status = "Pendente" if item_type == "Pendência" else "Informação"
             cursor = connection.execute(
                 """UPDATE handovers SET message=?, priority=?, status=?, base_scope=?,
@@ -2290,6 +2358,53 @@ def cancel_handover_cycle(cycle_id: int, actor: dict[str, Any]) -> dict[str, Any
     )
 
 
+def update_handover_cycle_target(
+    cycle_id: int, target_shift: str, actor: dict[str, Any]
+) -> dict[str, Any]:
+    initialize_handovers_db()
+    target = str(target_shift).strip().upper()
+    if target not in SHIFTS:
+        raise ValueError("Selecione um turno de destino válido.")
+    with HANDOVERS_LOCK, handovers_connection() as connection:
+        cycle = connection.execute(
+            "SELECT * FROM handover_cycles WHERE id=?", (cycle_id,)
+        ).fetchone()
+        if not cycle:
+            raise LookupError("Passagem de turno não encontrada.")
+        if cycle["state"] != "draft":
+            raise ValueError("O destino só pode ser alterado enquanto a passagem está em elaboração.")
+        origin = str(cycle["origin_shift"])
+        if target == origin:
+            raise ValueError("O destino deve ser diferente do turno atual.")
+        previous_target = str(cycle["target_shift"])
+        if target != previous_target:
+            timestamp = now_iso()
+            skipped = skipped_handover_shifts(origin, target)
+            connection.execute(
+                "UPDATE handover_cycles SET target_shift=?, updated_at=? WHERE id=?",
+                (target, timestamp, cycle_id),
+            )
+            connection.execute(
+                "UPDATE handovers SET target_shift=?, updated_at=? WHERE cycle_id=?",
+                (target, timestamp, cycle_id),
+            )
+            record_handover_event(
+                connection, cycle_id,
+                "Salto de turno registrado" if skipped else "Destino da passagem alterado",
+                actor,
+                details={
+                    "origin_shift": origin,
+                    "previous_target_shift": previous_target,
+                    "target_shift": target,
+                    "route_kind": "skip" if skipped else "sequential",
+                    "skipped_shifts": skipped,
+                },
+            )
+    return next(
+        item for item in list_handover_cycles()["cycles"] if item["id"] == cycle_id
+    )
+
+
 def transition_handover_item(
     handover_id: int, data: dict[str, Any], actor: dict[str, Any]
 ) -> dict[str, Any]:
@@ -2350,12 +2465,9 @@ def transition_handover_item(
                 "SELECT * FROM handover_cycles WHERE state='draft' ORDER BY id DESC LIMIT 1"
             ).fetchone()
             if not draft:
-                origin = str(data.get("origin_shift", "")).strip().upper()
-                target = str(data.get("target_shift", "")).strip().upper()
-                if origin not in SHIFTS or target not in SHIFTS or origin == target:
-                    raise ValueError(
-                        "Informe a rota do turno atual para reabrir esta pendência no ciclo ativo."
-                    )
+                operational = handover_operational_state(connection)
+                origin = str(operational["current_shift"])
+                target = str(operational["next_shift"])
                 draft = ensure_draft_handover_cycle(connection, origin, target, actor)
             if int(draft["id"]) != int(item["cycle_id"]):
                 cursor = connection.execute(
@@ -5281,7 +5393,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(201, save_handover(data, actor=user))
                 return
             handover_cycle_action = re.fullmatch(
-                r"/api/handovers/cycles/(\d+)/(publish|receive|cancel)", self.path
+                r"/api/handovers/cycles/(\d+)/(publish|receive|cancel|target)", self.path
             )
             if handover_cycle_action:
                 if user["role"] not in {"admin", "supervisor", "operator"}:
@@ -5292,6 +5404,8 @@ class Handler(BaseHTTPRequestHandler):
                     saved = publish_handover_cycle(cycle_id, user)
                 elif action == "receive":
                     saved = receive_handover_cycle(cycle_id, user)
+                elif action == "target":
+                    saved = update_handover_cycle_target(cycle_id, str(data.get("target_shift", "")), user)
                 else:
                     saved = cancel_handover_cycle(cycle_id, user)
                 self.send_json(200, saved)

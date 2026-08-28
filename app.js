@@ -158,13 +158,14 @@ let operationalBases = [];
 let basesPromise = null;
 let handovers = [];
 let handoverSummary = { pending: 0, in_progress: 0, completed: 0, information: 0 };
+let handoverActiveTickets = [];
+let handoverActiveTicketSummary = { pending: 0, in_progress: 0, information: 0, total: 0 };
 let handoverActiveCycleId = null;
 let handoverHistoryTotal = 0;
 let handoversLoaded = false;
 let handoverOperationalShift = null;
 let handoverOperationalShiftScheduled = null;
 let handoverOperationalShiftMismatch = false;
-let handoverSuggestedRoute = null;
 let handoverDraftCycleId = null;
 let handoverAwaitingReceiptCycleId = null;
 const HANDOVER_AGING_THRESHOLDS = {
@@ -1011,36 +1012,8 @@ async function handoverRequest(path = "", options = {}) {
   return data;
 }
 
-function currentHandoverRoute() {
-  if (handoverSuggestedRoute?.origin_shift && handoverSuggestedRoute?.target_shift) {
-    return { origin: handoverSuggestedRoute.origin_shift, target: handoverSuggestedRoute.target_shift };
-  }
-  const now = new Date();
-  const minutes = now.getHours() * 60 + now.getMinutes();
-  if (minutes < 14 * 60) return { origin: "T1", target: "T2" };
-  if (minutes < 18 * 60) return { origin: "T2", target: "T3" };
-  return { origin: "T3", target: "T1" };
-}
-
 function nextHandoverShift(shift) {
   return { T1: "T2", T2: "T3", T3: "T1" }[shift] || "";
-}
-
-function skippedHandoverShift(origin, target) {
-  const expected = nextHandoverShift(origin);
-  return expected && target !== expected ? expected : "";
-}
-
-function updateHandoverRouteHint() {
-  const origin = $("#handoverOrigin").value;
-  const target = $("#handoverTarget").value;
-  const skipped = skippedHandoverShift(origin, target);
-  const hint = $("#handoverRouteHint");
-  if (!hint) return;
-  hint.classList.toggle("route-skip", Boolean(skipped));
-  hint.textContent = skipped
-    ? `Salto permitido: ${skipped} será pulado e ficará registrado na auditoria.`
-    : `Sequência normal: ${origin} → ${target}.`;
 }
 
 function findHandoverItem(id) {
@@ -1145,11 +1118,49 @@ function handoverBaseSection(base, cycle, { history = false, searchTerm = "" } =
   return `<section class="handover-base-section base-${base.toLowerCase()}"><div class="handover-base-head"><div><strong>${base}</strong><small>${baseDescriptions[base]}</small></div><span>${items.length}</span></div>${content || '<div class="handover-empty">Nenhuma anotação para esta seção.</div>'}</section>`;
 }
 
+function handoverActiveTicketSection(base, searchTerm = "") {
+  const baseDescriptions = {
+    Geral: "Duas bases ou CCO",
+    SDAM: "Campo dos Amarais · Campinas",
+    SBSJ: "São José dos Campos",
+  };
+  const items = handoverActiveTickets
+    .filter(item => item.base_scope === base && matchesHandoverSearch(item, searchTerm));
+  const pending = sortHandoverOpenItems(items.filter(item => item.item_type === "Pendência"));
+  const information = [...items.filter(item => item.item_type === "Informação")].sort((a, b) => {
+    const priorityDiff = (HANDOVER_PRIORITY_RANK[a.priority] ?? 9) - (HANDOVER_PRIORITY_RANK[b.priority] ?? 9);
+    if (priorityDiff) return priorityDiff;
+    return new Date(a.first_created_at || a.created_at) - new Date(b.first_created_at || b.created_at);
+  });
+  const renderItems = values => values.map(item => handoverCard(item, {
+    state: item.cycle_state || "received",
+  })).join("");
+  const content = [
+    pending.length ? `<div class="handover-item-group handover-open-group"><h4>Pendências abertas<span>${pending.length}</span></h4>${renderItems(pending)}</div>` : "",
+    information.length ? `<div class="handover-item-group handover-information-group"><h4>Informações abertas<span>${information.length}</span></h4>${renderItems(information)}</div>` : "",
+  ].filter(Boolean).join("");
+  return `<section class="handover-base-section base-${base.toLowerCase()}"><div class="handover-base-head"><div><strong>${base}</strong><small>${baseDescriptions[base]}</small></div><span>${items.length}</span></div>${content || '<div class="handover-empty">Nenhum ticket ativo nesta seção.</div>'}</section>`;
+}
+
+function handoverActiveTicketPanel(searchTerm = "") {
+  const visibleCount = handoverActiveTickets.filter(item => matchesHandoverSearch(item, searchTerm)).length;
+  return `<section class="handover-view-section handover-active-tickets-section">
+    <div class="handover-section-heading"><div><span>ACOMPANHAMENTO CONTÍNUO</span><h2>Tickets ativos</h2></div><small>Permanecem aqui até a conclusão ou resolução, mesmo após a troca de turno.</small></div>
+    <div class="handover-active-ticket-shell">
+      <div class="handover-active-ticket-head"><strong>${visibleCount} ticket(s) ativo(s)</strong><span>O filtro de destino não oculta esta fila.</span></div>
+      <div class="handover-base-grid">${["Geral", "SDAM", "SBSJ"].map(base => handoverActiveTicketSection(base, searchTerm)).join("")}</div>
+    </div>
+  </section>`;
+}
+
 function handoverCycle(cycle, { expanded = false, history = false, searchTerm = "" } = {}) {
   const canOperate = hasRole("admin", "supervisor", "operator");
   const bases = ["Geral", "SDAM", "SBSJ"];
+  const targetControl = cycle.state === "draft" && canOperate
+    ? `<label class="handover-cycle-target">Destino da passagem<select data-handover-cycle-target="${cycle.id}">${["T1", "T2", "T3"].filter(shift => shift !== cycle.origin_shift).map(shift => `<option value="${shift}"${shift === cycle.target_shift ? " selected" : ""}>${shift}${shift === nextHandoverShift(cycle.origin_shift) ? " · próximo" : " · pular turno"}</option>`).join("")}</select></label>`
+    : "";
   const controls = cycle.state === "draft" && canOperate
-    ? `<button data-handover-cancel="${cycle.id}">Encerrar rascunho</button><button class="primary-action" data-handover-publish="${cycle.id}">Publicar passagem</button>`
+    ? `${targetControl}<button data-handover-cancel="${cycle.id}">Encerrar rascunho</button><button class="primary-action" data-handover-publish="${cycle.id}">Publicar passagem</button>`
     : cycle.state === "awaiting_receipt" && canOperate
       ? `<button class="primary-action" data-handover-receive="${cycle.id}">Confirmar recebimento</button>` : "";
   const body = `<div class="handover-base-grid">${bases.map(base => handoverBaseSection(base, cycle, { history, searchTerm })).join("")}</div>${handoverEvents(cycle)}`;
@@ -1172,6 +1183,7 @@ function bindHandoverActions() {
   document.querySelectorAll("[data-handover-publish]").forEach(button => button.addEventListener("click", () => publishHandover(Number(button.dataset.handoverPublish))));
   document.querySelectorAll("[data-handover-receive]").forEach(button => button.addEventListener("click", () => receiveHandover(Number(button.dataset.handoverReceive))));
   document.querySelectorAll("[data-handover-cancel]").forEach(button => button.addEventListener("click", () => cancelHandover(Number(button.dataset.handoverCancel))));
+  document.querySelectorAll("[data-handover-cycle-target]").forEach(select => select.addEventListener("change", () => updateHandoverCycleTarget(Number(select.dataset.handoverCycleTarget), select.value)));
   document.querySelectorAll("[data-handover-timeline]").forEach(button => button.addEventListener("click", () => openHandoverTimelineDialog(Number(button.dataset.handoverTimeline))));
 }
 
@@ -1215,7 +1227,7 @@ function renderHandovers() {
     addButton.disabled = Boolean(awaitingReceipt);
     addButton.textContent = awaitingReceipt
       ? "Aguardando recebimento"
-      : draft ? "+ Nova anotação" : "Iniciar nova passagem";
+      : "+ Novo ticket";
   }
   if ($("#handoverCurrentShift")) {
     $("#handoverCurrentShift").textContent = handoverOperationalShift || "—";
@@ -1231,15 +1243,16 @@ function renderHandovers() {
   $("#handoverProgressCount").textContent = handoverSummary.in_progress;
   $("#handoverInfoCount").textContent = handoverSummary.information;
   $("#handoverDoneCount").textContent = handoverSummary.completed;
-  const openCount = handoverSummary.pending + handoverSummary.in_progress;
+  const openCount = handoverActiveTicketSummary.total;
   $("#handoverNavCount").textContent = openCount;
   updateNotificationBadge();
+  const activeTickets = handoverActiveTicketPanel(searchTerm);
   const current = `<section class="handover-view-section handover-current-section"><div class="handover-section-heading"><div><span>AGORA</span><h2>Passagem atual</h2></div><small>Os indicadores acima consideram somente este ciclo.</small></div>${active ? handoverCycle(active, { expanded: true, searchTerm }) : '<div class="table-message">Nenhuma passagem atual para o destino selecionado.</div>'}</section>`;
   const historyCount = target ? history.length : handoverHistoryTotal;
   const archived = history.length
     ? history.map(cycle => handoverCycle(cycle, { history: true, searchTerm })).join("")
     : '<div class="table-message">Nenhuma passagem anterior para o destino selecionado.</div>';
-  $("#handoverBoard").innerHTML = `${current}<details class="handover-history"><summary><span><strong>Histórico de passagens</strong><small>Consulte ciclos anteriores sem misturá-los à operação atual.</small></span><b>${historyCount}</b></summary><div class="handover-history-list">${archived}</div></details>`;
+  $("#handoverBoard").innerHTML = `${activeTickets}${current}<details class="handover-history"><summary><span><strong>Histórico de passagens</strong><small>Consulte ciclos anteriores sem misturá-los à operação atual.</small></span><b>${historyCount}</b></summary><div class="handover-history-list">${archived}</div></details>`;
   bindHandoverActions();
 }
 
@@ -1248,12 +1261,15 @@ async function loadHandovers() {
     const data = await handoverRequest();
     handovers = data.cycles || [];
     handoverSummary = data.summary || handoverSummary;
+    handoverActiveTickets = data.active_tickets || [];
+    handoverActiveTicketSummary = data.active_ticket_summary || {
+      pending: 0, in_progress: 0, information: 0, total: handoverActiveTickets.length,
+    };
     handoverActiveCycleId = data.active_cycle_id ?? null;
     handoverHistoryTotal = data.history_total ?? Math.max(0, handovers.length - (handoverActiveCycleId ? 1 : 0));
     handoverOperationalShift = data.operational_shift || null;
     handoverOperationalShiftScheduled = data.operational_shift_scheduled || null;
     handoverOperationalShiftMismatch = Boolean(data.operational_shift_mismatch);
-    handoverSuggestedRoute = data.suggested_route || null;
     handoverDraftCycleId = data.draft_cycle_id ?? null;
     handoverAwaitingReceiptCycleId = data.awaiting_receipt_cycle_id ?? null;
     handoversLoaded = true;
@@ -1268,31 +1284,23 @@ function openHandoverDialog(item = null, cycle = null) {
   $("#handoverForm").reset();
   setDialogMessage("#handoverFormError");
   const activeDraft = handovers.find(value => value.state === "draft");
-  const route = activeDraft ? { origin: activeDraft.origin_shift, target: activeDraft.target_shift } : currentHandoverRoute();
   $("#handoverId").value = item?.id || "";
-  $("#handoverOrigin").value = item?.origin_shift || route.origin;
-  $("#handoverTarget").value = item?.target_shift || route.target;
+  $("#handoverTicketShift").textContent = item?.origin_shift || activeDraft?.origin_shift || handoverOperationalShift || "—";
   $("#handoverBase").value = item?.base_scope || "";
   $("#handoverType").value = item?.item_type || "Pendência";
   $("#handoverPriority").value = item?.priority || "Normal";
-  $("#handoverAssignee").value = item?.assignee || "";
+  $("#handoverAssignee").value = item?.assignee || currentUser?.display_name || "Operador autenticado";
   $("#handoverMessage").value = item?.message || "";
-  $("#handoverOrigin").disabled = true;
-  $("#handoverTarget").disabled = Boolean(activeDraft || item);
   $("#handoverDialogTitle").textContent = item
-    ? "Editar anotação"
-    : activeDraft
-      ? `Nova anotação · ${activeDraft.origin_shift} → ${activeDraft.target_shift}`
-      : `Iniciar passagem do ${route.origin}`;
+    ? "Editar ticket"
+    : `Novo ticket · ${activeDraft?.origin_shift || handoverOperationalShift || "turno atual"}`;
   $("#deleteHandover").classList.toggle("hidden", !item || cycle?.state !== "draft");
-  updateHandoverRouteHint();
   showFormDialog("#handoverDialog");
   setTimeout(() => $("#handoverMessage").focus(), 50);
 }
 
 function handoverPayload() {
   return {
-    origin_shift: $("#handoverOrigin").value, target_shift: $("#handoverTarget").value,
     base_scope: $("#handoverBase").value, item_type: $("#handoverType").value,
     priority: $("#handoverPriority").value, assignee: $("#handoverAssignee").value,
     message: $("#handoverMessage").value,
@@ -1326,7 +1334,7 @@ async function saveHandover(event) {
     await handoverRequest(id ? `/${id}` : "", { method: id ? "PUT" : "POST", body: JSON.stringify(payload) });
     $("#handoverDialog").close();
     await loadHandovers();
-    toast(id ? "Anotação atualizada." : "Anotação incluída na passagem em elaboração.");
+    toast(id ? "Ticket atualizado." : "Ticket criado para o turno atual.");
   } catch (error) { setDialogMessage("#handoverFormError", error.message); }
   finally { button.disabled = false; }
 }
@@ -1347,12 +1355,6 @@ async function transitionHandover(id, action) {
   }
   try {
     const payload = { action, note, assignee };
-    if (action === "reopen") {
-      const draft = handovers.find(cycle => cycle.state === "draft");
-      const route = draft || currentHandoverRoute();
-      payload.origin_shift = route.origin_shift || route.origin;
-      payload.target_shift = route.target_shift || route.target;
-    }
     await handoverRequest(`/${id}/actions`, { method: "POST", body: JSON.stringify(payload) });
     await loadHandovers();
     toast({
@@ -1367,6 +1369,16 @@ async function publishHandover(id) {
   if (!window.confirm("Publicar esta passagem? O conteúdo original não poderá mais ser editado.")) return;
   try { await handoverRequest(`/cycles/${id}/publish`, { method: "POST", body: "{}" }); await loadHandovers(); toast("Passagem publicada e aguardando recebimento."); }
   catch (error) { toast(error.message); }
+}
+
+async function updateHandoverCycleTarget(id, targetShift) {
+  try {
+    await handoverRequest(`/cycles/${id}/target`, {
+      method: "POST", body: JSON.stringify({ target_shift: targetShift }),
+    });
+    await loadHandovers();
+    toast("Destino da passagem atualizado.");
+  } catch (error) { toast(error.message); await loadHandovers(); }
 }
 
 async function receiveHandover(id) {
@@ -1439,7 +1451,7 @@ function reportCard(item) {
 }
 
 function updateNotificationBadge() {
-  const handoverCount = handoverSummary.pending + handoverSummary.in_progress;
+  const handoverCount = handoverActiveTicketSummary.total;
   const criticalReports = reports.filter(item => item.priority === "Crítica" && ["Aberto", "Em análise"].includes(item.status)).length;
   const total = handoverCount + criticalReports;
   $("#notificationCount").textContent = total > 99 ? "99+" : total;
@@ -1447,7 +1459,7 @@ function updateNotificationBadge() {
   $("#notificationButton").dataset.criticalReports = String(criticalReports);
   $("#notificationButton").setAttribute(
     "aria-label",
-    criticalReports ? `${criticalReports} report(s) crítico(s) e ${handoverCount} passagem(ns) pendente(s)` : "Abrir pendências da passagem de turno",
+    criticalReports ? `${criticalReports} report(s) crítico(s) e ${handoverCount} ticket(s) ativo(s)` : "Abrir tickets ativos da passagem de turno",
   );
 }
 
@@ -2328,7 +2340,6 @@ $("#addHandover").addEventListener("click", () => openHandoverDialog());
 $("#handoverShiftFilter").addEventListener("change", renderHandovers);
 $("#handoverSearch").addEventListener("input", renderHandovers);
 $("#handoverForm").addEventListener("submit", saveHandover);
-$("#handoverTarget").addEventListener("change", updateHandoverRouteHint);
 $("#deleteHandover").addEventListener("click", removeHandover);
 $("#addReport").addEventListener("click", () => openReportDialog());
 $("#reportTypeFilter").addEventListener("change", renderReports);
