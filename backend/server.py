@@ -72,7 +72,7 @@ LOCAL_MODEL = (
 )
 FALLBACK_MODEL = os.environ.get("GEMINI_FALLBACK_MODEL", "gemini-3.5-flash-lite")
 EXTERNAL_MODEL = os.environ.get("GEMINI_EXTERNAL_MODEL", "gemini-3.1-pro-preview")
-RELEASE_ID = os.environ.get("SAFE_CCO_RELEASE", "2026-08-28-active-tickets-cache-fix")
+RELEASE_ID = os.environ.get("SAFE_CCO_RELEASE", "2026-08-28-summary-and-stale-shift-fix")
 PORTAL_UPDATED_AT = os.environ.get("SAFE_CCO_UPDATED_AT", "").strip() or datetime.fromtimestamp(
     max(
         path.stat().st_mtime
@@ -208,6 +208,7 @@ HANDOVER_BASES = {"Geral", "SDAM", "SBSJ"}
 HANDOVER_ITEM_TYPES = {"Pendência", "Informação"}
 HANDOVER_CYCLE_STATES = {"draft", "awaiting_receipt", "received", "cancelled"}
 HANDOVER_HISTORY_LIMIT = 25
+STALE_ACTIVE_CYCLE_HOURS = 8
 REPORT_TYPES = {"discrepancy": "Discrepância", "question": "Indicação de pergunta"}
 REPORT_PRIORITIES = {"Baixa", "Normal", "Alta", "Crítica"}
 REPORT_STATUSES = {"Aberto", "Em análise", "Resolvido", "Descartado"}
@@ -1816,8 +1817,22 @@ def handover_operational_state(connection: sqlite3.Connection) -> dict[str, Any]
     else:
         current_shift = scheduled_handover_shift()
         source = "schedule_fallback"
+    active_is_stale = False
+    if active:
+        reference = str(active["updated_at"] or active["created_at"])
+        try:
+            reference_dt = datetime.fromisoformat(reference)
+            if reference_dt.tzinfo is None:
+                reference_dt = reference_dt.replace(tzinfo=timezone.utc)
+            age_hours = (datetime.now(timezone.utc) - reference_dt).total_seconds() / 3600
+            active_is_stale = age_hours >= STALE_ACTIVE_CYCLE_HOURS
+        except ValueError:
+            active_is_stale = False
     scheduled_shift = scheduled_handover_shift()
-    shift_mismatch = source == "last_received_cycle" and current_shift != scheduled_shift
+    shift_mismatch = (
+        (source == "last_received_cycle" and current_shift != scheduled_shift)
+        or (source == "active_cycle" and active_is_stale)
+    )
     return {
         "current_shift": current_shift,
         "next_shift": next_handover_shift(current_shift),
@@ -1827,6 +1842,7 @@ def handover_operational_state(connection: sqlite3.Connection) -> dict[str, Any]
         "last_received_cycle_id": int(latest_received["id"]) if latest_received else None,
         "scheduled_shift": scheduled_shift,
         "shift_mismatch": shift_mismatch,
+        "active_cycle_stale": active_is_stale,
     }
 
 
@@ -2127,15 +2143,17 @@ def list_handover_cycles() -> dict[str, Any]:
         cycle["skipped_shifts"] = skipped
         cycle["route_kind"] = "skip" if skipped else "sequential"
         cycles.append(cycle)
-    active_rows = [
+    active_cycle_rows = [
         row for row in latest_rows
         if active_cycle_id is not None and int(row["cycle_id"]) == active_cycle_id
     ]
     summary = {
-        "pending": sum(row["status"] == "Pendente" and row["item_type"] == "Pendência" for row in active_rows),
-        "in_progress": sum(row["status"] == "Em andamento" and row["item_type"] == "Pendência" for row in active_rows),
-        "completed": sum(row["status"] == "Concluída" and row["item_type"] == "Pendência" for row in active_rows),
-        "information": sum(row["item_type"] == "Informação" for row in active_rows),
+        "pending": sum(item["status"] == "Pendente" for item in active_tickets),
+        "in_progress": sum(item["status"] == "Em andamento" for item in active_tickets),
+        "completed": sum(
+            row["status"] == "Concluída" and row["item_type"] == "Pendência" for row in active_cycle_rows
+        ),
+        "information": sum(row["item_type"] == "Informação" for row in active_cycle_rows),
     }
     active_ticket_summary = {
         "pending": sum(
@@ -2163,6 +2181,7 @@ def list_handover_cycles() -> dict[str, Any]:
         "operational_shift_source": operational["source"],
         "operational_shift_scheduled": operational["scheduled_shift"],
         "operational_shift_mismatch": operational["shift_mismatch"],
+        "operational_shift_stale": operational["active_cycle_stale"],
         "suggested_route": {
             "origin_shift": operational["current_shift"],
             "target_shift": operational["next_shift"],

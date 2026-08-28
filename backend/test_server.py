@@ -3,7 +3,7 @@ import sqlite3
 import tempfile
 import unittest
 from contextlib import ExitStack
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from pathlib import Path
 from unittest.mock import patch
@@ -837,7 +837,7 @@ class WSGITests(unittest.TestCase):
         self.assertIn(b'styles.css?v=20260828-2', body)
         self.assertIn(b"public-knowledge-index.js?v=20260731-6", body)
         self.assertIn(b"instrutores.css?v=20260828-2", body)
-        self.assertIn(b"app.js?v=20260828-2", body)
+        self.assertIn(b"app.js?v=20260828-3", body)
         self.assertIn(b'id="newSearchButton"', body)
         self.assertIn(b'id="toggleRecentSearch"', body)
         self.assertIn(b'id="recentSearch"', body)
@@ -1583,6 +1583,57 @@ class HandoverWorkflowTests(unittest.TestCase):
 
                 with self.assertRaises(LookupError):
                     server.handover_item_timeline(999999)
+
+    def test_summary_pending_counts_items_stuck_in_cancelled_cycles(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "handovers.db"
+            legacy = {**server.LEGACY_DB_PATHS, "handovers": Path(directory) / "missing.db"}
+            with patch.object(server, "HANDOVERS_DB_PATH", database), patch.object(server, "LEGACY_DB_PATHS", legacy):
+                stuck = server.save_handover({
+                    "origin_shift": "T1", "target_shift": "T2", "base_scope": "Geral",
+                    "item_type": "Pendência", "message": "Item preso em rascunho cancelado",
+                    "priority": "Normal",
+                }, actor=self.operator)
+                server.cancel_handover_cycle(stuck["cycle_id"], self.operator)
+
+                other = server.save_handover({
+                    "origin_shift": "T1", "target_shift": "T2", "base_scope": "Geral",
+                    "item_type": "Pendência", "message": "Item novo e independente",
+                    "priority": "Normal",
+                }, actor=self.operator)
+
+                result = server.list_handover_cycles()
+                self.assertEqual(result["summary"]["pending"], 2)
+                ticket_ids = {item["ticket_id"] for item in result["active_tickets"]}
+                self.assertIn(stuck["id"], ticket_ids)
+                self.assertIn(other["id"], ticket_ids)
+
+    def test_active_cycle_flagged_stale_after_long_inactivity(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "handovers.db"
+            legacy = {**server.LEGACY_DB_PATHS, "handovers": Path(directory) / "missing.db"}
+            with patch.object(server, "HANDOVERS_DB_PATH", database), patch.object(server, "LEGACY_DB_PATHS", legacy):
+                item = server.save_handover({
+                    "origin_shift": "T1", "target_shift": "T2", "base_scope": "Geral",
+                    "item_type": "Informação", "message": "Turno iniciado", "priority": "Normal",
+                }, actor=self.operator)
+                result = server.list_handover_cycles()
+                self.assertFalse(result["operational_shift_mismatch"])
+                self.assertFalse(result["operational_shift_stale"])
+
+                stale_timestamp = (
+                    datetime.now(timezone.utc) - timedelta(hours=server.STALE_ACTIVE_CYCLE_HOURS + 1)
+                ).isoformat()
+                with server.handovers_connection() as connection:
+                    connection.execute(
+                        "UPDATE handover_cycles SET updated_at=? WHERE id=?",
+                        (stale_timestamp, item["cycle_id"]),
+                    )
+                    connection.commit()
+
+                result = server.list_handover_cycles()
+                self.assertTrue(result["operational_shift_mismatch"])
+                self.assertTrue(result["operational_shift_stale"])
 
     def test_information_items_can_be_resolved_and_reopened_but_not_completed(self):
         with tempfile.TemporaryDirectory() as directory:

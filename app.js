@@ -166,6 +166,7 @@ let handoversLoaded = false;
 let handoverOperationalShift = null;
 let handoverOperationalShiftScheduled = null;
 let handoverOperationalShiftMismatch = false;
+let handoverOperationalShiftStale = false;
 let handoverDraftCycleId = null;
 let handoverAwaitingReceiptCycleId = null;
 const HANDOVER_AGING_THRESHOLDS = {
@@ -1235,7 +1236,9 @@ function renderHandovers() {
   const warning = $("#handoverShiftWarning");
   if (warning) {
     warning.classList.toggle("hidden", !handoverOperationalShiftMismatch);
-    if (handoverOperationalShiftMismatch) {
+    if (handoverOperationalShiftMismatch && handoverOperationalShiftStale) {
+      warning.textContent = `⚠ Esta passagem está em elaboração ou aguardando recebimento há muito tempo — confira se o turno ${handoverOperationalShift} ainda está correto antes de continuar.`;
+    } else if (handoverOperationalShiftMismatch) {
       warning.textContent = `⚠ O relógio indica ${handoverOperationalShiftScheduled}, mas o sistema ainda está no ${handoverOperationalShift} — publique a passagem.`;
     }
   }
@@ -1270,6 +1273,7 @@ async function loadHandovers() {
     handoverOperationalShift = data.operational_shift || null;
     handoverOperationalShiftScheduled = data.operational_shift_scheduled || null;
     handoverOperationalShiftMismatch = Boolean(data.operational_shift_mismatch);
+    handoverOperationalShiftStale = Boolean(data.operational_shift_stale);
     handoverDraftCycleId = data.draft_cycle_id ?? null;
     handoverAwaitingReceiptCycleId = data.awaiting_receipt_cycle_id ?? null;
     handoversLoaded = true;
