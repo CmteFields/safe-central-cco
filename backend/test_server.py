@@ -40,7 +40,14 @@ class RetrievalTests(unittest.TestCase):
             evidence = server.retrieve("Quantas horas por dia o aluno PP pode voar?")
         evidence_ids = {item["id"] for item in evidence}
         self.assertIn("claim_ppap001k_limite_diario_instrucao", evidence_ids)
-        self.assertTrue(all(item["source"] == "Índice público de regras confirmadas" for item in evidence))
+        # O catálogo de regras aprovadas (Regras/catalogo_regras.json) é uma camada
+        # independente do pacote privado de conhecimento; continua disponível mesmo
+        # quando CLAIMS_PATH/GRAPH_PATH simulam o pacote privado ausente.
+        self.assertTrue(all(
+            item["source"] == "Índice público de regras confirmadas"
+            for item in evidence
+            if not str(item["id"]).startswith("approved_rule_")
+        ))
 
     def test_public_canonical_answer_overlays_older_private_claim(self):
         claims = {"claims": [{
