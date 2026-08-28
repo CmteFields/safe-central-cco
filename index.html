@@ -10,7 +10,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css?v=20260821-2">
-  <link rel="stylesheet" href="instrutores.css?v=20260827-2">
+  <link rel="stylesheet" href="instrutores.css?v=20260827-3">
   <link rel="stylesheet" href="topbar.css?v=20260812-14">
   <link rel="stylesheet" href="auth.css?v=20260724-16">
 </head>
@@ -188,6 +188,7 @@
           <div><span>T3</span><strong>18:00–20:00</strong></div>
         </div>
         <div class="handover-operational-shift"><span>Turno operacional atual</span><strong id="handoverCurrentShift">—</strong><small>O próximo turno é sugerido automaticamente; saltos continuam permitidos.</small></div>
+        <div class="handover-shift-warning hidden" id="handoverShiftWarning" role="alert"></div>
         <div class="handover-summary">
           <div><small>PENDENTES</small><strong id="handoverPendingCount">0</strong></div>
           <div><small>EM ANDAMENTO</small><strong id="handoverProgressCount">0</strong></div>
@@ -195,6 +196,7 @@
           <div><small>CONCLUÍDAS NO CICLO</small><strong id="handoverDoneCount">0</strong></div>
           <label>Destino<select id="handoverShiftFilter"><option value="">Todos os turnos</option><option value="T1">T1</option><option value="T2">T2</option><option value="T3">T3</option></select></label>
         </div>
+        <label class="table-search handover-search"><span>⌕</span><input id="handoverSearch" type="search" placeholder="Buscar por mensagem, aeronave ou pessoa…"></label>
         <div class="handover-board" id="handoverBoard"><div class="table-message">Carregando passagens de turno…</div></div>
       </section>
 
@@ -312,6 +314,13 @@
       </div>
       <div class="dialog-error hidden" id="aircraftFormError" role="alert"></div>
       <div class="dialog-actions"><button type="button" class="danger-button hidden" id="deleteAircraft">Excluir</button><span></span><button value="cancel" class="secondary-button">Cancelar</button><button type="submit" class="primary-button" id="saveAircraft">Salvar alterações</button></div>
+    </form>
+  </dialog>
+  <dialog class="instructor-dialog" id="handoverTimelineDialog">
+    <form method="dialog">
+      <div class="dialog-head"><div><p class="eyebrow">PASSAGEM DE TURNO</p><h2 id="handoverTimelineTitle">Linha do tempo</h2></div><button class="dialog-close" value="cancel" aria-label="Fechar">×</button></div>
+      <div id="handoverTimelineContent"></div>
+      <div class="dialog-actions"><span></span><button value="cancel" class="secondary-button">Fechar</button></div>
     </form>
   </dialog>
   <dialog class="instructor-dialog" id="standardMessageDialog">
@@ -452,6 +461,6 @@
   <div class="toast" id="toast" role="status"></div>
   <script src="data/public-knowledge-index.js?v=20260731-6"></script>
   <script src="data/knowledge-index.js"></script>
-  <script src="app.js?v=20260827-2"></script>
+  <script src="app.js?v=20260827-3"></script>
 </body>
 </html>

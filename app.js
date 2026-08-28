@@ -162,9 +162,14 @@ let handoverActiveCycleId = null;
 let handoverHistoryTotal = 0;
 let handoversLoaded = false;
 let handoverOperationalShift = null;
+let handoverOperationalShiftScheduled = null;
+let handoverOperationalShiftMismatch = false;
 let handoverSuggestedRoute = null;
 let handoverDraftCycleId = null;
 let handoverAwaitingReceiptCycleId = null;
+const HANDOVER_AGING_THRESHOLDS = {
+  "Crítica": [1, 3], "Alta": [3, 6], "Normal": [6, 12], "Baixa": [12, 24],
+};
 let reports = [];
 let reportsLoaded = false;
 let reportAssignees = [];
@@ -1050,6 +1055,20 @@ function handoverActionButton(action, id, label, className = "") {
   return `<button class="${className}" data-handover-action="${action}" data-handover-id="${id}">${label}</button>`;
 }
 
+function handoverAgingLevel(item) {
+  if (item.item_type !== "Pendência" || item.status === "Concluída") return "";
+  const ageHours = (Date.now() - new Date(item.created_at).getTime()) / 3_600_000;
+  const [warnHours, escalateHours] = HANDOVER_AGING_THRESHOLDS[item.priority] || HANDOVER_AGING_THRESHOLDS.Normal;
+  if (ageHours >= escalateHours) return "aging-critical";
+  if (ageHours >= warnHours) return "aging-warn";
+  return "";
+}
+
+function matchesHandoverSearch(item, term) {
+  if (!term) return true;
+  return normalizeText(`${item.message} ${item.assignee || ""} ${item.author || ""}`).includes(term);
+}
+
 function handoverCard(item, cycle) {
   const canOperate = hasRole("admin", "supervisor", "operator");
   const canEdit = canOperate && cycle.state === "draft" && !item.carried_from_id;
@@ -1063,11 +1082,16 @@ function handoverCard(item, cycle) {
     actions.push(handoverActionButton("assign", item.id, "Responsável"));
   }
   if (canTransition) actions.push(handoverActionButton("comment", item.id, "Comentar"));
-  return `<article class="handover-card priority-${normalizeText(item.priority)}">
-    <div class="handover-card-top"><span class="handover-type type-${normalizeText(item.item_type)}">${escapeHtml(item.item_type)}</span><span class="priority-label">${escapeHtml(item.priority)}</span><span class="handover-status status-${normalizeText(item.status)}">${escapeHtml(item.status)}</span><span class="handover-card-time">${formatInstructorDate(item.updated_at)}</span></div>
+  const aging = handoverAgingLevel(item);
+  const agingBadge = aging === "aging-critical"
+    ? '<span class="handover-aging critical">⚠ atrasada</span>'
+    : aging === "aging-warn" ? '<span class="handover-aging warn">⏱ atenção</span>' : "";
+  const ticketId = item.ticket_id ?? item.root_item_id ?? item.id;
+  return `<article class="handover-card priority-${normalizeText(item.priority)}${aging ? ` ${aging}` : ""}">
+    <div class="handover-card-top"><button type="button" class="handover-ticket" data-handover-timeline="${ticketId}" title="Ver linha do tempo">PT-${ticketId}</button><span class="handover-type type-${normalizeText(item.item_type)}">${escapeHtml(item.item_type)}</span><span class="priority-label">${escapeHtml(item.priority)}</span><span class="handover-status status-${normalizeText(item.status)}">${escapeHtml(item.status)}</span>${agingBadge}<span class="handover-card-time">${formatInstructorDate(item.updated_at)}</span></div>
     <p>${escapeHtml(item.message)}</p>
-    <div class="handover-item-meta"><span>Deixado por <strong>${escapeHtml(item.author)}</strong></span>${item.assignee ? `<span>Responsável: <strong>${escapeHtml(item.assignee)}</strong></span>` : ""}${item.carried_from_id ? '<span class="carried-tag">↻ Pendência trazida da passagem anterior</span>' : ""}</div>
-    ${item.completion_note ? `<div class="handover-completion"><strong>Conclusão por ${escapeHtml(item.completed_by)}</strong>${escapeHtml(item.completion_note)}</div>` : ""}
+    <div class="handover-item-meta"><span>Deixado por <strong>${escapeHtml(item.author)}</strong></span>${item.assignee ? `<span>Responsável: <strong>${escapeHtml(item.assignee)}</strong></span>` : ""}${item.carried_from_id ? '<span class="carried-tag">↻ Pendência trazida da passagem anterior</span>' : ""}${item.carry_count > 0 ? `<span class="carried-tag">↻ carregada ${item.carry_count}x desde ${formatInstructorDate(item.first_created_at)}</span>` : ""}</div>
+    ${item.completion_note ? `<div class="handover-completion"><strong>Conclusão por ${escapeHtml(item.completed_by)} · ${formatInstructorDate(item.completed_at)}</strong>${escapeHtml(item.completion_note)}</div>` : ""}
     ${actions.length ? `<div class="handover-card-actions">${actions.join("")}</div>` : ""}
   </article>`;
 }
@@ -1085,38 +1109,53 @@ function handoverItemGroup(title, items, cycle, className = "") {
   return `<div class="handover-item-group ${className}"><h4>${title}<span>${items.length}</span></h4>${items.map(item => handoverCard(item, cycle)).join("")}</div>`;
 }
 
-function handoverBaseSection(base, cycle) {
+const HANDOVER_AGING_RANK = { "aging-critical": 2, "aging-warn": 1, "": 0 };
+const HANDOVER_PRIORITY_RANK = { "Crítica": 0, "Alta": 1, "Normal": 2, "Baixa": 3 };
+
+function sortHandoverOpenItems(items) {
+  return [...items].sort((a, b) => {
+    const agingDiff = HANDOVER_AGING_RANK[handoverAgingLevel(b)] - HANDOVER_AGING_RANK[handoverAgingLevel(a)];
+    if (agingDiff) return agingDiff;
+    const priorityDiff = (HANDOVER_PRIORITY_RANK[a.priority] ?? 9) - (HANDOVER_PRIORITY_RANK[b.priority] ?? 9);
+    if (priorityDiff) return priorityDiff;
+    return new Date(a.created_at) - new Date(b.created_at);
+  });
+}
+
+function handoverBaseSection(base, cycle, { history = false, searchTerm = "" } = {}) {
   const baseDescriptions = {
     Geral: "Duas bases ou CCO",
     SDAM: "Campo dos Amarais · Campinas",
     SBSJ: "São José dos Campos",
   };
-  const items = cycle.items.filter(item => item.base_scope === base);
-  const openItems = items.filter(item => item.item_type === "Pendência" && item.status !== "Concluída");
+  const items = cycle.items.filter(item => item.base_scope === base && matchesHandoverSearch(item, searchTerm));
+  const openItems = sortHandoverOpenItems(items.filter(item => item.item_type === "Pendência" && item.status !== "Concluída"));
   const informationItems = items.filter(item => item.item_type === "Informação");
   const completedItems = items.filter(item => item.item_type === "Pendência" && item.status === "Concluída");
+  const completedForcedOpen = Boolean(searchTerm) && completedItems.length > 0;
   const content = [
     handoverItemGroup("Pendências abertas", openItems, cycle, "handover-open-group"),
     handoverItemGroup("Informações do turno", informationItems, cycle, "handover-information-group"),
-    completedItems.length ? `<details class="handover-completed-group"><summary>Concluídas neste ciclo <span>${completedItems.length}</span></summary>${completedItems.map(item => handoverCard(item, cycle)).join("")}</details>` : "",
+    completedItems.length ? `<details class="handover-completed-group"${(!history || completedForcedOpen) ? " open" : ""}><summary>Concluídas neste ciclo <span>${completedItems.length}</span></summary>${completedItems.map(item => handoverCard(item, cycle)).join("")}</details>` : "",
   ].filter(Boolean).join("");
   return `<section class="handover-base-section base-${base.toLowerCase()}"><div class="handover-base-head"><div><strong>${base}</strong><small>${baseDescriptions[base]}</small></div><span>${items.length}</span></div>${content || '<div class="handover-empty">Nenhuma anotação para esta seção.</div>'}</section>`;
 }
 
-function handoverCycle(cycle, { expanded = false, history = false } = {}) {
+function handoverCycle(cycle, { expanded = false, history = false, searchTerm = "" } = {}) {
   const canOperate = hasRole("admin", "supervisor", "operator");
   const bases = ["Geral", "SDAM", "SBSJ"];
   const controls = cycle.state === "draft" && canOperate
     ? `<button data-handover-cancel="${cycle.id}">Encerrar rascunho</button><button class="primary-action" data-handover-publish="${cycle.id}">Publicar passagem</button>`
     : cycle.state === "awaiting_receipt" && canOperate
       ? `<button class="primary-action" data-handover-receive="${cycle.id}">Confirmar recebimento</button>` : "";
-  const body = `<div class="handover-base-grid">${bases.map(base => handoverBaseSection(base, cycle)).join("")}</div>${handoverEvents(cycle)}`;
+  const body = `<div class="handover-base-grid">${bases.map(base => handoverBaseSection(base, cycle, { history, searchTerm })).join("")}</div>${handoverEvents(cycle)}`;
   const routeNote = cycle.route_kind === "skip"
     ? `<small class="handover-route-skip">Salto permitido · ${cycle.skipped_shifts.join(", ")} pulado</small>`
     : "";
+  const cycleMatchesSearch = Boolean(searchTerm) && cycle.items.some(item => matchesHandoverSearch(item, searchTerm));
   return `<article class="handover-cycle state-${cycle.state}${history ? " historical-cycle" : " active-cycle"}">
     <div class="handover-cycle-head"><div><div class="handover-cycle-route">${cycle.origin_shift} → ${cycle.target_shift}<span>${escapeHtml(cycle.state_label)}</span></div>${routeNote}<p>${cycle.state === "draft" ? `Em elaboração por ${escapeHtml(cycle.created_by_name || "Operador")} · iniciada em ${formatInstructorDate(cycle.created_at)}` : cycle.state === "cancelled" ? `Rascunho preservado no histórico · ${formatInstructorDate(cycle.updated_at)}` : `Publicada por ${escapeHtml(cycle.published_by_name || "Operador")} · ${formatInstructorDate(cycle.published_at)}`}${cycle.received_at ? ` · Recebida por ${escapeHtml(cycle.received_by_name)} em ${formatInstructorDate(cycle.received_at)}` : ""}</p></div><div class="handover-cycle-controls"><span>${cycle.items.length} anotação(ões)</span>${controls}</div></div>
-    ${expanded ? body : `<details class="handover-history-cycle"><summary>Visualizar esta passagem</summary>${body}</details>`}
+    ${expanded ? body : `<details class="handover-history-cycle"${cycleMatchesSearch ? " open" : ""}><summary>Visualizar esta passagem</summary>${body}</details>`}
   </article>`;
 }
 
@@ -1129,10 +1168,39 @@ function bindHandoverActions() {
   document.querySelectorAll("[data-handover-publish]").forEach(button => button.addEventListener("click", () => publishHandover(Number(button.dataset.handoverPublish))));
   document.querySelectorAll("[data-handover-receive]").forEach(button => button.addEventListener("click", () => receiveHandover(Number(button.dataset.handoverReceive))));
   document.querySelectorAll("[data-handover-cancel]").forEach(button => button.addEventListener("click", () => cancelHandover(Number(button.dataset.handoverCancel))));
+  document.querySelectorAll("[data-handover-timeline]").forEach(button => button.addEventListener("click", () => openHandoverTimelineDialog(Number(button.dataset.handoverTimeline))));
+}
+
+async function openHandoverTimelineDialog(ticketId) {
+  $("#handoverTimelineTitle").textContent = `Linha do tempo · PT-${ticketId}`;
+  $("#handoverTimelineContent").innerHTML = `<div class="table-message">Carregando…</div>`;
+  showFormDialog("#handoverTimelineDialog");
+  try {
+    const data = await handoverRequest(`/${ticketId}/timeline`);
+    const rows = [
+      ...data.occurrences.map(occurrence => ({
+        time: occurrence.created_at,
+        label: `Ocorrência na passagem ${occurrence.cycle_origin_shift} → ${occurrence.cycle_target_shift}`,
+        detail: occurrence.message,
+      })),
+      ...data.events.map(event => ({
+        time: event.created_at,
+        label: event.action,
+        detail: [event.actor_name, event.details?.note].filter(Boolean).join(" · "),
+      })),
+    ].sort((a, b) => new Date(a.time) - new Date(b.time));
+    $("#handoverTimelineContent").innerHTML = rows.length
+      ? rows.map(row => `<div class="handover-timeline-row"><div><strong>${escapeHtml(row.label)}</strong><span>${formatInstructorDate(row.time)}</span></div>${row.detail ? `<p>${escapeHtml(row.detail)}</p>` : ""}</div>`).join("")
+      : `<div class="table-message">Sem histórico registrado.</div>`;
+  } catch (error) {
+    $("#handoverTimelineContent").innerHTML = `<div class="table-message">Não foi possível carregar a linha do tempo.</div>`;
+    toast(error.message);
+  }
 }
 
 function renderHandovers() {
   const target = $("#handoverShiftFilter").value;
+  const searchTerm = normalizeText($("#handoverSearch").value.trim());
   const visible = handovers.filter(cycle => !target || cycle.target_shift === target);
   const active = visible.find(cycle => cycle.is_active || cycle.id === handoverActiveCycleId);
   const history = visible.filter(cycle => !active || cycle.id !== active.id);
@@ -1148,6 +1216,13 @@ function renderHandovers() {
   if ($("#handoverCurrentShift")) {
     $("#handoverCurrentShift").textContent = handoverOperationalShift || "—";
   }
+  const warning = $("#handoverShiftWarning");
+  if (warning) {
+    warning.classList.toggle("hidden", !handoverOperationalShiftMismatch);
+    if (handoverOperationalShiftMismatch) {
+      warning.textContent = `⚠ O relógio indica ${handoverOperationalShiftScheduled}, mas o sistema ainda está no ${handoverOperationalShift} — publique a passagem.`;
+    }
+  }
   $("#handoverPendingCount").textContent = handoverSummary.pending;
   $("#handoverProgressCount").textContent = handoverSummary.in_progress;
   $("#handoverInfoCount").textContent = handoverSummary.information;
@@ -1155,10 +1230,10 @@ function renderHandovers() {
   const openCount = handoverSummary.pending + handoverSummary.in_progress;
   $("#handoverNavCount").textContent = openCount;
   updateNotificationBadge();
-  const current = `<section class="handover-view-section handover-current-section"><div class="handover-section-heading"><div><span>AGORA</span><h2>Passagem atual</h2></div><small>Os indicadores acima consideram somente este ciclo.</small></div>${active ? handoverCycle(active, { expanded: true }) : '<div class="table-message">Nenhuma passagem atual para o destino selecionado.</div>'}</section>`;
+  const current = `<section class="handover-view-section handover-current-section"><div class="handover-section-heading"><div><span>AGORA</span><h2>Passagem atual</h2></div><small>Os indicadores acima consideram somente este ciclo.</small></div>${active ? handoverCycle(active, { expanded: true, searchTerm }) : '<div class="table-message">Nenhuma passagem atual para o destino selecionado.</div>'}</section>`;
   const historyCount = target ? history.length : handoverHistoryTotal;
   const archived = history.length
-    ? history.map(cycle => handoverCycle(cycle, { history: true })).join("")
+    ? history.map(cycle => handoverCycle(cycle, { history: true, searchTerm })).join("")
     : '<div class="table-message">Nenhuma passagem anterior para o destino selecionado.</div>';
   $("#handoverBoard").innerHTML = `${current}<details class="handover-history"><summary><span><strong>Histórico de passagens</strong><small>Consulte ciclos anteriores sem misturá-los à operação atual.</small></span><b>${historyCount}</b></summary><div class="handover-history-list">${archived}</div></details>`;
   bindHandoverActions();
@@ -1172,6 +1247,8 @@ async function loadHandovers() {
     handoverActiveCycleId = data.active_cycle_id ?? null;
     handoverHistoryTotal = data.history_total ?? Math.max(0, handovers.length - (handoverActiveCycleId ? 1 : 0));
     handoverOperationalShift = data.operational_shift || null;
+    handoverOperationalShiftScheduled = data.operational_shift_scheduled || null;
+    handoverOperationalShiftMismatch = Boolean(data.operational_shift_mismatch);
     handoverSuggestedRoute = data.suggested_route || null;
     handoverDraftCycleId = data.draft_cycle_id ?? null;
     handoverAwaitingReceiptCycleId = data.awaiting_receipt_cycle_id ?? null;
@@ -2237,6 +2314,7 @@ $("#deleteStandardMessage").addEventListener("click", removeStandardMessage);
 $("#refreshActivity").addEventListener("click", () => loadPortalActivity(true));
 $("#addHandover").addEventListener("click", () => openHandoverDialog());
 $("#handoverShiftFilter").addEventListener("change", renderHandovers);
+$("#handoverSearch").addEventListener("input", renderHandovers);
 $("#handoverForm").addEventListener("submit", saveHandover);
 $("#handoverTarget").addEventListener("change", updateHandoverRouteHint);
 $("#deleteHandover").addEventListener("click", removeHandover);

@@ -836,8 +836,8 @@ class WSGITests(unittest.TestCase):
         self.assertIn(b'<option selected>Aberto</option>', body)
         self.assertIn(b'styles.css?v=20260821-2', body)
         self.assertIn(b"public-knowledge-index.js?v=20260731-6", body)
-        self.assertIn(b"instrutores.css?v=20260827-2", body)
-        self.assertIn(b"app.js?v=20260827-2", body)
+        self.assertIn(b"instrutores.css?v=20260827-3", body)
+        self.assertIn(b"app.js?v=20260827-3", body)
         self.assertIn(b'id="newSearchButton"', body)
         self.assertIn(b'id="toggleRecentSearch"', body)
         self.assertIn(b'id="recentSearch"', body)
@@ -923,6 +923,60 @@ class WSGITests(unittest.TestCase):
         self.assertIn(b'id="standardMessageCategory"', body)
         self.assertIn(b'id="deleteStandardMessage"', body)
         self.assertIn("Mensagens padrão de gerência".encode(), body)
+
+    def test_handover_timeline_route_returns_full_history_and_404s_on_unknown_id(self):
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+            root = Path(directory)
+            central = root / "portalcco.db"
+            for name in (
+                "PORTAL_DB_PATH", "AUTH_DB_PATH", "BASES_DB_PATH",
+                "INSTRUCTORS_DB_PATH", "AIRCRAFT_DB_PATH", "HANDOVERS_DB_PATH",
+                "REPORTS_DB_PATH", "SEARCH_HISTORY_DB_PATH", "RULES_DB_PATH",
+                "LEARNING_DB_PATH", "STANDARD_MESSAGES_DB_PATH",
+            ):
+                stack.enter_context(patch.object(server, name, central))
+            stack.enter_context(patch.object(
+                server,
+                "LEGACY_DB_PATHS",
+                {name: root / f"legacy-{name}.db" for name in server.LEGACY_DB_PATHS},
+            ))
+            stack.enter_context(patch.object(server, "LEARNING_GRAPH_PATH", root / "missing.json"))
+
+            server.initialize_portal_storage()
+            server.create_user({
+                "username": "admin", "display_name": "Admin", "password": "admin",
+            }, force_admin=True)
+
+            status, headers, body = self.request("/api/auth/login", "POST", {
+                "username": "admin", "password": "admin",
+            })
+            self.assertEqual(status, "200 OK")
+            login = json.loads(body)
+            authenticated_headers = {
+                "Cookie": headers["Set-Cookie"].split(";", 1)[0],
+                "X-CSRF-Token": login["csrf_token"],
+            }
+
+            status, _, body = self.request("/api/handovers", "POST", {
+                "origin_shift": "T1", "target_shift": "T2", "base_scope": "Geral",
+                "item_type": "Pendência", "message": "Checar combustível", "priority": "Normal",
+            }, authenticated_headers)
+            self.assertEqual(status, "201 Created", body.decode("utf-8"))
+            item_id = json.loads(body)["id"]
+
+            status, _, body = self.request(
+                f"/api/handovers/{item_id}/timeline", request_headers=authenticated_headers,
+            )
+            self.assertEqual(status, "200 OK", body.decode("utf-8"))
+            timeline = json.loads(body)
+            self.assertEqual(timeline["root_item_id"], item_id)
+            self.assertEqual(len(timeline["occurrences"]), 1)
+            self.assertTrue(any(event["action"] == "Item criado" for event in timeline["events"]))
+
+            status, _, body = self.request(
+                "/api/handovers/999999/timeline", request_headers=authenticated_headers,
+            )
+            self.assertEqual(status, "404 Not Found", body.decode("utf-8"))
 
     def test_temporary_password_and_first_writes_through_wsgi(self):
         with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
@@ -1395,6 +1449,112 @@ class HandoverWorkflowTests(unittest.TestCase):
                 final = server.list_handover_cycles()
                 self.assertEqual(final["summary"]["pending"], 0)
                 self.assertEqual(final["summary"]["completed"], 1)
+
+    def test_assume_is_rejected_once_item_is_no_longer_pendente(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "handovers.db"
+            legacy = {**server.LEGACY_DB_PATHS, "handovers": Path(directory) / "missing.db"}
+            with patch.object(server, "HANDOVERS_DB_PATH", database), patch.object(server, "LEGACY_DB_PATHS", legacy):
+                item = server.save_handover({
+                    "origin_shift": "T1", "target_shift": "T2", "base_scope": "Geral",
+                    "item_type": "Pendência", "message": "Verificar combustível", "priority": "Normal",
+                }, actor=self.operator)
+                server.transition_handover_item(item["id"], {"action": "assume"}, self.operator)
+                with self.assertRaisesRegex(ValueError, "não está mais pendente"):
+                    server.transition_handover_item(item["id"], {"action": "assume"}, self.operator)
+                current = server.list_handover_cycles()
+                saved_item = next(
+                    i for cycle in current["cycles"] for i in cycle["items"] if i["id"] == item["id"]
+                )
+                self.assertEqual(saved_item["status"], "Em andamento")
+                self.assertEqual(saved_item["assignee"], self.operator["display_name"])
+
+    def test_ticket_id_and_carry_count_survive_carry_forward(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "handovers.db"
+            legacy = {**server.LEGACY_DB_PATHS, "handovers": Path(directory) / "missing.db"}
+            with patch.object(server, "HANDOVERS_DB_PATH", database), patch.object(server, "LEGACY_DB_PATHS", legacy):
+                original = server.save_handover({
+                    "origin_shift": "T1", "target_shift": "T2", "base_scope": "Geral",
+                    "item_type": "Pendência", "message": "Revisar checklist", "priority": "Alta",
+                }, actor=self.operator)
+                server.publish_handover_cycle(original["cycle_id"], self.operator)
+                server.receive_handover_cycle(original["cycle_id"], self.operator)
+                server.save_handover({
+                    "origin_shift": "T2", "target_shift": "T3", "base_scope": "Geral",
+                    "item_type": "Informação", "message": "Início do turno", "priority": "Normal",
+                }, actor=self.operator)
+                result = server.list_handover_cycles()
+                all_items = [i for cycle in result["cycles"] for i in cycle["items"]]
+                carried = next(i for i in all_items if i.get("carried_from_id") == original["id"])
+                historical = next(i for i in all_items if i["id"] == original["id"])
+                self.assertEqual(carried["ticket_id"], original["id"])
+                self.assertEqual(historical["ticket_id"], original["id"])
+                self.assertEqual(carried["carry_count"], 1)
+                self.assertEqual(historical["carry_count"], 1)
+                self.assertEqual(carried["first_created_at"], original["created_at"])
+
+    def test_shift_mismatch_flag_reflects_clock_vs_last_received(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "handovers.db"
+            legacy = {**server.LEGACY_DB_PATHS, "handovers": Path(directory) / "missing.db"}
+            with patch.object(server, "HANDOVERS_DB_PATH", database), patch.object(server, "LEGACY_DB_PATHS", legacy):
+                item = server.save_handover({
+                    "origin_shift": "T1", "target_shift": "T2", "base_scope": "Geral",
+                    "item_type": "Informação", "message": "Turno iniciado", "priority": "Normal",
+                }, actor=self.operator)
+                server.publish_handover_cycle(item["cycle_id"], self.operator)
+                server.receive_handover_cycle(item["cycle_id"], self.operator)
+
+                with patch.object(server, "scheduled_handover_shift", lambda moment=None: "T2"):
+                    result = server.list_handover_cycles()
+                self.assertFalse(result["operational_shift_mismatch"])
+
+                with patch.object(server, "scheduled_handover_shift", lambda moment=None: "T3"):
+                    result = server.list_handover_cycles()
+                self.assertTrue(result["operational_shift_mismatch"])
+                self.assertEqual(result["operational_shift_scheduled"], "T3")
+                self.assertEqual(result["operational_shift"], "T2")
+
+                server.save_handover({
+                    "origin_shift": "T2", "target_shift": "T3", "base_scope": "Geral",
+                    "item_type": "Informação", "message": "Nova passagem em elaboração", "priority": "Normal",
+                }, actor=self.operator)
+                with patch.object(server, "scheduled_handover_shift", lambda moment=None: "T1"):
+                    result = server.list_handover_cycles()
+                self.assertFalse(result["operational_shift_mismatch"])
+
+    def test_item_timeline_aggregates_occurrences_and_events(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "handovers.db"
+            legacy = {**server.LEGACY_DB_PATHS, "handovers": Path(directory) / "missing.db"}
+            with patch.object(server, "HANDOVERS_DB_PATH", database), patch.object(server, "LEGACY_DB_PATHS", legacy):
+                original = server.save_handover({
+                    "origin_shift": "T1", "target_shift": "T2", "base_scope": "Geral",
+                    "item_type": "Pendência", "message": "Checar pneu", "priority": "Normal",
+                }, actor=self.operator)
+                server.transition_handover_item(original["id"], {"action": "assume"}, self.operator)
+                server.transition_handover_item(original["id"], {
+                    "action": "complete", "note": "Pneu verificado.",
+                }, self.operator)
+                server.publish_handover_cycle(original["cycle_id"], self.operator)
+                server.receive_handover_cycle(original["cycle_id"], self.operator)
+                server.transition_handover_item(original["id"], {
+                    "action": "reopen", "note": "Voltou a apresentar desgaste.",
+                    "origin_shift": "T2", "target_shift": "T3",
+                }, self.operator)
+
+                timeline = server.handover_item_timeline(original["id"])
+                self.assertEqual(timeline["root_item_id"], original["id"])
+                self.assertEqual(len(timeline["occurrences"]), 2)
+                self.assertEqual(timeline["carry_count"], 1)
+                actions = {event["action"] for event in timeline["events"]}
+                self.assertIn("Pendência assumida", actions)
+                self.assertIn("Pendência concluída", actions)
+                self.assertIn("Pendência reaberta no ciclo atual", actions)
+
+                with self.assertRaises(LookupError):
+                    server.handover_item_timeline(999999)
 
     def test_summary_is_scoped_to_the_active_cycle(self):
         with tempfile.TemporaryDirectory() as directory:

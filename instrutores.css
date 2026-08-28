@@ -45,6 +45,23 @@
 /* Turno operacional e saltos auditáveis */
 .handover-operational-shift{display:flex;align-items:center;gap:9px;margin:-4px 0 14px;padding:9px 12px;border:1px solid #dbe6ee;border-radius:9px;background:#f7fbfe;color:#66788a;font-size:9px}.handover-operational-shift span{font-weight:700}.handover-operational-shift strong{display:grid;place-items:center;min-width:35px;height:28px;border-radius:7px;background:#2f78ad;color:#fff;font:800 11px Manrope}.handover-operational-shift small{margin-left:auto;color:#7c8997}.handover-route-hint{display:block;margin-top:6px;color:#39745f;font-size:8px;line-height:1.35}.handover-route-hint.route-skip,.handover-route-skip{color:#9a6429}.handover-route-skip{display:block;margin-top:5px;font-size:8px;font-weight:800}.handover-cycle.state-cancelled{border-top:4px solid #8996a3}.state-cancelled .handover-cycle-route span{color:#66727e;background:#e9edf0}.handover-cycle-controls>button:not(.primary-action){border:1px solid #d7dfe6;border-radius:7px;background:#fff;color:#687989;padding:7px 10px;font-size:9px;font-weight:700;cursor:pointer}.primary-button:disabled{cursor:not-allowed;opacity:.58}@media(max-width:650px){.handover-operational-shift{align-items:flex-start;flex-wrap:wrap}.handover-operational-shift small{width:100%;margin-left:0}}
 
+/* Continuidade de ticket, envelhecimento e linha do tempo */
+.handover-ticket{border:1px solid #dfe5eb;background:#f4f7fa;color:#4f6178;border-radius:6px;padding:3px 6px;font:800 8px "DM Sans";letter-spacing:.3px;cursor:pointer}
+.handover-ticket:hover{background:#eaf0f6;border-color:#c8d3dd}
+.handover-aging{font-size:8px;font-weight:800;text-transform:uppercase;padding:3px 6px;border-radius:5px;white-space:nowrap}
+.handover-aging.warn{background:#fff0d9;color:#93601c}
+.handover-aging.critical{background:#fbe3e1;color:#a53a35}
+.handover-card.aging-warn{border-left-color:#d68a2c}
+.handover-card.aging-critical{border-left-color:#c23d38;box-shadow:0 3px 12px rgba(197,61,56,.18)}
+.handover-shift-warning{background:#fdeceb;border:1px solid #f3c6c2;color:#a03a34;border-radius:9px;padding:10px 13px;font-size:10px;font-weight:700;margin:-4px 0 14px}
+.handover-search{margin-bottom:12px}
+.handover-timeline-row{border-bottom:1px solid #edf0f3;padding:10px 2px}
+.handover-timeline-row:last-child{border-bottom:0}
+.handover-timeline-row>div{display:flex;justify-content:space-between;gap:10px;font:700 10px Manrope;color:#2c3e52}
+.handover-timeline-row span{color:#8793a0;font-size:8px;font-weight:600;white-space:nowrap}
+.handover-timeline-row p{margin:5px 0 0;font-size:10px;color:#536174;line-height:1.4}
+@media(max-width:650px){.handover-timeline-row>div{flex-direction:column;gap:2px}}
+
 /* Mensagens padrão de gerência */
 .standard-message-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;align-items:start}
 .standard-message-column{min-width:0;background:#f8fafb;border:1px solid #e0e6eb;border-radius:10px;padding:10px}

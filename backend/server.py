@@ -72,7 +72,7 @@ LOCAL_MODEL = (
 )
 FALLBACK_MODEL = os.environ.get("GEMINI_FALLBACK_MODEL", "gemini-3.5-flash-lite")
 EXTERNAL_MODEL = os.environ.get("GEMINI_EXTERNAL_MODEL", "gemini-3.1-pro-preview")
-RELEASE_ID = os.environ.get("SAFE_CCO_RELEASE", "2026-08-27-standard-messages-columns")
+RELEASE_ID = os.environ.get("SAFE_CCO_RELEASE", "2026-08-27-shift-handover-continuity")
 PORTAL_UPDATED_AT = os.environ.get("SAFE_CCO_UPDATED_AT", "").strip() or datetime.fromtimestamp(
     max(
         path.stat().st_mtime
@@ -1816,6 +1816,8 @@ def handover_operational_state(connection: sqlite3.Connection) -> dict[str, Any]
     else:
         current_shift = scheduled_handover_shift()
         source = "schedule_fallback"
+    scheduled_shift = scheduled_handover_shift()
+    shift_mismatch = source == "last_received_cycle" and current_shift != scheduled_shift
     return {
         "current_shift": current_shift,
         "next_shift": next_handover_shift(current_shift),
@@ -1823,6 +1825,8 @@ def handover_operational_state(connection: sqlite3.Connection) -> dict[str, Any]
         "active_cycle_id": int(active["id"]) if active else None,
         "active_cycle_state": str(active["state"]) if active else None,
         "last_received_cycle_id": int(latest_received["id"]) if latest_received else None,
+        "scheduled_shift": scheduled_shift,
+        "shift_mismatch": shift_mismatch,
     }
 
 
@@ -2037,14 +2041,25 @@ def list_handover_cycles() -> dict[str, Any]:
                FROM handovers GROUP BY COALESCE(root_item_id, id)
                ) latest ON latest.latest_id=h.id"""
         ).fetchall()
+        root_stat_rows = connection.execute(
+            """SELECT COALESCE(root_item_id, id) AS root_id, COUNT(*) AS occurrence_count,
+               MIN(created_at) AS first_created_at
+               FROM handovers GROUP BY COALESCE(root_item_id, id)"""
+        ).fetchall()
         total_cycles = int(connection.execute(
             "SELECT COUNT(*) FROM handover_cycles"
         ).fetchone()[0])
     items_by_cycle: dict[int, list[dict[str, Any]]] = {}
     latest_item_ids = {int(row["id"]) for row in latest_rows}
+    root_stats = {int(row["root_id"]): row for row in root_stat_rows}
     for row in item_rows:
         item = handover_dict(row)
         item["is_latest_root"] = int(row["id"]) in latest_item_ids
+        root_id = int(row["root_item_id"] or row["id"])
+        stats = root_stats.get(root_id)
+        item["ticket_id"] = root_id
+        item["carry_count"] = max(0, int(stats["occurrence_count"]) - 1) if stats else 0
+        item["first_created_at"] = stats["first_created_at"] if stats else row["created_at"]
         items_by_cycle.setdefault(int(row["cycle_id"]), []).append(item)
     events_by_cycle: dict[int, list[dict[str, Any]]] = {}
     for row in event_rows:
@@ -2097,6 +2112,8 @@ def list_handover_cycles() -> dict[str, Any]:
         "history_total": max(0, total_cycles - (1 if active_cycle_id is not None else 0)),
         "operational_shift": operational["current_shift"],
         "operational_shift_source": operational["source"],
+        "operational_shift_scheduled": operational["scheduled_shift"],
+        "operational_shift_mismatch": operational["shift_mismatch"],
         "suggested_route": {
             "origin_shift": operational["current_shift"],
             "target_shift": operational["next_shift"],
@@ -2304,6 +2321,11 @@ def transition_handover_item(
         details: dict[str, Any] = {"note": note} if note else {}
         event_cycle_id = int(item["cycle_id"])
         if action == "assume":
+            if item["status"] != "Pendente":
+                holder = item["assignee"] or "outro operador"
+                raise ValueError(
+                    f"Esta pendência não está mais pendente (status atual: {item['status']}, com {holder})."
+                )
             connection.execute(
                 "UPDATE handovers SET status='Em andamento', assignee=?, updated_at=? WHERE id=?",
                 (name, timestamp, handover_id),
@@ -2380,6 +2402,54 @@ def transition_handover_item(
         )
         row = connection.execute("SELECT * FROM handovers WHERE id=?", (handover_id,)).fetchone()
     return handover_dict(row)
+
+
+def handover_item_timeline(item_id: int) -> dict[str, Any]:
+    initialize_handovers_db()
+    with handovers_connection() as connection:
+        item = connection.execute("SELECT * FROM handovers WHERE id=?", (item_id,)).fetchone()
+        if not item:
+            raise LookupError("Item da passagem de turno não encontrado.")
+        root_id = int(item["root_item_id"] or item["id"])
+        occurrence_rows = connection.execute(
+            """SELECT h.*, c.origin_shift AS cycle_origin_shift, c.target_shift AS cycle_target_shift,
+               c.state AS cycle_state, c.operation_date AS cycle_operation_date
+               FROM handovers h JOIN handover_cycles c ON c.id=h.cycle_id
+               WHERE COALESCE(h.root_item_id, h.id)=? ORDER BY h.id""",
+            (root_id,),
+        ).fetchall()
+        occurrence_ids = [int(row["id"]) for row in occurrence_rows]
+        event_rows: list[sqlite3.Row] = []
+        if occurrence_ids:
+            placeholders = ",".join("?" for _ in occurrence_ids)
+            event_rows = connection.execute(
+                f"""SELECT * FROM handover_events WHERE item_id IN ({placeholders})
+                    ORDER BY created_at, id""",
+                occurrence_ids,
+            ).fetchall()
+    occurrences = []
+    for row in occurrence_rows:
+        occurrence = handover_dict(row)
+        occurrence["cycle_origin_shift"] = row["cycle_origin_shift"]
+        occurrence["cycle_target_shift"] = row["cycle_target_shift"]
+        occurrence["cycle_state"] = row["cycle_state"]
+        occurrence["cycle_operation_date"] = row["cycle_operation_date"]
+        occurrences.append(occurrence)
+    events = []
+    for row in event_rows:
+        event = dict(row)
+        try:
+            event["details"] = json.loads(event.pop("details"))
+        except (json.JSONDecodeError, TypeError):
+            event["details"] = {}
+        events.append(event)
+    return {
+        "root_item_id": root_id,
+        "occurrences": occurrences,
+        "events": events,
+        "carry_count": max(0, len(occurrences) - 1),
+        "first_created_at": occurrences[0]["created_at"] if occurrences else None,
+    }
 
 
 @contextmanager
@@ -5045,6 +5115,15 @@ class Handler(BaseHTTPRequestHandler):
             return
         if urllib.parse.urlparse(self.path).path == "/api/handovers":
             self.send_json(200, list_handover_cycles())
+            return
+        timeline_match = re.fullmatch(
+            r"/api/handovers/(\d+)/timeline", urllib.parse.urlparse(self.path).path
+        )
+        if timeline_match:
+            try:
+                self.send_json(200, handover_item_timeline(int(timeline_match.group(1))))
+            except LookupError as error:
+                self.send_json(404, {"error": str(error)})
             return
         if urllib.parse.urlparse(self.path).path == "/api/reports":
             if user["role"] == "viewer":
