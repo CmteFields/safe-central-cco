@@ -1534,23 +1534,56 @@ class HandoverWorkflowTests(unittest.TestCase):
                 server.publish_handover_cycle(item["cycle_id"], self.operator)
                 server.receive_handover_cycle(item["cycle_id"], self.operator)
 
-                with patch.object(server, "scheduled_handover_shift", lambda moment=None: "T2"):
+                with patch.object(server, "scheduled_handover_shift", lambda moment=None: "T2"), \
+                     patch.object(server, "is_within_cco_operational_hours", lambda moment=None: True):
                     result = server.list_handover_cycles()
                 self.assertFalse(result["operational_shift_mismatch"])
 
-                with patch.object(server, "scheduled_handover_shift", lambda moment=None: "T3"):
+                with patch.object(server, "scheduled_handover_shift", lambda moment=None: "T3"), \
+                     patch.object(server, "is_within_cco_operational_hours", lambda moment=None: True):
                     result = server.list_handover_cycles()
                 self.assertTrue(result["operational_shift_mismatch"])
                 self.assertEqual(result["operational_shift_scheduled"], "T3")
                 self.assertEqual(result["operational_shift"], "T2")
 
+                # Outside CCO operating hours, the same disagreement is not an error.
+                with patch.object(server, "scheduled_handover_shift", lambda moment=None: "T3"), \
+                     patch.object(server, "is_within_cco_operational_hours", lambda moment=None: False):
+                    result = server.list_handover_cycles()
+                self.assertFalse(result["operational_shift_mismatch"])
+
                 server.save_handover({
                     "origin_shift": "T2", "target_shift": "T3", "base_scope": "Geral",
                     "item_type": "Informação", "message": "Nova passagem em elaboração", "priority": "Normal",
                 }, actor=self.operator)
-                with patch.object(server, "scheduled_handover_shift", lambda moment=None: "T1"):
+                with patch.object(server, "scheduled_handover_shift", lambda moment=None: "T1"), \
+                     patch.object(server, "is_within_cco_operational_hours", lambda moment=None: True):
                     result = server.list_handover_cycles()
                 self.assertFalse(result["operational_shift_mismatch"])
+
+    def test_scheduled_handover_shift_matches_its_own_displayed_window(self):
+        base = datetime(2026, 8, 28, tzinfo=timezone.utc)
+        brasilia = timezone(timedelta(hours=-3))
+        cases = [
+            (8, 0, "T1"), (13, 59, "T1"),
+            (14, 0, "T2"), (17, 59, "T2"),
+            (18, 0, "T3"), (19, 59, "T3"),
+            (20, 0, "T1"), (23, 30, "T1"), (2, 0, "T1"), (7, 59, "T1"),
+        ]
+        with patch.object(server, "scheduled_handover_shift", self.original_scheduled_handover_shift):
+            for hour, minute, expected in cases:
+                moment = base.replace(hour=hour, minute=minute, tzinfo=brasilia).astimezone(timezone.utc)
+                self.assertEqual(
+                    server.scheduled_handover_shift(moment), expected,
+                    f"esperado {expected} às {hour:02d}:{minute:02d}",
+                )
+
+    def test_operational_hours_window_excludes_overnight(self):
+        brasilia = timezone(timedelta(hours=-3))
+        within = datetime(2026, 8, 28, 12, 0, tzinfo=brasilia).astimezone(timezone.utc)
+        outside = datetime(2026, 8, 28, 22, 0, tzinfo=brasilia).astimezone(timezone.utc)
+        self.assertTrue(server.is_within_cco_operational_hours(within))
+        self.assertFalse(server.is_within_cco_operational_hours(outside))
 
     def test_item_timeline_aggregates_occurrences_and_events(self):
         with tempfile.TemporaryDirectory() as directory:

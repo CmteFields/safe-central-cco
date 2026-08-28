@@ -72,7 +72,7 @@ LOCAL_MODEL = (
 )
 FALLBACK_MODEL = os.environ.get("GEMINI_FALLBACK_MODEL", "gemini-3.5-flash-lite")
 EXTERNAL_MODEL = os.environ.get("GEMINI_EXTERNAL_MODEL", "gemini-3.1-pro-preview")
-RELEASE_ID = os.environ.get("SAFE_CCO_RELEASE", "2026-08-28-summary-and-stale-shift-fix")
+RELEASE_ID = os.environ.get("SAFE_CCO_RELEASE", "2026-08-28-shift-window-fix")
 PORTAL_UPDATED_AT = os.environ.get("SAFE_CCO_UPDATED_AT", "").strip() or datetime.fromtimestamp(
     max(
         path.stat().st_mtime
@@ -1795,7 +1795,18 @@ def scheduled_handover_shift(moment: datetime | None = None) -> str:
         return "T1"
     if 14 * 60 <= minutes < 18 * 60:
         return "T2"
-    return "T3"
+    if 18 * 60 <= minutes < 20 * 60:
+        return "T3"
+    # Fora do horário operacional (20h–8h): não há turno em curso; T1 é o próximo a começar.
+    return "T1"
+
+
+def is_within_cco_operational_hours(moment: datetime | None = None) -> bool:
+    current = (moment or datetime.now(timezone.utc)).astimezone(
+        timezone(timedelta(hours=-3))
+    )
+    minutes = current.hour * 60 + current.minute
+    return 8 * 60 <= minutes < 20 * 60
 
 
 def handover_operational_state(connection: sqlite3.Connection) -> dict[str, Any]:
@@ -1830,7 +1841,11 @@ def handover_operational_state(connection: sqlite3.Connection) -> dict[str, Any]
             active_is_stale = False
     scheduled_shift = scheduled_handover_shift()
     shift_mismatch = (
-        (source == "last_received_cycle" and current_shift != scheduled_shift)
+        (
+            source == "last_received_cycle"
+            and current_shift != scheduled_shift
+            and is_within_cco_operational_hours()
+        )
         or (source == "active_cycle" and active_is_stale)
     )
     return {
