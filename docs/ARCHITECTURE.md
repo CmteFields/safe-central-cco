@@ -51,6 +51,16 @@ para a nova release depois que todos os arquivos foram enviados. Após a recarga
 restaurado e a aplicação é recarregada novamente. Esse fluxo elimina a
 dependência de console ou navegador para implantações rotineiras.
 
+Geração, testes e publicação são separados por um comprovante local de release.
+`small-answer` cobre a revisão limitada de uma claim existente;
+`knowledge-rule` cobre uma única claim confirmada nova e seus aliases; `full`
+cobre código, fontes e mudanças estruturais. A preparação reconstrói Knowledge,
+Graphify e o índice público uma vez, executa os testes proporcionais e registra
+hashes de todos os arquivos do pacote privado e da release pública. Depois dos
+commits e pushes, o deploy recalcula os hashes e é bloqueado se qualquer byte ou
+fila tiver mudado. Assim, o conteúdo publicado é exatamente o conteúdo testado,
+sem reconstrução ou repetição de suíte após o commit.
+
 ## Feedback de progresso da consulta
 
 Ao iniciar uma busca, `app.js` exibe um painel acessível com as etapas de recebimento, consulta à base, análise de evidências e preparação da resposta. Como `/api/ask` ainda responde em uma única requisição HTTP, essas etapas representam feedback visual baseado no tempo decorrido, e não eventos transmitidos pelo backend.

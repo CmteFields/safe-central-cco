@@ -286,6 +286,23 @@ class RetrievalTests(unittest.TestCase):
                     evidence[0]["operator_answer"], rule["approved_rule_text"]
                 )
 
+    def test_every_curated_question_alias_recovers_its_claim_first(self):
+        curated = server.load_json(server.CLAIMS_PATH)
+        aliases = [
+            (claim["id"], claim.get("document_code"), question)
+            for claim in curated.get("claims", [])
+            if claim.get("status") in {"confirmed", "confirmed_temporary_override"}
+            for question in claim.get("question_aliases", [])
+        ]
+        self.assertGreater(len(aliases), 0)
+        for claim_id, document_code, question in aliases:
+            with self.subTest(claim_id=claim_id, question=question):
+                evidence = server.retrieve(question)
+                self.assertTrue(evidence)
+                self.assertTrue(evidence[0].get("operator_answer"))
+                if evidence[0]["id"] != claim_id:
+                    self.assertEqual(evidence[0].get("code"), document_code)
+
     def test_nav03_can_precede_nav02_without_gemini(self):
         question = "Aluno pode fazer NAV03 antes da NAV02?"
         with patch.object(server, "call_gemini_with_retry") as gemini, patch.object(

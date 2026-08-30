@@ -99,13 +99,18 @@ Configure uma única vez no Windows:
 
 ```powershell
 setx PYTHONANYWHERE_API_TOKEN "token-gerado-na-aba-API-Token"
-setx SAFE_AUTO_SYNC_PYTHONANYWHERE "true"
 ```
 
-Abra um novo terminal depois do `setx`. A partir daí,
-`python Knowledge/update_knowledge.py`, executado na raiz
-`CentrodeConhecimento`, sincroniza o ambiente online somente depois de concluir
-a reconstrução e a validação. Para sincronizar sem reconstruir:
+Abra um novo terminal depois do `setx`. No workspace privado, a rotina oficial
+é preparar uma vez, registrar os commits e publicar os mesmos hashes:
+
+```powershell
+.\bin\update.ps1 -PrepareRelease -WorkflowClass <small-answer|knowledge-rule|full> -RequireClean
+.\bin\update.ps1 -Publish -WorkflowClass <small-answer|knowledge-rule|full> -RequireClean
+```
+
+Os comandos diretos abaixo ficam reservados a manutenção e diagnóstico. Para
+sincronizar somente o pacote privado sem reconstruir:
 
 ```powershell
 python PortalCCO/scripts/sync_pythonanywhere_knowledge.py
