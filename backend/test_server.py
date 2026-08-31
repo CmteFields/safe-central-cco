@@ -13,6 +13,15 @@ from backend import wsgi
 
 
 class RetrievalTests(unittest.TestCase):
+    def test_no_show_limits_question_prefers_complete_rg003_answer(self):
+        evidence = server.retrieve("Quais são os limites de NO SHOW?")
+
+        self.assertEqual(evidence[0]["id"], server.NO_SHOW_LIMITS_RULE_ID)
+        self.assertEqual(evidence[0]["code"], "RG-003")
+        self.assertIn("96 horas", evidence[0]["operator_answer"])
+        self.assertIn("30 minutos de voo", evidence[0]["operator_answer"])
+        self.assertIn("1 hora e 30 minutos", evidence[0]["operator_answer"])
+
     def test_ppa_sequence_recovers_canonical_complete_answer_from_public_index(self):
         missing_root = Path("diretorio-privado-ausente")
         with patch.object(server, "CLAIMS_PATH", missing_root / "claims.json"), patch.object(
