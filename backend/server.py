@@ -72,7 +72,7 @@ LOCAL_MODEL = (
 )
 FALLBACK_MODEL = os.environ.get("GEMINI_FALLBACK_MODEL", "gemini-3.5-flash-lite")
 EXTERNAL_MODEL = os.environ.get("GEMINI_EXTERNAL_MODEL", "gemini-3.1-pro-preview")
-RELEASE_ID = os.environ.get("SAFE_CCO_RELEASE", "2026-08-31-no-show-limits")
+RELEASE_ID = os.environ.get("SAFE_CCO_RELEASE", "2026-08-31-no-show-and-check-slots")
 PORTAL_UPDATED_AT = os.environ.get("SAFE_CCO_UPDATED_AT", "").strip() or datetime.fromtimestamp(
     max(
         path.stat().st_mtime
@@ -310,6 +310,7 @@ BARS_PRIORITY_RULE_ID = "claim_rg010_prioridade_barras_missoes_criticas"
 SOLO_AERODROME_FAMILIARIZATION_RULE_ID = "claim_rg013_familiarizacao_aerodromo_antes_voo_solo"
 AIRCRAFT_TRANSFER_COST_RULE_ID = "claim_rg014_custos_retorno_translado_bases"
 NO_SHOW_LIMITS_RULE_ID = "claim_rg003_limites_no_show_apresentacao_penalidades"
+CHECK_SLOTS_RULE_ID = "claim_rg019_slots_cheque_safe_por_base_curso"
 SOLO_RECENCY_RULE_ID = "claim_bops054_sem_solo_30_dias_novo_endosso"
 READAPTATION_RULE_ID = "claim_bops054_readaptacao_90_dias"
 ROLES = {"admin", "supervisor", "operator", "viewer"}
@@ -3849,6 +3850,12 @@ def canonical_intent_rule_ids(value: str) -> list[str]:
         "primeiro", "segundo", "terceiro", "penalidade", "multa", "evento",
     )):
         prefer(NO_SHOW_LIMITS_RULE_ID)
+
+    check_slots_intent = "slot" in normalized and any(term in normalized for term in (
+        "cheque", "recheque", "chequinho",
+    ))
+    if check_slots_intent:
+        prefer(CHECK_SLOTS_RULE_ID)
 
     transfer_cost_intent = aircraft_transfer_cost_intent(normalized)
     if transfer_cost_intent:

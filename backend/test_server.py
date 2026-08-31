@@ -13,6 +13,15 @@ from backend import wsgi
 
 
 class RetrievalTests(unittest.TestCase):
+    def test_check_slots_question_prefers_complete_rg019_matrix(self):
+        evidence = server.retrieve("Quantos slots precisa para o chequinho SAFE?")
+
+        self.assertEqual(evidence[0]["id"], server.CHECK_SLOTS_RULE_ID)
+        self.assertEqual(evidence[0]["code"], "RG-019")
+        self.assertIn("CPQ/SDAM", evidence[0]["operator_answer"])
+        self.assertIn("SJK/SBSJ", evidence[0]["operator_answer"])
+        self.assertIn("PS06", evidence[0]["operator_answer"])
+
     def test_no_show_limits_question_prefers_complete_rg003_answer(self):
         evidence = server.retrieve("Quais são os limites de NO SHOW?")
 
