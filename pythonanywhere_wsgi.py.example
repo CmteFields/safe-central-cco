@@ -28,6 +28,8 @@ os.environ["SAFE_RULES_CATALOG_PATH"] = str(KNOWLEDGE_ROOT / "Regras" / "catalog
 os.environ["SAFE_CCO_SECURE_COOKIES"] = "true"
 os.environ["SAFE_CCO_REQUIRE_SETUP_TOKEN"] = "true"
 os.environ["SAFE_CCO_SETUP_TOKEN"] = secrets["SAFE_CCO_SETUP_TOKEN"]
+if secrets.get("SAFE_CCO_AUTOMATION_TOKEN"):
+    os.environ["SAFE_CCO_AUTOMATION_TOKEN"] = secrets["SAFE_CCO_AUTOMATION_TOKEN"]
 
 for setting in (
     "GEMINI_API_KEY",

@@ -72,7 +72,7 @@ LOCAL_MODEL = (
 )
 FALLBACK_MODEL = os.environ.get("GEMINI_FALLBACK_MODEL", "gemini-3.5-flash-lite")
 EXTERNAL_MODEL = os.environ.get("GEMINI_EXTERNAL_MODEL", "gemini-3.1-pro-preview")
-RELEASE_ID = os.environ.get("SAFE_CCO_RELEASE", "2026-08-28-shift-window-fix")
+RELEASE_ID = os.environ.get("SAFE_CCO_RELEASE", "2026-08-31-automation-access")
 PORTAL_UPDATED_AT = os.environ.get("SAFE_CCO_UPDATED_AT", "").strip() or datetime.fromtimestamp(
     max(
         path.stat().st_mtime
@@ -94,6 +94,8 @@ SECURE_COOKIES = os.environ.get("SAFE_CCO_SECURE_COOKIES", "").lower() in {"1", 
     os.environ.get("RENDER")
 )
 SETUP_TOKEN = os.environ.get("SAFE_CCO_SETUP_TOKEN", "").strip()
+AUTOMATION_TOKEN = os.environ.get("SAFE_CCO_AUTOMATION_TOKEN", "").strip()
+AUTOMATION_SCOPES = frozenset({"rules:read", "rules:review", "rules:reprocess"})
 REQUIRE_SETUP_TOKEN = os.environ.get("SAFE_CCO_REQUIRE_SETUP_TOKEN", "").lower() in {
     "1", "true", "yes"
 } or bool(os.environ.get("RENDER"))
@@ -594,6 +596,39 @@ def session_user(cookie_header: str) -> tuple[dict[str, Any] | None, str | None,
                 connection.execute("DELETE FROM sessions WHERE token_hash=?", (token_hash,))
             return None, None, None
     return public_user(row), row["csrf_token"], token_hash
+
+
+def automation_user(
+    authorization_header: str,
+    agent_header: str = "",
+    computer_header: str = "",
+) -> dict[str, Any] | None:
+    """Autentica uma identidade não interativa restrita à Gestão de Regras."""
+    if not AUTOMATION_TOKEN:
+        return None
+    scheme, separator, supplied = (authorization_header or "").partition(" ")
+    if separator != " " or scheme.casefold() != "bearer" or not supplied:
+        return None
+    if not secrets.compare_digest(supplied.strip(), AUTOMATION_TOKEN):
+        return None
+
+    def safe_label(value: str, fallback: str) -> str:
+        cleaned = re.sub(r"[^A-Za-zÀ-ÿ0-9._ -]", "", value or "").strip()
+        return cleaned[:40] or fallback
+
+    agent = safe_label(agent_header, "IA")
+    computer = safe_label(computer_header, "computador não identificado")
+    return {
+        "id": 0,
+        "username": "portal.automation",
+        "display_name": f"Automação {agent} ({computer})",
+        "role": "supervisor",
+        "role_label": ROLE_LABELS["supervisor"],
+        "active": True,
+        "must_change_password": False,
+        "_automation": True,
+        "_automation_scopes": AUTOMATION_SCOPES,
+    }
 
 
 def list_users() -> list[dict[str, Any]]:
@@ -1311,6 +1346,17 @@ def list_rule_candidates(status: str = "unreviewed") -> list[dict[str, Any]]:
                    ORDER BY occurrence_count DESC, last_asked_at DESC""", (status,)
             ).fetchall()
     return [rule_candidate_dict(row) for row in rows]
+
+
+def get_rule_candidate(candidate_id: int) -> dict[str, Any]:
+    initialize_rules_db()
+    with rules_connection() as connection:
+        row = connection.execute(
+            "SELECT * FROM rule_candidates WHERE id=?", (candidate_id,)
+        ).fetchone()
+    if not row:
+        raise LookupError("Regra em aprovação não encontrada.")
+    return rule_candidate_dict(row)
 
 
 def _question_terms(question: str) -> set[str]:
@@ -5174,9 +5220,21 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def auth_context(self) -> tuple[dict[str, Any] | None, str | None, str | None]:
+        automated = automation_user(
+            self.headers.get("Authorization", ""),
+            self.headers.get("X-PortalCCO-Agent", ""),
+            self.headers.get("X-PortalCCO-Computer", ""),
+        )
+        if automated:
+            return automated, None, None
         return session_user(self.headers.get("Cookie", ""))
 
-    def require_auth(self, roles: set[str] | None = None, require_csrf: bool = False) -> tuple[dict[str, Any], str] | None:
+    def require_auth(
+        self,
+        roles: set[str] | None = None,
+        require_csrf: bool = False,
+        automation_scope: str | None = None,
+    ) -> tuple[dict[str, Any], str] | None:
         user, csrf, token_hash = self.auth_context()
         if not user:
             self.send_json(401, {"error": "Autenticação necessária."})
@@ -5187,7 +5245,11 @@ class Handler(BaseHTTPRequestHandler):
         if user["must_change_password"] and self.path not in {"/api/auth/me", "/api/auth/change-password", "/api/auth/logout"}:
             self.send_json(403, {"error": "Altere a senha temporária antes de continuar."})
             return None
-        if require_csrf and not secrets.compare_digest(self.headers.get("X-CSRF-Token", ""), csrf or ""):
+        if user.get("_automation"):
+            if not automation_scope or automation_scope not in user.get("_automation_scopes", ()):
+                self.send_json(403, {"error": "O token de automação não possui acesso a esta rota."})
+                return None
+        elif require_csrf and not secrets.compare_digest(self.headers.get("X-CSRF-Token", ""), csrf or ""):
             self.send_json(403, {"error": "Token de segurança inválido. Entre novamente."})
             return None
         if token_hash:
@@ -5209,6 +5271,7 @@ class Handler(BaseHTTPRequestHandler):
                 "gemini": "configured" if gemini_key() else "missing",
                 "gemini_model": LOCAL_MODEL,
                 "gemini_fallback_model": FALLBACK_MODEL,
+                "automation": "configured" if AUTOMATION_TOKEN else "missing",
             })
             return
         if self.path == "/api/auth/status":
@@ -5226,7 +5289,17 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(200, {"user": user, "csrf_token": csrf})
             return
         if urllib.parse.urlparse(self.path).path.startswith("/api/"):
-            context = self.require_auth({"admin", "supervisor", "operator", "viewer"})
+            api_path = urllib.parse.urlparse(self.path).path
+            automation_scope = (
+                "rules:read"
+                if api_path in {"/api/rule-candidates", "/api/knowledge-gaps", "/api/knowledge-gaps/export.csv"}
+                or re.fullmatch(r"/api/rule-candidates/\d+", api_path)
+                else None
+            )
+            context = self.require_auth(
+                {"admin", "supervisor", "operator", "viewer"},
+                automation_scope=automation_scope,
+            )
             if not context:
                 return
             user, _ = context
@@ -5245,6 +5318,17 @@ class Handler(BaseHTTPRequestHandler):
             query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             status = query.get("status", ["unreviewed"])[0]
             self.send_json(200, {"items": list_rule_candidates(status)})
+            return
+        candidate_match = re.fullmatch(
+            r"/api/rule-candidates/(\d+)", urllib.parse.urlparse(self.path).path
+        )
+        if candidate_match:
+            if user["role"] not in {"admin", "supervisor"}:
+                self.send_json(403, {"error": "Somente Supervisor ou Administrador pode revisar regras."}); return
+            try:
+                self.send_json(200, {"item": get_rule_candidate(int(candidate_match.group(1)))})
+            except LookupError as error:
+                self.send_json(404, {"error": str(error)})
             return
         if urllib.parse.urlparse(self.path).path in {
             "/api/knowledge-gaps", "/api/knowledge-gaps/export.csv"
@@ -5366,7 +5450,17 @@ class Handler(BaseHTTPRequestHandler):
                 user, token, csrf = authenticate(str(data.get("username", "")), str(data.get("password", "")))
                 cookie = self.session_cookie(token, SESSION_HOURS * 3600)
                 self.send_json(200, {"user": user, "csrf_token": csrf}, {"Set-Cookie": cookie}); return
-            context = self.require_auth({"admin", "supervisor", "operator", "viewer"}, require_csrf=True)
+            post_path = urllib.parse.urlparse(self.path).path
+            automation_scope = (
+                "rules:reprocess"
+                if re.fullmatch(r"/api/rule-candidates/\d+/reprocess", post_path)
+                else None
+            )
+            context = self.require_auth(
+                {"admin", "supervisor", "operator", "viewer"},
+                require_csrf=True,
+                automation_scope=automation_scope,
+            )
             if not context:
                 return
             user, _ = context
@@ -5500,7 +5594,15 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(500, {"error": str(error)})
 
     def do_PUT(self) -> None:
-        context = self.require_auth({"admin", "supervisor", "operator", "viewer"}, require_csrf=True)
+        put_path = urllib.parse.urlparse(self.path).path
+        automation_scope = (
+            "rules:review" if re.fullmatch(r"/api/rule-candidates/\d+", put_path) else None
+        )
+        context = self.require_auth(
+            {"admin", "supervisor", "operator", "viewer"},
+            require_csrf=True,
+            automation_scope=automation_scope,
+        )
         if not context:
             return
         user, _ = context

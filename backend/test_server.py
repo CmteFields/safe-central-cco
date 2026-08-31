@@ -696,6 +696,19 @@ class LearningGraphTests(unittest.TestCase):
 
 
 class AuthenticationTests(unittest.TestCase):
+    def test_automation_token_has_synthetic_supervisor_identity(self):
+        with patch.object(server, "AUTOMATION_TOKEN", "segredo-de-automacao"):
+            user = server.automation_user(
+                "Bearer segredo-de-automacao", "Claude", "CCO-02"
+            )
+            invalid = server.automation_user("Bearer token-incorreto")
+
+        self.assertIsNone(invalid)
+        self.assertEqual(user["username"], "portal.automation")
+        self.assertEqual(user["role"], "supervisor")
+        self.assertEqual(user["display_name"], "Automação Claude (CCO-02)")
+        self.assertEqual(user["_automation_scopes"], server.AUTOMATION_SCOPES)
+
     def test_initial_setup_requires_deployment_secret_in_production(self):
         with patch.object(server, "REQUIRE_SETUP_TOKEN", True), patch.object(
             server, "SETUP_TOKEN", "codigo-secreto"
@@ -850,6 +863,51 @@ class WSGITests(unittest.TestCase):
         self.assertIn(payload["gemini"], {"configured", "missing"})
         self.assertEqual(payload["gemini_model"], server.LOCAL_MODEL)
         self.assertEqual(payload["gemini_fallback_model"], server.FALLBACK_MODEL)
+        self.assertIn(payload["automation"], {"configured", "missing"})
+
+    def test_automation_token_is_limited_to_rule_management_routes(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            server, "RULES_DB_PATH", Path(directory) / "rules.db"
+        ), patch.object(
+            server, "APPROVED_RULES_EXPORT_PATH", Path(directory) / "approved-rules.json"
+        ), patch.object(server, "AUTOMATION_TOKEN", "segredo-de-automacao"):
+            headers = {
+                "Authorization": "Bearer segredo-de-automacao",
+                "X-PortalCCO-Agent": "Codex",
+                "X-PortalCCO-Computer": "CCO-01",
+            }
+            status, _, body = self.request(
+                "/api/rule-candidates", request_headers=headers
+            )
+            self.assertEqual(status, "200 OK", body.decode("utf-8"))
+            self.assertEqual(json.loads(body)["items"], [])
+
+            status, _, body = self.request("/api/users", request_headers=headers)
+            self.assertEqual(status, "403 Forbidden", body.decode("utf-8"))
+            self.assertIn("não possui acesso", json.loads(body)["error"])
+
+            status, _, body = self.request(
+                "/api/rule-candidates/999",
+                "PUT",
+                {"status": "rejected", "review_note": "Teste de escopo"},
+                headers,
+            )
+            self.assertEqual(status, "404 Not Found", body.decode("utf-8"))
+
+            status, _, body = self.request(
+                "/api/rule-candidates/999/reprocess", "POST", {}, headers
+            )
+            self.assertEqual(status, "404 Not Found", body.decode("utf-8"))
+
+            status, _, body = self.request("/api/reports", "POST", {}, headers)
+            self.assertEqual(status, "403 Forbidden", body.decode("utf-8"))
+
+            invalid_headers = {"Authorization": "Bearer incorreto"}
+            status, _, _ = self.request(
+                "/api/rule-candidates",
+                request_headers=invalid_headers,
+            )
+            self.assertEqual(status, "401 Unauthorized")
 
     def test_static_portal_through_wsgi(self):
         status, headers, body = self.request("/")
