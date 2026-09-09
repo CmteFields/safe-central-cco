@@ -5,24 +5,29 @@
 A estrutura existente será evoluída sem mover as coleções documentais, pois seus caminhos já são identificadores estáveis usados pelo registro, pelo grafo e pelas decisões curadas.
 
 ```text
-CentrodeConhecimento/
-├── Aeronaves/              # fontes oficiais e institucionais da frota
-├── AVOPs/                  # fontes documentais por público
-├── Instrutores/            # futura fonte de dados de instrutores
-├── MGOP/                   # manual oficial
-├── MIP/                    # manual oficial
+<raiz do workspace privado>/
+├── AVOPs/                  # boletins por público (Alunos/MD, Funcionarios/MD)
+├── Aeronaves/              # certificações e situação da frota
+├── Flight Operation/       # MGSO, MGQ, PIs e certificados oficiais
+├── MGOP/                   # manual oficial (capítulos)
+├── MIP/                    # manual oficial (revisões preservadas)
 ├── Programas_Instrucao/    # programas oficiais
-├── Regras/                 # propostas e regras gerais aprovadas
+├── Regulamentacao_ANAC/    # RBACs
+├── Projeto_SAFE_CCO/       # governança e evolução do CCO (não normativo)
+├── Regras/                 # propostas, regras aprovadas e catálogo
 ├── Knowledge/              # curadoria, decisões, registro e validação
-├── graphify-out/           # artefatos gerados do grafo
-└── PortalCCO/              # aplicação para os operadores
-    ├── data/               # índices gerados; não editar manualmente
+├── graphify-out/           # grafo compilado (graph.json versionado; demais artefatos regenerados)
+└── PortalCCO/              # aplicação para os operadores (submódulo público)
+    ├── backend/            # server.py, wsgi.py, knowledge_bundle.py e testes
+    ├── data/               # índices gerados e banco local; não editar manualmente
     ├── docs/               # decisões arquiteturais
-    ├── scripts/            # adaptadores entre conhecimento e aplicação
+    ├── scripts/            # adaptadores entre conhecimento, aplicação e deploy
     ├── index.html
-    ├── styles.css
-    └── app.js
+    ├── app.js
+    └── styles.css, topbar.css, auth.css, instrutores.css
 ```
+
+O workspace não depende do caminho absoluto do clone; todos os scripts derivam a raiz da própria localização.
 
 ## Fluxo de dados
 
@@ -82,7 +87,7 @@ Se a requisição falhar, a interface muda para o estado real `fallback`, inform
 - Pesquisas concluídas são armazenadas como snapshots imutáveis em `search_history`. A API `/api/searches` lista e reabre respostas anteriores sem executar novamente o mecanismo de consulta.
 - A autenticação interativa usa as tabelas `users`, `sessions` e `admin_edit_grants`, senhas PBKDF2-SHA256, sessões de 12 horas em cookie `HttpOnly`/`SameSite=Strict` e proteção CSRF. Autorizações são aplicadas no backend para Administrador, Supervisor, Operador e Consulta.
 - A automação compartilhada por agentes usa um token `Bearer` revogável, mantido somente no arquivo seguro do servidor e no ambiente do usuário de cada computador. Sua identidade efetiva é de Supervisor, mas o backend a restringe adicionalmente aos escopos fixos `rules:read`, `rules:review` e `rules:reprocess`; o token não acessa usuários, passagens, reports, aeronaves, mensagens, consultas gerais ou arquivos. O cliente informa agente e computador para que toda revisão continue identificada em `rule_events`. A rotação substitui o segredo no servidor e invalida imediatamente o valor anterior após a recarga.
-- Em produção, `SAFE_PORTAL_DB_PATH` aponta o banco SQLite para o volume persistente. O Blueprint do Render usa `/var/data/portalcco.db`, HTTPS, cookie `Secure` e uma única instância, preservando a consistência do SQLite.
+- Em produção (PythonAnywhere, conta `CCOFields`), `SAFE_PORTAL_DB_PATH` aponta o banco SQLite para o diretório persistente `portalcco-data/`, fora da release. O `render.yaml` descreve uma alternativa de hospedagem no Render (`/var/data/portalcco.db`, HTTPS, cookie `Secure`, instância única) que não está em uso; o alvo oficial é o PythonAnywhere.
 - Os bancos SQLite antigos são importados automaticamente para o banco único. A tabela `storage_migrations` torna o processo idempotente, e os arquivos legados permanecem intactos como backup.
 - Respostas conclusivas devem priorizar regras com estado `confirmed`. Documentos relacionados podem auxiliar a busca, mas não devem ser apresentados como regra confirmada.
 - A ordem da resposta é: regra SAFE confirmada e vigente; demais evidências locais rastreáveis; fonte externa oficial da ANAC; ausência de resposta. A consulta externa não substitui uma regra SAFE mais restritiva e não possui validade interna até revisão humana.

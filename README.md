@@ -14,11 +14,13 @@ O navegador abrirá `http://127.0.0.1:8765/`. Mantenha a janela do servidor aber
 
 O portal consulta primeiro as regras aprovadas. Quando a evidência local é
 insuficiente, `SAFE_CCO_WEB_GROUNDING=1` (padrão) permite ao Gemini pesquisar
-somente fontes oficiais da ANAC. Por padrão, `gemini-3.5-flash` interpreta a
-evidência do grafo SAFE e `gemini-3.1-pro-preview` executa a pesquisa externa
-com Google Search. Os modelos podem ser substituídos por
-`GEMINI_LOCAL_MODEL` e `GEMINI_EXTERNAL_MODEL`; `GEMINI_MODEL` permanece como
-compatibilidade para o modelo local. A resposta externa é sempre marcada como provisória e
+somente fontes oficiais da ANAC. Por padrão, `gemini-3.6-flash` interpreta a
+evidência do grafo SAFE, `gemini-3.5-flash-lite` é a contingência de capacidade e
+`gemini-3.1-pro-preview` executa a pesquisa externa com Google Search. Os
+modelos podem ser substituídos por `GEMINI_LOCAL_MODEL`, `GEMINI_FALLBACK_MODEL`
+e `GEMINI_EXTERNAL_MODEL`; `GEMINI_MODEL` permanece como compatibilidade para o
+modelo local. Os valores padrão estão definidos em `backend/server.py`, que é a
+referência quando houver dúvida. A resposta externa é sempre marcada como provisória e
 registrada em **Gestão de regras > Em aprovação**; ela nunca é promovida
 automaticamente. Defina `SAFE_CCO_WEB_GROUNDING=0` para desativar esse fallback.
 Falhas temporárias da API são repetidas; se os modelos permanecerem
@@ -126,9 +128,10 @@ O backend detecta e instala automaticamente a versão mais recente de
 `portalcco-data/knowledge-bundle.zip` antes de carregar as regras. A instalação
 é atômica, validada por hashes e não sobrescreve o banco operacional.
 
-### Render
+### Render (alternativa não utilizada)
 
-O arquivo `render.yaml` prepara um Web Service Python no Render com:
+O endereço oficial dos operadores é o PythonAnywhere. O arquivo `render.yaml` é
+mantido apenas como alternativa de hospedagem e prepara um Web Service Python no Render com:
 
 - publicação automática a partir da branch conectada no GitHub;
 - HTTPS no endereço `onrender.com`;
